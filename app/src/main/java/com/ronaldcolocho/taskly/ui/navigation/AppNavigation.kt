@@ -3,7 +3,14 @@ package com.ronaldcolocho.taskly.ui.navigation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Home
@@ -13,6 +20,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -27,13 +35,16 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.ui.screen.auth.AuthScreen
 import com.ronaldcolocho.taskly.ui.screen.auth.AuthViewModel
 import com.ronaldcolocho.taskly.ui.screen.chat.AudioPlayerBar
 import com.ronaldcolocho.taskly.ui.screen.chat.ChatListScreen
 import com.ronaldcolocho.taskly.ui.screen.chat.ChatScreen
 import com.ronaldcolocho.taskly.ui.screen.chat.rememberAudioPlayerController
+import com.ronaldcolocho.taskly.ui.screen.chat.rememberMediaDownloadManager
 import com.ronaldcolocho.taskly.ui.screen.home.HomeScreen
+import com.ronaldcolocho.taskly.ui.screen.home.NetworkViewModel
 import com.ronaldcolocho.taskly.ui.screen.home.PresenceViewModel
 import com.ronaldcolocho.taskly.ui.screen.profile.ProfileScreen
 import com.ronaldcolocho.taskly.ui.screen.tasks.TasksScreen
@@ -77,7 +88,17 @@ private fun MainScaffold() {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val audioController = rememberAudioPlayerController()
+    val mediaManager = rememberMediaDownloadManager()
     val presenceViewModel: PresenceViewModel = hiltViewModel()
+    val networkViewModel: NetworkViewModel = hiltViewModel()
+    val isOnline by networkViewModel.isOnline.collectAsState()
+
+    LaunchedEffect(Unit) {
+        audioController.setTrackResolver { track -> mediaManager.fileFor(track.id, MediaKind.AUDIO) }
+        audioController.setEnsureTrack { track ->
+            mediaManager.awaitLocalFile(track.id, track.url, MediaKind.AUDIO)
+        }
+    }
 
     DisposableEffect(Unit) {
         presenceViewModel.start()
@@ -123,7 +144,12 @@ private fun MainScaffold() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding()
         ) {
+            if (!isOnline) {
+                OfflineBanner()
+            }
             AudioPlayerBar(controller = audioController)
             NavHost(
                 navController = navController,
@@ -143,5 +169,20 @@ private fun MainScaffold() {
                 composable(Route.Profile.route) { ProfileScreen(onLogout = { }) }
             }
         }
+    }
+}
+
+@Composable
+private fun OfflineBanner() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+    ) {
+        Text(
+            text = "Sin conexión. Los cambios se sincronizarán cuando vuelvas a estar en línea.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.tertiary,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+        )
     }
 }

@@ -2,12 +2,16 @@ package com.ronaldcolocho.taskly.di
 
 import com.ronaldcolocho.taskly.data.repository.AuthRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.ChatRepositoryImpl
+import com.ronaldcolocho.taskly.data.repository.MediaCacheRepositoryImpl
+import com.ronaldcolocho.taskly.data.repository.NetworkRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.PresenceRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.ProfileRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.SavedRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.TaskRepositoryImpl
 import com.ronaldcolocho.taskly.domain.repository.IAuthRepository
 import com.ronaldcolocho.taskly.domain.repository.IChatRepository
+import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
+import com.ronaldcolocho.taskly.domain.repository.INetworkRepository
 import com.ronaldcolocho.taskly.domain.repository.IPresenceRepository
 import com.ronaldcolocho.taskly.domain.repository.IProfileRepository
 import com.ronaldcolocho.taskly.domain.repository.ISavedRepository
@@ -64,5 +68,17 @@ abstract class RepositoryModule {
     abstract fun bindPresenceRepository(
         presenceRepositoryImpl: PresenceRepositoryImpl
     ): IPresenceRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindMediaCacheRepository(
+        mediaCacheRepositoryImpl: MediaCacheRepositoryImpl
+    ): IMediaCacheRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindNetworkRepository(
+        networkRepositoryImpl: NetworkRepositoryImpl
+    ): INetworkRepository
 }
 

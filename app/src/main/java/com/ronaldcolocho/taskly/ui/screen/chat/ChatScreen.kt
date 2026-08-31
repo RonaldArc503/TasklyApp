@@ -52,6 +52,7 @@ import com.ronaldcolocho.taskly.domain.util.formatLastSeen
 import com.ronaldcolocho.taskly.domain.util.sameDay
 import com.ronaldcolocho.taskly.ui.state.ChatUiState
 import com.ronaldcolocho.taskly.ui.util.avatarColor
+import com.ronaldcolocho.taskly.ui.util.chatBackground
 import com.ronaldcolocho.taskly.ui.util.initialsOf
 import com.ronaldcolocho.taskly.util.AttachmentActions
 import kotlinx.coroutines.launch
@@ -79,6 +80,7 @@ fun ChatScreen(
     val drafts by viewModel.drafts.collectAsState()
     val conversations by viewModel.conversations.collectAsState()
     val audioController = rememberAudioPlayerController()
+    val mediaManager = rememberMediaDownloadManager()
 
     var inputValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
     var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
@@ -167,9 +169,9 @@ fun ChatScreen(
                 if (isAtTop && !state.isFetchingOlder) viewModel.loadMore()
             }
 
-            // Playlist de audio global
+            // Playlist de audio global (orden cronológico: más antiguo → más reciente)
             LaunchedEffect(state.messages) {
-                val tracks = state.messages.flatMap { m ->
+                val tracks = state.messages.sortedBy { it.createdAt }.flatMap { m ->
                     m.attachments.filter { it.kind == AttachmentKind.AUDIO }.map {
                         AudioTrack(it.publicId, it.url, it.name, m.id)
                     }
@@ -191,7 +193,7 @@ fun ChatScreen(
             val mentionOpen = mentionCandidates.isNotEmpty()
 
             lightboxItems?.let { items ->
-                AttachmentLightbox(items = items, initialIndex = lightboxIndex, onClose = { lightboxItems = null })
+                AttachmentLightbox(items = items, initialIndex = lightboxIndex, mediaManager = mediaManager, onClose = { lightboxItems = null })
             }
 
             selectedMessageForActions?.let { msg ->
@@ -236,9 +238,7 @@ fun ChatScreen(
             }
 
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .imePadding()
+                modifier = Modifier.fillMaxSize()
             ) {
                 // HEADER
                 Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
@@ -252,27 +252,28 @@ fun ChatScreen(
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
                         }
 
-                        Box(modifier = Modifier.size(36.dp)) {
+                        // Header Avatar (+11% more: 46dp)
+                        Box(modifier = Modifier.size(46.dp)) {
                             if (!isGroup && peerPhoto != null && peerPhoto.isNotBlank()) {
                                 AsyncImage(
                                     model = peerPhoto,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(36.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                                    modifier = Modifier.size(46.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
                                 )
                             } else {
                                 val bg = avatarColor(peerId ?: state.currentUserId)
                                 Box(
-                                    modifier = Modifier.size(36.dp).clip(CircleShape).background(bg),
+                                    modifier = Modifier.size(46.dp).clip(CircleShape).background(bg),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(initialsOf(if (isGroup) state.conversation.name ?: "G" else peerName), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(initialsOf(if (isGroup) state.conversation.name ?: "G" else peerName), color = Color.White, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                             if (!isSelf && !isGroup && state.peerPresence?.isOnlineNow() == true) {
                                 Box(
                                     modifier = Modifier
-                                        .size(12.dp)
+                                        .size(14.dp)
                                         .align(Alignment.BottomEnd)
                                         .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
                                         .clip(CircleShape)
@@ -382,7 +383,8 @@ fun ChatScreen(
                 }
 
                 // MESSAGES
-                Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Slate50)) {
+                BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().chatBackground()) {
+                    val maxBubbleWidth = (maxWidth - 24.dp) * 0.8f
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
@@ -410,7 +412,18 @@ fun ChatScreen(
                                 }
                             }
                         } else {
-                            itemsIndexed(state.messages, key = { _, it -> it.id }) { index, message ->
+                            itemsIndexed(
+                                state.messages,
+                                key = { _, it -> it.id },
+                                contentType = { index, _ ->
+                                    val next = state.messages.getOrNull(index + 1)
+                                    if (next == null || !sameDay(state.messages[index].createdAt, next.createdAt)) {
+                                        "day"
+                                    } else {
+                                        "message"
+                                    }
+                                }
+                            ) { index, message ->
                                 val next = state.messages.getOrNull(index + 1)
                                 val showDay = next == null || !sameDay(message.createdAt, next.createdAt)
 
@@ -419,14 +432,17 @@ fun ChatScreen(
                                     isMe = message.senderId == state.currentUserId,
                                     currentUserId = state.currentUserId,
                                     members = state.conversation.members,
+                                    maxBubbleWidth = maxBubbleWidth,
                                     showAuthor = isGroup && message.senderId != state.currentUserId,
                                     authorName = state.conversation.members[message.senderId]?.displayName,
                                     isPinned = pinnedList.any { it.id == message.id },
                                     highlighted = highlightedId == message.id,
                                     audioController = audioController,
+                                    mediaManager = mediaManager,
                                     onLongPress = { selectedMessageForActions = message },
                                     onRetry = { viewModel.retryMessage(message) },
                                     onReact = { m, emoji -> viewModel.reactToMessage(m, emoji) },
+                                    onOpenFile = { att, file -> AttachmentActions.openLocalFile(context, file, att.mimeType) },
                                     onImageClick = { att ->
                                         val items = state.messages.flatMap { m ->
                                             m.attachments.filter { it.kind == AttachmentKind.IMAGE }
@@ -563,17 +579,26 @@ fun ChatScreen(
                 }
 
                 // INPUT
+                val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+                val inputBg = if (isDark) Color(0xFF1E293B) else Slate50
+                val inputBorder = if (isDark) Color(0xFF334155) else Slate200
+                val inputTextColor = if (isDark) Color(0xFFF1F5F9) else Slate800
+                val inputPlaceholderColor = if (isDark) Color(0xFF94A3B8) else Slate400
+                val canSend = inputValue.text.isNotBlank() || drafts.isNotEmpty()
+                val isEditing = state.editing != null
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 8.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.Bottom
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     IconButton(
                         onClick = { filePickerLauncher.launch("*/*") },
                         enabled = state.editing == null,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Icon(Icons.Filled.Add, contentDescription = "Adjuntar", tint = Slate500)
                     }
@@ -581,72 +606,72 @@ fun ChatScreen(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Slate50)
-                            .border(1.dp, Slate200, RoundedCornerShape(24.dp))
-                            .padding(end = 4.dp)
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(inputBg)
+                            .border(1.dp, inputBorder, RoundedCornerShape(22.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            BasicTextField(
-                                value = inputValue,
-                                onValueChange = { newValue ->
-                                    inputValue = newValue
-                                    viewModel.onTextChanged(newValue.text)
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                                    .heightIn(min = 20.dp, max = 128.dp),
-                                textStyle = TextStyle(fontSize = 15.sp, color = Slate800),
-                                minLines = 1,
-                                maxLines = 6,
-                                decorationBox = { innerTextField ->
-                                    if (inputValue.text.isEmpty()) {
-                                        Text(
-                                            text = if (state.editing != null) "Editar mensaje…" else "Escribe un mensaje…",
-                                            color = Slate400,
-                                            fontSize = 15.sp
-                                        )
-                                    }
-                                    innerTextField()
+                        BasicTextField(
+                            value = inputValue,
+                            onValueChange = { newValue ->
+                                inputValue = newValue
+                                viewModel.onTextChanged(newValue.text)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 20.dp, max = 128.dp),
+                            textStyle = TextStyle(fontSize = 15.sp, color = inputTextColor),
+                            minLines = 1,
+                            maxLines = 6,
+                            decorationBox = { innerTextField ->
+                                if (inputValue.text.isEmpty()) {
+                                    Text(
+                                        text = if (state.editing != null) "Editar mensaje…" else "Escribe un mensaje…",
+                                        color = inputPlaceholderColor,
+                                        fontSize = 15.sp
+                                    )
                                 }
-                            )
-
-                            val canSend = inputValue.text.isNotBlank() || drafts.isNotEmpty()
-                            val isEditing = state.editing != null
-                            IconButton(
-                                onClick = {
-                                    if (canSend) {
-                                        when {
-                                            isEditing -> {
-                                                viewModel.saveEdit(inputValue.text)
-                                                inputValue = androidx.compose.ui.text.input.TextFieldValue("")
-                                            }
-                                            drafts.isNotEmpty() -> {
-                                                viewModel.sendWithDrafts(inputValue.text)
-                                                inputValue = androidx.compose.ui.text.input.TextFieldValue("")
-                                            }
-                                            else -> {
-                                                viewModel.sendText(inputValue.text)
-                                                inputValue = androidx.compose.ui.text.input.TextFieldValue("")
-                                            }
-                                        }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .padding(bottom = 4.dp, end = 2.dp)
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(if (canSend) Indigo600 else Indigo600.copy(alpha = 0.4f))
-                            ) {
-                                Icon(
-                                    imageVector = if (isEditing) Icons.Filled.Check else Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = if (isEditing) "Guardar edición" else "Enviar mensaje",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                innerTextField()
                             }
-                        }
+                        )
+                    }
+
+                    // Botón de Enviar (FUERA del contenedor de texto)
+                    IconButton(
+                        onClick = {
+                            if (canSend) {
+                                when {
+                                    isEditing -> {
+                                        viewModel.saveEdit(inputValue.text)
+                                        inputValue = androidx.compose.ui.text.input.TextFieldValue("")
+                                    }
+                                    drafts.isNotEmpty() -> {
+                                        viewModel.sendWithDrafts(inputValue.text)
+                                        inputValue = androidx.compose.ui.text.input.TextFieldValue("")
+                                    }
+                                    else -> {
+                                        viewModel.sendText(inputValue.text)
+                                        inputValue = androidx.compose.ui.text.input.TextFieldValue("")
+                                    }
+                                }
+                            }
+                        },
+                        enabled = canSend,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (canSend) Indigo600
+                                else if (isDark) Color(0xFF334155)
+                                else Color(0xFFE2E8F0)
+                            )
+                    ) {
+                        Icon(
+                            imageVector = if (isEditing) Icons.Filled.Check else Icons.AutoMirrored.Filled.Send,
+                            contentDescription = if (isEditing) "Guardar edición" else "Enviar mensaje",
+                            tint = if (canSend) Color.White else if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
 

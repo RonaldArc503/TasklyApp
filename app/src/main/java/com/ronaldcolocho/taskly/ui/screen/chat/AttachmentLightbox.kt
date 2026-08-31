@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,9 +25,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatAttachment
+import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.util.attachmentMediaUrl
+import com.ronaldcolocho.taskly.media.MediaDownloadManager
 
 data class LightboxItem(
     val attachment: ChatAttachment,
@@ -36,6 +39,7 @@ data class LightboxItem(
 fun AttachmentLightbox(
     items: List<LightboxItem>,
     initialIndex: Int,
+    mediaManager: MediaDownloadManager,
     onClose: () -> Unit
 ) {
     if (items.isEmpty()) return
@@ -43,6 +47,21 @@ fun AttachmentLightbox(
         initialPage = initialIndex.coerceIn(0, items.size - 1),
         pageCount = { items.size }
     )
+
+    // Prefetch controlado de la imagen actual y sus vecinas
+    LaunchedEffect(pagerState.currentPage) {
+        val page = pagerState.currentPage
+        listOf(page - 1, page, page + 1).forEach { p ->
+            if (p in items.indices) {
+                val att = items[p].attachment
+                mediaManager.ensureDownloaded(
+                    att.publicId,
+                    attachmentMediaUrl(att.url, "w_700,f_auto,q_auto"),
+                    MediaKind.IMAGE
+                )
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onClose,
@@ -88,9 +107,9 @@ fun AttachmentLightbox(
                     .weight(1f)
                     .fillMaxWidth()
             ) { page ->
-                val item = items[page]
                 LightboxPage(
-                    item = item,
+                    item = items[page],
+                    mediaManager = mediaManager,
                     onClose = onClose
                 )
             }
@@ -113,6 +132,7 @@ fun AttachmentLightbox(
 @Composable
 private fun LightboxPage(
     item: LightboxItem,
+    mediaManager: MediaDownloadManager,
     onClose: () -> Unit
 ) {
     val ratio = item.attachment.width?.takeIf { it > 0 }?.let { w ->
@@ -148,10 +168,9 @@ private fun LightboxPage(
             fitH = availH
         }
 
-        AsyncImage(
-            model = attachmentMediaUrl(item.attachment.url, "f_auto,q_auto"),
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
+        ChatImage(
+            att = item.attachment,
+            mediaManager = mediaManager,
             modifier = Modifier
                 .width(fitW)
                 .height(fitH)
@@ -159,7 +178,9 @@ private fun LightboxPage(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = {}
-                )
+                ),
+            contentScale = ContentScale.Fit,
+            shape = RoundedCornerShape(0.dp)
         )
     }
 }

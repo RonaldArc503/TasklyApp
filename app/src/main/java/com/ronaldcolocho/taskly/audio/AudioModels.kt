@@ -7,13 +7,13 @@ data class AudioTrack(
     val msgId: String
 )
 
-enum class AudioMode { QUEUE, REPEAT, LOOP }
+enum class AudioMode { INDIVIDUAL, QUEUE, REPEAT, LOOP }
 
 data class AudioPlayerState(
     val tracks: List<AudioTrack> = emptyList(),
     val currentTrack: AudioTrack? = null,
     val playing: Boolean = false,
-    val mode: AudioMode = AudioMode.QUEUE,
+    val mode: AudioMode = AudioMode.INDIVIDUAL,
     val currentTimeMs: Long = 0,
     val durationMs: Long = 0
 )

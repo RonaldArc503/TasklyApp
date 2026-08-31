@@ -33,7 +33,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.domain.util.formatDuration
-import com.ronaldcolocho.taskly.di.AudioPlayerControllerEntryPoint
+import com.ronaldcolocho.taskly.di.MediaEntryPoint
+import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import com.ronaldcolocho.taskly.ui.theme.Indigo600
 import dagger.hilt.android.EntryPointAccessors
 
@@ -47,8 +48,17 @@ private val Slate800 = Color(0xFFF1F5F9)
 fun rememberAudioPlayerController(): AudioPlayerController {
     val appContext = LocalContext.current.applicationContext
     return remember(appContext) {
-        val ep = EntryPointAccessors.fromApplication(appContext, AudioPlayerControllerEntryPoint::class.java)
-        ep.audioPlayerController()
+        EntryPointAccessors.fromApplication(appContext, MediaEntryPoint::class.java)
+            .audioPlayerController()
+    }
+}
+
+@Composable
+fun rememberMediaDownloadManager(): MediaDownloadManager {
+    val appContext = LocalContext.current.applicationContext
+    return remember(appContext) {
+        EntryPointAccessors.fromApplication(appContext, MediaEntryPoint::class.java)
+            .mediaDownloadManager()
     }
 }
 

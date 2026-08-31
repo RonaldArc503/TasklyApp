@@ -10,4 +10,6 @@
 .kotlin
 build_log.txt
 build_err.txt
+build_check.log
+build_check2.log
 /app/google-services.json

@@ -205,15 +205,15 @@ private fun ConversationItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Avatar
-        Box(modifier = Modifier.size(36.dp)) {
+        // Avatar (+11% more: 46dp)
+        Box(modifier = Modifier.size(46.dp)) {
             if (!photoUrl.isNullOrBlank()) {
                 AsyncImage(
                     model = photoUrl,
                     contentDescription = displayName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(46.dp)
                         .clip(CircleShape)
                         .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
                 )
@@ -221,7 +221,7 @@ private fun ConversationItem(
                 val bgColor = avatarColor(if (isGroup) conv.id else otherId)
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(46.dp)
                         .clip(CircleShape)
                         .background(bgColor),
                     contentAlignment = Alignment.Center
@@ -230,7 +230,7 @@ private fun ConversationItem(
                         text = if (isGroup) (conv.name ?: "G").take(1).uppercase()
                         else initialsFromName(displayName),
                         color = Color.White,
-                        fontSize = 13.sp,
+                        fontSize = 15.5.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -240,7 +240,7 @@ private fun ConversationItem(
             if (!isSelf && !isGroup) {
                 Box(
                     modifier = Modifier
-                        .size(12.dp)
+                        .size(14.dp)
                         .align(Alignment.BottomEnd)
                         .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
                         .clip(CircleShape)

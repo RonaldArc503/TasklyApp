@@ -62,8 +62,10 @@ object FileUtil {
             val name = getDisplayName(context, uri) ?: "temp_file_${System.currentTimeMillis()}"
             val inputStream = contentResolver.openInputStream(uri) ?: return null
             val file = File(context.cacheDir, name)
-            FileOutputStream(file).use { outputStream ->
-                inputStream.copyTo(outputStream)
+            inputStream.use { ins ->
+                FileOutputStream(file).use { outputStream ->
+                    ins.copyTo(outputStream)
+                }
             }
             file
         } catch (e: Exception) {

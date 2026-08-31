@@ -169,6 +169,20 @@ fun ChatScreen(
                 if (isAtTop && !state.isFetchingOlder) viewModel.loadMore()
             }
 
+            val firstMessageId = state.messages.firstOrNull()?.id
+            LaunchedEffect(firstMessageId) {
+                if (firstMessageId != null) {
+                    val msg = state.messages.first()
+                    if (isAtBottom || msg.senderId == state.currentUserId) {
+                        try {
+                            listState.animateScrollToItem(0)
+                        } catch (e: Exception) {
+                            // ignore
+                        }
+                    }
+                }
+            }
+
             // Playlist de audio global (orden cronológico: más antiguo → más reciente)
             LaunchedEffect(state.messages) {
                 val tracks = state.messages.sortedBy { it.createdAt }.flatMap { m ->

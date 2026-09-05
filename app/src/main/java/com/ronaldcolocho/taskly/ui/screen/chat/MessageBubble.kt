@@ -19,7 +19,6 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.domain.model.AttachmentKind
 import com.ronaldcolocho.taskly.domain.model.ChatAttachment
@@ -60,6 +60,8 @@ import com.ronaldcolocho.taskly.ui.theme.Indigo600
 import com.ronaldcolocho.taskly.ui.util.authorTextColor
 import java.io.File
 
+import com.ronaldcolocho.taskly.domain.model.MemberDirectory
+
 private val Slate100 = Color(0xFF1E293B)
 private val Slate200 = Color(0xFF334155)
 private val Slate400 = Color(0xFF94A3B8)
@@ -75,7 +77,7 @@ fun MessageBubble(
     message: ChatMessage,
     isMe: Boolean,
     currentUserId: String,
-    members: Map<String, MemberSnapshot>,
+    members: MemberDirectory,
     maxBubbleWidth: Dp,
     showAuthor: Boolean,
     authorName: String?,
@@ -83,8 +85,8 @@ fun MessageBubble(
     highlighted: Boolean,
     audioController: AudioPlayerController,
     mediaManager: MediaDownloadManager,
-    onLongPress: () -> Unit,
-    onRetry: () -> Unit,
+    onLongPress: (ChatMessage) -> Unit,
+    onRetry: (ChatMessage) -> Unit,
     onReact: (ChatMessage, String) -> Unit,
     onImageClick: (ChatAttachment) -> Unit,
     onOpenFile: (ChatAttachment, File) -> Unit,
@@ -153,7 +155,7 @@ fun MessageBubble(
             modifier = Modifier
                 .widthIn(max = maxBubbleWidth)
                 .pointerInput(message.id) {
-                    detectTapGestures(onLongPress = { onLongPress() })
+                    detectTapGestures(onLongPress = { onLongPress(message) })
                 },
             contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
         ) {
@@ -171,7 +173,7 @@ fun MessageBubble(
                     .then(if (highlighted) Modifier.border(2.dp, Indigo600, bubbleShape) else Modifier)
             ) {
                 if (hasImagesOnly) {
-                    ImageOnlyBubble(message, bubbleShape, isPinned, onImageClick, onLongPress, mediaManager)
+                    ImageOnlyBubble(message, bubbleShape, isPinned, onImageClick, { onLongPress(message) }, mediaManager)
                 } else {
                     ContentBubble(
                         message = message,
@@ -183,7 +185,7 @@ fun MessageBubble(
                         mediaManager = mediaManager,
                         onImageClick = onImageClick,
                         onOpenFile = onOpenFile,
-                        onLongPress = onLongPress,
+                        onLongPress = { onLongPress(message) },
                         onReplyClick = onReplyClick,
                         onLinkClick = onLinkClick
                     )
@@ -205,7 +207,7 @@ fun MessageBubble(
                 fontSize = 11.sp,
                 modifier = Modifier
                     .padding(top = 4.dp)
-                    .clickable { onRetry() }
+                    .clickable { onRetry(message) }
             )
         }
         }
@@ -216,7 +218,7 @@ private fun ContentBubble(
     message: ChatMessage,
     isMe: Boolean,
     currentUserId: String,
-    members: Map<String, MemberSnapshot>,
+    members: MemberDirectory,
     isPinned: Boolean,
     audioController: AudioPlayerController,
     mediaManager: MediaDownloadManager,
@@ -248,9 +250,9 @@ private fun ContentBubble(
         message.replyTo?.let { reply ->
             ReplyQuote(
                 reply = reply,
+                isMe = isMe,
                 currentUserId = currentUserId,
                 members = members,
-                isMe = isMe,
                 textColor = textColor,
                 onReplyClick = onReplyClick
             )
@@ -307,9 +309,9 @@ private fun ContentBubble(
 @Composable
 private fun ReplyQuote(
     reply: ReplyInfo,
-    currentUserId: String,
-    members: Map<String, MemberSnapshot>,
     isMe: Boolean,
+    currentUserId: String,
+    members: MemberDirectory,
     textColor: Color,
     onReplyClick: (String) -> Unit
 ) {
@@ -332,7 +334,7 @@ private fun ReplyQuote(
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = if (reply.senderId == currentUserId) "Tú"
-                    else members[reply.senderId]?.displayName ?: "Contacto",
+                    else members.map[reply.senderId]?.displayName ?: "Contacto",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (isMe) Indigo200 else Indigo700
@@ -572,23 +574,20 @@ private fun FileCard(
         AttachmentKind.PDF, AttachmentKind.DOC, AttachmentKind.FILE -> MediaKind.DOCUMENT
         else -> MediaKind.OTHER
     }
-    val mediaStates by mediaManager.states.collectAsState()
-    val state = mediaStates[mediaId]
-        ?: remember(mediaId) {
-            if (mediaManager.fileFor(mediaId, kind) != null) MediaDownloadState.Downloaded
-            else MediaDownloadState.NotDownloaded
-        }
+    val state by remember(mediaId) { mediaManager.stateFor(mediaId) }
+        .collectAsStateWithLifecycle(initialValue = mediaManager.currentState(mediaId))
+    val downloadState = state
     var pendingOpen by remember(mediaId) { mutableStateOf(false) }
 
-    LaunchedEffect(state) {
-        if (pendingOpen && state is MediaDownloadState.Downloaded) {
+    LaunchedEffect(downloadState) {
+        if (pendingOpen && downloadState is MediaDownloadState.Downloaded) {
             pendingOpen = false
             mediaManager.fileFor(mediaId, kind)?.let { onOpenFile(att, it) }
         }
     }
 
     fun onAction() {
-        when (state) {
+        when (downloadState) {
             is MediaDownloadState.Downloaded ->
                 mediaManager.fileFor(mediaId, kind)?.let { onOpenFile(att, it) }
             is MediaDownloadState.NotDownloaded,
@@ -596,16 +595,21 @@ private fun FileCard(
                 pendingOpen = true
                 mediaManager.ensureDownloaded(mediaId, att.url, kind)
             }
+            is MediaDownloadState.Queued -> {
+                pendingOpen = true
+                mediaManager.ensureDownloaded(mediaId, att.url, kind)
+            }
             is MediaDownloadState.Downloading -> Unit
         }
     }
 
-    val actionText = when (state) {
-        is MediaDownloadState.Downloading -> "${(state.progress * 100).toInt()}%"
+    val actionText = when (downloadState) {
+        is MediaDownloadState.Downloading -> "${(downloadState.progress * 100).toInt()}%"
+        is MediaDownloadState.Queued -> "En cola"
         is MediaDownloadState.Error -> "Reintentar"
         else -> actionLabel
     }
-    val actionColor = if (state is MediaDownloadState.Error) {
+    val actionColor = if (downloadState is MediaDownloadState.Error) {
         MaterialTheme.colorScheme.error
     } else if (isMe) Indigo200 else Indigo600
 
@@ -645,13 +649,14 @@ private fun FileCard(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = when (state) {
+                text = when (downloadState) {
                     is MediaDownloadState.Downloading -> "Descargando…"
-                    is MediaDownloadState.Error -> state.message
+                    is MediaDownloadState.Queued -> "En cola"
+                    is MediaDownloadState.Error -> downloadState.message
                     else -> subtitle
                 },
                 fontSize = 11.sp,
-                color = if (state is MediaDownloadState.Error) MaterialTheme.colorScheme.error
+                color = if (downloadState is MediaDownloadState.Error) MaterialTheme.colorScheme.error
                 else if (isMe) Color.White.copy(alpha = 0.8f) else Slate400
             )
         }
@@ -690,12 +695,12 @@ private fun ReactionsRow(
                 modifier = Modifier.clickable { onReact(emoji) }
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(emoji, fontSize = 12.sp)
+                    Text(emoji, fontSize = 14.sp)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(count.toString(), fontSize = 12.sp, color = Slate500)
+                    Text(count.toString(), fontSize = 13.sp, color = Slate500)
                 }
             }
         }
@@ -705,10 +710,10 @@ private fun ReactionsRow(
 private fun buildMessageText(
     text: String,
     isMe: Boolean,
-    members: Map<String, MemberSnapshot>,
+    members: MemberDirectory,
     onLinkClick: (String) -> Unit
 ): AnnotatedString {
-    val mentionRanges = findMentionRanges(text, members)
+    val mentionRanges = findMentionRanges(text, members.map)
     val linkColor = if (isMe) Indigo200 else Indigo600
     return buildAnnotatedString {
         append(text)

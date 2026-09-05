@@ -18,13 +18,22 @@ class TasksViewModel @Inject constructor(
     private val getTasksUseCase: GetTasksUseCase,
     private val addTaskUseCase: AddTaskUseCase,
     private val moveTaskUseCase: MoveTaskUseCase,
+    private val editTaskUseCase: EditTaskUseCase,
     private val deleteTaskUseCase: DeleteTaskUseCase,
     private val restoreTaskUseCase: RestoreTaskUseCase,
     private val clearDoneTasksUseCase: ClearDoneTasksUseCase
 ) : ViewModel() {
 
     private val _currentTab = MutableStateFlow(TaskStatus.TODO)
-    private val _uiState = MutableStateFlow<TasksUiState>(TasksUiState.Loading)
+    private val _uiState = MutableStateFlow<TasksUiState>(
+        TasksUiState.Success(
+            allTasks = emptyList(),
+            displayedTasks = emptyList(),
+            currentTab = TaskStatus.TODO,
+            progress = 0f,
+            isRefreshing = true
+        )
+    )
     val uiState: StateFlow<TasksUiState> = _uiState.asStateFlow()
 
     private var recentlyDeletedTask: Task? = null
@@ -40,7 +49,13 @@ class TasksViewModel @Inject constructor(
             return
         }
 
-        combine(getTasksUseCase(uid), _currentTab) { tasks, tab ->
+        combine(
+            getTasksUseCase(uid, TaskStatus.TODO).onStart { emit(emptyList()) },
+            getTasksUseCase(uid, TaskStatus.DOING).onStart { emit(emptyList()) },
+            getTasksUseCase(uid, TaskStatus.DONE).onStart { emit(emptyList()) },
+            _currentTab
+        ) { todo, doing, done, tab ->
+            val tasks = todo + doing + done
             val displayed = tasks.filter { it.status == tab }
             val progress = if (tasks.isEmpty()) 0f else {
                 tasks.count { it.status == TaskStatus.DONE }.toFloat() / tasks.size
@@ -49,7 +64,8 @@ class TasksViewModel @Inject constructor(
                 allTasks = tasks,
                 displayedTasks = displayed,
                 currentTab = tab,
-                progress = progress
+                progress = progress,
+                isRefreshing = false
             )
         }
         .catch { e -> _uiState.value = TasksUiState.Error(e.message ?: "Error al cargar tareas") }
@@ -68,24 +84,98 @@ class TasksViewModel @Inject constructor(
         }
     }
 
-    fun moveTaskToNextStatus(task: Task) {
-        val uid = getCurrentUserIdUseCase() ?: return
+    fun moveTaskForward(task: Task) {
         val nextStatus = when (task.status) {
             TaskStatus.TODO -> TaskStatus.DOING
             TaskStatus.DOING -> TaskStatus.DONE
             TaskStatus.DONE -> TaskStatus.TODO
         }
+        moveTaskToStatus(task, nextStatus)
+    }
+
+    fun moveTaskBackward(task: Task) {
+        val prevStatus = when (task.status) {
+            TaskStatus.TODO -> return // No-op
+            TaskStatus.DOING -> TaskStatus.TODO
+            TaskStatus.DONE -> TaskStatus.DOING
+        }
+        moveTaskToStatus(task, prevStatus)
+    }
+
+    fun moveTaskToNextStatus(task: Task) {
+        moveTaskForward(task)
+    }
+
+    fun moveTaskToStatus(task: Task, targetStatus: TaskStatus) {
+        val uid = getCurrentUserIdUseCase() ?: return
+        
+        // Optimistic UI update
+        val currentState = _uiState.value
+        if (currentState is TasksUiState.Success) {
+            val updatedAll = currentState.allTasks.map {
+                if (it.id == task.id) it.copy(status = targetStatus, updatedAt = System.currentTimeMillis()) else it
+            }
+            val displayed = updatedAll.filter { it.status == currentState.currentTab }
+            val progress = if (updatedAll.isEmpty()) 0f else {
+                updatedAll.count { it.status == TaskStatus.DONE }.toFloat() / updatedAll.size
+            }
+            _uiState.value = currentState.copy(
+                allTasks = updatedAll,
+                displayedTasks = displayed,
+                progress = progress
+            )
+        }
+
         viewModelScope.launch {
-            moveTaskUseCase(uid, task.id, nextStatus)
+            moveTaskUseCase(uid, task.id, targetStatus)
         }
     }
 
-    fun deleteTask(task: Task, onShowUndo: () -> Unit) {
+    fun editTask(task: Task, newTitle: String) {
+        val trimmed = newTitle.trim()
+        if (trimmed.isBlank() || trimmed == task.title) return
+        val uid = getCurrentUserIdUseCase() ?: return
+
+        // Optimistic UI update
+        val currentState = _uiState.value
+        if (currentState is TasksUiState.Success) {
+            val updatedAll = currentState.allTasks.map {
+                if (it.id == task.id) it.copy(title = trimmed, updatedAt = System.currentTimeMillis()) else it
+            }
+            val displayed = updatedAll.filter { it.status == currentState.currentTab }
+            _uiState.value = currentState.copy(
+                allTasks = updatedAll,
+                displayedTasks = displayed
+            )
+        }
+
+        viewModelScope.launch {
+            editTaskUseCase(uid, task.id, trimmed)
+        }
+    }
+
+    fun deleteTask(task: Task, onShowUndo: (() -> Unit)? = null) {
         val uid = getCurrentUserIdUseCase() ?: return
         recentlyDeletedTask = task
+
+        // Optimistic UI update
+        val currentState = _uiState.value
+        if (currentState is TasksUiState.Success) {
+            val updatedAll = currentState.allTasks.filter { it.id != task.id }
+            val displayed = updatedAll.filter { it.status == currentState.currentTab }
+            val progress = if (updatedAll.isEmpty()) 0f else {
+                updatedAll.count { it.status == TaskStatus.DONE }.toFloat() / updatedAll.size
+            }
+            _uiState.value = currentState.copy(
+                allTasks = updatedAll,
+                displayedTasks = displayed,
+                progress = progress
+            )
+        }
+
         viewModelScope.launch {
             deleteTaskUseCase(uid, task.id).onSuccess {
-                onShowUndo()
+                onShowUndo?.invoke()
             }
         }
     }

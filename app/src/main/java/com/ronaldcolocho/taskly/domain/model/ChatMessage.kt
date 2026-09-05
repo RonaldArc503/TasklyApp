@@ -1,5 +1,7 @@
 package com.ronaldcolocho.taskly.domain.model
 
+import androidx.compose.runtime.Immutable
+
 enum class MessageStatus {
     SENDING, SENT, DELIVERED, READ, FAILED
 }
@@ -8,6 +10,7 @@ enum class AttachmentKind {
     IMAGE, VIDEO, PDF, DOC, FILE, AUDIO
 }
 
+@Immutable
 data class ChatAttachment(
     val kind: AttachmentKind,
     val resourceType: String,
@@ -22,17 +25,20 @@ data class ChatAttachment(
     val pages: Int? = null
 )
 
+@Immutable
 data class ForwardedFrom(
     val uid: String,
     val name: String
 )
 
+@Immutable
 data class ReplyInfo(
     val id: String,
     val text: String,
     val senderId: String
 )
 
+@Immutable
 data class PinnedMessage(
     val id: String,
     val text: String,
@@ -40,6 +46,7 @@ data class PinnedMessage(
     val pinnedAt: Long
 )
 
+@Immutable
 data class ChatMessage(
     val id: String,
     val senderId: String,
@@ -55,12 +62,17 @@ data class ChatMessage(
     val forwardedFrom: ForwardedFrom? = null
 )
 
+@Immutable
 data class MemberSnapshot(
     val displayName: String,
     val photoURL: String,
     val phone: String
 )
 
+@Immutable
+data class MemberDirectory(val map: Map<String, MemberSnapshot>)
+
+@Immutable
 data class ChatConversation(
     val id: String,
     val participantIds: List<String>,

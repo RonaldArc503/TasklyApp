@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.domain.util.formatDuration
 import com.ronaldcolocho.taskly.di.MediaEntryPoint
@@ -64,7 +64,7 @@ fun rememberMediaDownloadManager(): MediaDownloadManager {
 
 @Composable
 fun AudioPlayerBar(controller: AudioPlayerController) {
-    val state by controller.state.collectAsState()
+    val state by controller.state.collectAsStateWithLifecycle()
     val track = state.currentTrack ?: return
     val pct = if (state.durationMs > 0) (state.currentTimeMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f
 

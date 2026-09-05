@@ -7,9 +7,12 @@ import kotlinx.coroutines.flow.Flow
 
 interface IChatRepository {
     fun getConversations(userId: String): Flow<List<ChatConversation>>
+    fun getRecentConversations(userId: String, limit: Long): Flow<List<ChatConversation>>
+    suspend fun getOlderConversations(userId: String, beforeTimestamp: Long, limit: Long): List<ChatConversation>
     fun getConversation(convId: String, currentUserId: String): Flow<ChatConversation?>
 
     fun getRecentMessages(convId: String, currentUserId: String): Flow<List<ChatMessage>>
+    suspend fun getChatInfoMessages(convId: String, currentUserId: String, limit: Long): List<ChatMessage>
     suspend fun getOlderMessages(convId: String, currentUserId: String, beforeTimestamp: Long, limit: Long): List<ChatMessage>
 
     suspend fun sendMessage(convId: String, currentUserId: String, message: ChatMessage): Result<Unit>

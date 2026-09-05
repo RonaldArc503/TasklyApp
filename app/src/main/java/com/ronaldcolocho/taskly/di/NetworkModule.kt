@@ -21,4 +21,20 @@ object NetworkModule {
             .writeTimeout(120, TimeUnit.SECONDS)
             .build()
     }
+
+    @Provides
+    @Singleton
+    fun provideRetrofit(okHttpClient: OkHttpClient): retrofit2.Retrofit {
+        return retrofit2.Retrofit.Builder()
+            .baseUrl("https://www.googleapis.com/")
+            .client(okHttpClient)
+            .addConverterFactory(retrofit2.converter.gson.GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideYouTubeApi(retrofit: retrofit2.Retrofit): com.ronaldcolocho.taskly.data.remote.youtube.YouTubeApi {
+        return retrofit.create(com.ronaldcolocho.taskly.data.remote.youtube.YouTubeApi::class.java)
+    }
 }

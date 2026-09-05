@@ -3,7 +3,8 @@ package com.ronaldcolocho.taskly.ui.screen.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ronaldcolocho.taskly.domain.model.TaskStatus
-import com.ronaldcolocho.taskly.domain.usecase.chat.GetConversationsUseCase
+import com.ronaldcolocho.taskly.domain.model.UserProfile
+import com.ronaldcolocho.taskly.domain.usecase.chat.GetRecentConversationsUseCase
 import com.ronaldcolocho.taskly.domain.usecase.profile.GetCurrentUserIdUseCase
 import com.ronaldcolocho.taskly.domain.usecase.profile.GetProfileUseCase
 import com.ronaldcolocho.taskly.domain.usecase.task.GetTasksUseCase
@@ -18,10 +19,17 @@ class HomeViewModel @Inject constructor(
     private val getCurrentUserIdUseCase: GetCurrentUserIdUseCase,
     private val getProfileUseCase: GetProfileUseCase,
     private val getTasksUseCase: GetTasksUseCase,
-    private val getConversationsUseCase: GetConversationsUseCase
+    private val getRecentConversationsUseCase: GetRecentConversationsUseCase
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
+    private val _uiState = MutableStateFlow<HomeUiState>(
+        HomeUiState.Success(
+            user = null,
+            pendingTasks = emptyList(),
+            recentActivity = emptyList(),
+            isRefreshing = true
+        )
+    )
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
@@ -35,13 +43,21 @@ class HomeViewModel @Inject constructor(
             return
         }
 
-        combine(
-            getProfileUseCase(uid),
-            getTasksUseCase(uid),
-            getConversationsUseCase(uid)
-        ) { profile, tasks, conversations ->
-            if (profile == null) return@combine HomeUiState.Loading
+        val profileFlow = getProfileUseCase(uid)
+            .onStart { emit(null as UserProfile?) }
+            .catch { emit(null) }
+        val tasksFlow = getTasksUseCase(uid)
+            .onStart { emit(emptyList()) }
+            .catch { emit(emptyList()) }
+        val conversationsFlow = getRecentConversationsUseCase(uid, RECENT_ACTIVITY_LIMIT)
+            .onStart { emit(emptyList()) }
+            .catch { emit(emptyList()) }
 
+        combine(
+            profileFlow,
+            tasksFlow,
+            conversationsFlow
+        ) { profile, tasks, conversations ->
             val pendingTasks = tasks.filter { it.status == TaskStatus.TODO || it.status == TaskStatus.DOING }
             
             val recentTasks = tasks.map { RecentItem.TaskItem(it) }
@@ -53,11 +69,16 @@ class HomeViewModel @Inject constructor(
             HomeUiState.Success(
                 user = profile,
                 pendingTasks = pendingTasks,
-                recentActivity = recentActivity
+                recentActivity = recentActivity,
+                isRefreshing = false
             )
         }
         .catch { e -> _uiState.value = HomeUiState.Error(e.message ?: "Error desconocido") }
         .onEach { state -> _uiState.value = state }
         .launchIn(viewModelScope)
+    }
+
+    private companion object {
+        const val RECENT_ACTIVITY_LIMIT = 5L
     }
 }

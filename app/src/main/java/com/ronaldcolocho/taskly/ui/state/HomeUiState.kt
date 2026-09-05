@@ -7,9 +7,10 @@ import com.ronaldcolocho.taskly.domain.model.UserProfile
 sealed interface HomeUiState {
     object Loading : HomeUiState
     data class Success(
-        val user: UserProfile,
+        val user: UserProfile?,
         val pendingTasks: List<Task>,
-        val recentActivity: List<RecentItem>
+        val recentActivity: List<RecentItem>,
+        val isRefreshing: Boolean = false
     ) : HomeUiState
     data class Error(val message: String) : HomeUiState
 }

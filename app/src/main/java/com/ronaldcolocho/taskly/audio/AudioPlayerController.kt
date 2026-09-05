@@ -1,11 +1,16 @@
 package com.ronaldcolocho.taskly.audio
 
+import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import androidx.compose.runtime.Stable
+import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,9 +18,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -30,30 +40,88 @@ class AudioPlayerController @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickerJob: Job? = null
 
-    /** Resuelve el archivo local de una pista (si ya está descargado). */
     private var trackResolver: ((AudioTrack) -> File?)? = null
-
-    /** Asegura (descarga si hace falta) y devuelve el archivo local de una pista. */
     private var ensureTrack: (suspend (AudioTrack) -> File?)? = null
 
-    private val _state = MutableStateFlow(AudioPlayerState())
+    private val prefs = context.getSharedPreferences("audio_prefs", Context.MODE_PRIVATE)
+    
+    private val _state = MutableStateFlow(
+        AudioPlayerState(
+            mode = AudioMode.valueOf(prefs.getString("audio_mode", AudioMode.INDIVIDUAL.name) ?: AudioMode.INDIVIDUAL.name)
+        )
+    )
     val state: StateFlow<AudioPlayerState> = _state.asStateFlow()
 
-    // ExoPlayer se construye de forma perezosa (solo al primer play) para no
-    // penalizar el arranque/login.
-    private var player: ExoPlayer? = null
+    /** Modo de reproducción: cambia con poca frecuencia (solo al cambiar de modo). */
+    val modeState: StateFlow<AudioMode> = _state.map { it.mode }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, _state.value.mode)
 
-    private fun ensurePlayer(): ExoPlayer {
-        player?.let { return it }
-        val p = ExoPlayer.Builder(context).build()
+    /** Flujos acotados por track: solo emiten cuando `trackId` es el track activo. */
+    fun isCurrentFlow(trackId: String): Flow<Boolean> =
+        _state.map { it.currentTrack?.id == trackId }.distinctUntilChanged()
+
+    fun playingFor(trackId: String): Flow<Boolean> =
+        _state.map { it.playing && it.currentTrack?.id == trackId }.distinctUntilChanged()
+
+    fun timeFor(trackId: String): Flow<Long> =
+        _state.map { if (it.currentTrack?.id == trackId) it.currentTimeMs else 0L }.distinctUntilChanged()
+
+    fun durationFor(trackId: String): Flow<Long> =
+        _state.map { if (it.currentTrack?.id == trackId) it.durationMs else 0L }.distinctUntilChanged()
+
+    private var player: Player? = null
+    private val pendingActions = mutableListOf<(Player) -> Unit>()
+
+    init {
+        val sessionToken = SessionToken(context, ComponentName(context, AudioPlaybackService::class.java))
+        val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+        controllerFuture.addListener({
+            try {
+                val p = controllerFuture.get()
+                player = p
+                setupPlayerListener(p)
+                syncStateWithPlayer(p)
+                
+                pendingActions.forEach { it(p) }
+                pendingActions.clear()
+            } catch (e: Exception) {
+                android.util.Log.e("AudioPlayer", "Failed to connect to MediaSession", e)
+            }
+        }, ContextCompat.getMainExecutor(context))
+    }
+    
+    private fun withPlayer(action: (Player) -> Unit) {
+        val p = player
+        if (p != null) {
+            action(p)
+        } else {
+            pendingActions.add(action)
+        }
+    }
+
+    private fun setupPlayerListener(p: Player) {
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _state.update { it.copy(playing = isPlaying) }
+                if (isPlaying) startTicker() else stopTicker()
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 _state.update { it.copy(playing = false) }
-                android.util.Log.e("AudioPlayer", "Error de reproducción", error)
+                android.util.Log.e("AudioPlayer", "Playback error", error)
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val trackId = mediaItem?.mediaId
+                val newTrack = _state.value.tracks.find { it.id == trackId }
+                if (newTrack != null) {
+                    _state.update { it.copy(currentTrack = newTrack) }
+                }
+                
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && _state.value.mode == AudioMode.INDIVIDUAL) {
+                    p.pause()
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -62,12 +130,43 @@ class AudioPlayerController @Inject constructor(
                         val dur = p.duration.takeIf { it > 0 } ?: 0
                         _state.update { it.copy(durationMs = dur) }
                     }
-                    Player.STATE_ENDED -> onEnded()
+                    Player.STATE_ENDED -> {
+                        _state.update { it.copy(playing = false) }
+                        stopTicker()
+                    }
                 }
             }
         })
-        player = p
-        return p
+    }
+
+    private fun syncStateWithPlayer(p: Player) {
+        val currentId = p.currentMediaItem?.mediaId
+        val track = _state.value.tracks.find { it.id == currentId }
+        val isPlaying = p.isPlaying
+        _state.update {
+            it.copy(
+                currentTrack = track,
+                playing = isPlaying,
+                currentTimeMs = p.currentPosition.takeIf { pos -> pos >= 0 } ?: 0,
+                durationMs = p.duration.takeIf { dur -> dur > 0 } ?: 0
+            )
+        }
+        if (isPlaying) startTicker()
+    }
+
+    private fun AudioTrack.toMediaItem(): MediaItem {
+        val file = trackResolver?.invoke(this)
+        val uri = if (file != null && file.exists()) Uri.fromFile(file) else Uri.parse(this.url)
+        return MediaItem.Builder()
+            .setMediaId(this.id)
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(this.name)
+                    .setArtist("Taskly")
+                    .build()
+            )
+            .build()
     }
 
     fun setTrackResolver(resolver: (AudioTrack) -> File?) {
@@ -78,110 +177,105 @@ class AudioPlayerController @Inject constructor(
         ensureTrack = resolver
     }
 
-    private fun onEnded() {
-        val s = _state.value
-        val track = s.currentTrack ?: return stop()
-        when (s.mode) {
-            AudioMode.INDIVIDUAL -> stop()
-
-            AudioMode.REPEAT -> {
-                val p = ensurePlayer()
-                p.seekTo(0)
-                p.play()
-            }
-
-            AudioMode.LOOP -> {
-                val idx = s.tracks.indexOfFirst { it.id == track.id }
-                if (idx >= 0 && s.tracks.isNotEmpty()) {
-                    advanceTo(s.tracks[(idx + 1) % s.tracks.size])
-                } else {
-                    stop()
-                }
-            }
-
-            AudioMode.QUEUE -> {
-                val idx = s.tracks.indexOfFirst { it.id == track.id }
-                if (idx >= 0 && idx < s.tracks.size - 1) {
-                    advanceTo(s.tracks[idx + 1])
-                } else {
-                    stop()
-                }
-            }
-        }
-    }
-
-    /** Avanza a la siguiente pista descargándola si es necesario (single-flight). */
-    private fun advanceTo(track: AudioTrack) {
-        val resolver = ensureTrack ?: run {
-            playTrack(track)
-            return
-        }
-        scope.launch {
-            val file = resolver(track)
-            if (file != null) playLocalFile(track, file) else stop()
-        }
-    }
-
     fun updatePlaylist(tracks: List<AudioTrack>) {
         _state.update { it.copy(tracks = tracks) }
     }
 
+    private fun applyPlaylistAndPlay(track: AudioTrack) {
+        withPlayer { p ->
+            val s = _state.value
+
+            val items = s.tracks.map { it.toMediaItem() }
+            p.setMediaItems(items)
+
+            when (s.mode) {
+                AudioMode.INDIVIDUAL -> p.repeatMode = Player.REPEAT_MODE_OFF
+                AudioMode.REPEAT -> p.repeatMode = Player.REPEAT_MODE_ONE
+                AudioMode.QUEUE -> p.repeatMode = Player.REPEAT_MODE_OFF
+                AudioMode.LOOP -> p.repeatMode = Player.REPEAT_MODE_ALL
+            }
+
+            val idx = s.tracks.indexOfFirst { it.id == track.id }
+            if (idx >= 0) {
+                p.seekToDefaultPosition(idx)
+            }
+            
+            _state.update {
+                it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true)
+            }
+            p.prepare()
+            p.play()
+        }
+    }
+
     fun playWithIndividual(track: AudioTrack) {
-        _state.update { it.copy(mode = AudioMode.INDIVIDUAL) }
-        playTrack(track)
+        updateMode(AudioMode.INDIVIDUAL)
+        applyPlaylistAndPlay(track)
     }
 
     fun playWithQueue(track: AudioTrack) {
-        _state.update { it.copy(mode = AudioMode.QUEUE) }
-        playTrack(track)
+        updateMode(AudioMode.QUEUE)
+        applyPlaylistAndPlay(track)
     }
 
     fun playWithRepeat(track: AudioTrack) {
-        _state.update { it.copy(mode = AudioMode.REPEAT) }
-        playTrack(track)
+        updateMode(AudioMode.REPEAT)
+        applyPlaylistAndPlay(track)
     }
 
     fun playWithLoop(track: AudioTrack) {
-        _state.update { it.copy(mode = AudioMode.LOOP) }
-        playTrack(track)
+        updateMode(AudioMode.LOOP)
+        applyPlaylistAndPlay(track)
     }
 
     fun toggleTrack(track: AudioTrack) {
-        if (_state.value.currentTrack?.id == track.id) toggleCurrent() else playTrack(track)
+        if (_state.value.currentTrack?.id == track.id) toggleCurrent() else applyPlaylistAndPlay(track)
     }
 
     fun toggleCurrent() {
-        val p = ensurePlayer()
-        if (p.isPlaying) p.pause() else p.play()
+        withPlayer { p ->
+            if (p.isPlaying) p.pause() else p.play()
+        }
     }
 
     fun updateMode(mode: AudioMode) {
+        prefs.edit().putString("audio_mode", mode.name).apply()
         _state.update { it.copy(mode = mode) }
+        
+        withPlayer { p ->
+            when (mode) {
+                AudioMode.REPEAT -> p.repeatMode = Player.REPEAT_MODE_ONE
+                AudioMode.LOOP -> p.repeatMode = Player.REPEAT_MODE_ALL
+                else -> p.repeatMode = Player.REPEAT_MODE_OFF
+            }
+        }
     }
 
     fun next() {
-        val s = _state.value
-        if (s.tracks.isEmpty()) return
-        val cur = s.currentTrack
-        val idx = if (cur != null) s.tracks.indexOfFirst { it.id == cur.id } else -1
-        playTrack(if (idx >= 0) s.tracks[(idx + 1) % s.tracks.size] else s.tracks[0])
+        withPlayer { p ->
+            if (p.hasNextMediaItem()) {
+                p.seekToNextMediaItem()
+            }
+        }
     }
 
     fun prev() {
-        val s = _state.value
-        if (s.tracks.isEmpty()) return
-        val cur = s.currentTrack
-        val idx = if (cur != null) s.tracks.indexOfFirst { it.id == cur.id } else -1
-        playTrack(if (idx > 0) s.tracks[idx - 1] else s.tracks.last())
+        withPlayer { p ->
+            if (p.hasPreviousMediaItem()) {
+                p.seekToPreviousMediaItem()
+            }
+        }
     }
 
     fun seek(ms: Long) {
-        ensurePlayer().seekTo(ms)
-        _state.update { it.copy(currentTimeMs = ms) }
+        withPlayer { p ->
+            p.seekTo(ms)
+            _state.update { it.copy(currentTimeMs = ms) }
+        }
     }
 
     fun stop() {
-        player?.let { p ->
+        withPlayer { p ->
             p.stop()
             p.clearMediaItems()
         }
@@ -191,44 +285,14 @@ class AudioPlayerController @Inject constructor(
         stopTicker()
     }
 
-    private fun playTrack(track: AudioTrack) {
-        val localFile = trackResolver?.invoke(track)
-        if (localFile != null && localFile.exists()) {
-            playLocalFile(track, localFile)
-        } else {
-            playStream(track)
-        }
-    }
-
-    private fun playLocalFile(track: AudioTrack, file: File) {
-        _state.update {
-            it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true)
-        }
-        val p = ensurePlayer()
-        p.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
-        p.prepare()
-        p.play()
-        startTicker()
-    }
-
-    private fun playStream(track: AudioTrack) {
-        _state.update {
-            it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true)
-        }
-        val p = ensurePlayer()
-        p.setMediaItem(MediaItem.fromUri(track.url))
-        p.prepare()
-        p.play()
-        startTicker()
-    }
-
     private fun startTicker() {
         tickerJob?.cancel()
         tickerJob = scope.launch {
-            val p = ensurePlayer()
             while (isActive) {
-                val pos = p.currentPosition.takeIf { it >= 0 } ?: 0
-                _state.update { it.copy(currentTimeMs = pos) }
+                withPlayer { p ->
+                    val pos = p.currentPosition.takeIf { it >= 0 } ?: 0
+                    _state.update { it.copy(currentTimeMs = pos) }
+                }
                 delay(500)
             }
         }
@@ -240,7 +304,9 @@ class AudioPlayerController @Inject constructor(
     }
 
     fun release() {
-        player?.release()
+        withPlayer { p ->
+            p.release()
+        }
         stopTicker()
         scope.cancel()
     }

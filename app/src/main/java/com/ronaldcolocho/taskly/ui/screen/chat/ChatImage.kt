@@ -9,7 +9,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -18,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatAttachment
 import com.ronaldcolocho.taskly.domain.model.MediaDownloadState
@@ -42,44 +42,44 @@ fun ChatImage(
 ) {
     val mediaId = att.publicId
     val downloadUrl = attachmentMediaUrl(att.url, "w_700,f_auto,q_auto")
-    val mediaStates by mediaManager.states.collectAsState()
-
-    val state = mediaStates[mediaId]
-        ?: remember(mediaId) {
-            if (mediaManager.fileFor(mediaId, MediaKind.IMAGE) != null) MediaDownloadState.Downloaded
-            else MediaDownloadState.NotDownloaded
-        }
+    val state by remember(mediaId) { mediaManager.stateFor(mediaId) }
+        .collectAsStateWithLifecycle(initialValue = mediaManager.currentState(mediaId))
+    val downloadState = state
 
     LaunchedEffect(mediaId) {
-        mediaManager.ensureDownloaded(mediaId, downloadUrl, MediaKind.IMAGE)
+        mediaManager.resolveLocalFile(mediaId, MediaKind.IMAGE)
     }
 
     Box(
         modifier = modifier.clip(shape),
         contentAlignment = Alignment.Center
     ) {
-        when (state) {
+        when (downloadState) {
             is MediaDownloadState.Downloaded -> {
                 val file = mediaManager.fileFor(mediaId, MediaKind.IMAGE)
-                if (file != null) {
-                    AsyncImage(
-                        model = file,
-                        contentDescription = null,
-                        contentScale = contentScale,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    ImagePlaceholder(progress = 1f)
-                }
+                AsyncImage(
+                    model = file ?: downloadUrl,
+                    contentDescription = null,
+                    contentScale = contentScale,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
-            is MediaDownloadState.Downloading -> ImagePlaceholder(progress = state.progress)
-            is MediaDownloadState.NotDownloaded -> ImagePlaceholder(progress = 0f)
+            is MediaDownloadState.Downloading -> ImagePlaceholder(progress = downloadState.progress)
+            is MediaDownloadState.Queued -> ImagePlaceholder(progress = 0f)
+            is MediaDownloadState.NotDownloaded -> {
+                AsyncImage(
+                    model = downloadUrl,
+                    contentDescription = null,
+                    contentScale = contentScale,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             is MediaDownloadState.Error -> {
-                Icon(
-                    imageVector = Icons.Filled.Warning,
-                    contentDescription = "Error al descargar",
-                    tint = Color.White.copy(alpha = 0.85f),
-                    modifier = Modifier.size(28.dp)
+                AsyncImage(
+                    model = downloadUrl,
+                    contentDescription = null,
+                    contentScale = contentScale,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }

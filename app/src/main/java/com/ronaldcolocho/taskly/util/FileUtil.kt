@@ -5,6 +5,8 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.ronaldcolocho.taskly.domain.model.AttachmentKind
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
@@ -44,23 +46,30 @@ object FileUtil {
 
     fun isTooBig(size: Long): Boolean = size > MAX_ATTACHMENT_BYTES
 
+    private val audioNameRegex = Regex(".*\\.(mp3|m4a|aac|ogg|opus|wav|flac)$", RegexOption.IGNORE_CASE)
+    private val docNameRegex = Regex(".*\\.docx?$", RegexOption.IGNORE_CASE)
+
     fun classify(mimeType: String?, name: String): AttachmentKind {
         val t = (mimeType ?: "").lowercase()
         return when {
             t.startsWith("image/") -> AttachmentKind.IMAGE
             t.startsWith("video/") -> AttachmentKind.VIDEO
-            t.startsWith("audio/") || name.matches(Regex(".*\\.(mp3|m4a|aac|ogg|opus|wav|flac)$", RegexOption.IGNORE_CASE)) -> AttachmentKind.AUDIO
+            t.startsWith("audio/") || name.matches(audioNameRegex) -> AttachmentKind.AUDIO
             t == "application/pdf" || name.endsWith(".pdf", ignoreCase = true) -> AttachmentKind.PDF
-            t.contains("word") || name.matches(Regex(".*\\.docx?$", RegexOption.IGNORE_CASE)) -> AttachmentKind.DOC
+            t.contains("word") || name.matches(docNameRegex) -> AttachmentKind.DOC
             else -> AttachmentKind.FILE
         }
     }
 
-    fun getFileFromUri(context: Context, uri: Uri): File? {
-        return try {
+    /**
+     * Copia el contenido de [uri] a un archivo temporal. Corre en IO: nunca
+     * debe bloquear el hilo principal.
+     */
+    suspend fun getFileFromUri(context: Context, uri: Uri): File? = withContext(Dispatchers.IO) {
+        try {
             val contentResolver: ContentResolver = context.contentResolver
             val name = getDisplayName(context, uri) ?: "temp_file_${System.currentTimeMillis()}"
-            val inputStream = contentResolver.openInputStream(uri) ?: return null
+            val inputStream = contentResolver.openInputStream(uri) ?: return@withContext null
             val file = File(context.cacheDir, name)
             inputStream.use { ins ->
                 FileOutputStream(file).use { outputStream ->

@@ -48,12 +48,14 @@ fun MessageActionsSheet(
     onCopy: () -> Unit,
     onDownload: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onDeleteForMe: () -> Unit
 ) {
     if (message == null) return
     val isMine = message.senderId == currentUserId
     val myReaction = message.reactions[currentUserId]
     val hasAttachments = message.attachments.isNotEmpty()
+    val isOnlyMedia = hasAttachments && message.text.isBlank()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -130,11 +132,13 @@ fun MessageActionsSheet(
                 onClick = { onPin(); onDismiss() }
             )
 
-            ActionRow(
-                icon = { Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                text = if (message.attachments.any { it.kind.name == "IMAGE" } && message.text.isBlank()) "Copiar imagen" else "Copiar mensaje",
-                onClick = { onCopy(); onDismiss() }
-            )
+            if (!isOnlyMedia) {
+                ActionRow(
+                    icon = { Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    text = "Copiar texto",
+                    onClick = { onCopy(); onDismiss() }
+                )
+            }
 
             if (hasAttachments) {
                 ActionRow(
@@ -144,7 +148,7 @@ fun MessageActionsSheet(
                 )
             }
 
-            if (isMine && message.text.isNotBlank()) {
+            if (isMine && !isOnlyMedia) {
                 ActionRow(
                     icon = { Icon(Icons.Filled.Edit, contentDescription = null, tint = Sky) },
                     text = "Editar mensaje",
@@ -152,14 +156,21 @@ fun MessageActionsSheet(
                 )
             }
 
-            if (isMine) {
-                ActionRow(
-                    icon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                    text = "Eliminar mensaje",
-                    textColor = MaterialTheme.colorScheme.error,
-                    onClick = { onDelete(); onDismiss() }
-                )
-            }
+            ActionRow(
+                icon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                text = "Eliminar para mí",
+                subtitle = "Solo se borrará en tu dispositivo",
+                textColor = MaterialTheme.colorScheme.error,
+                onClick = { onDeleteForMe(); onDismiss() }
+            )
+
+            ActionRow(
+                icon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                text = "Eliminar para todos",
+                subtitle = "Se borrará para todos los miembros del chat",
+                textColor = MaterialTheme.colorScheme.error,
+                onClick = { onDelete(); onDismiss() }
+            )
 
             TextButton(
                 onClick = onDismiss,
@@ -177,6 +188,7 @@ fun MessageActionsSheet(
 fun ActionRow(
     icon: @Composable () -> Unit,
     text: String,
+    subtitle: String? = null,
     textColor: Color = MaterialTheme.colorScheme.onSurface,
     onClick: () -> Unit
 ) {
@@ -184,7 +196,7 @@ fun ActionRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = if (subtitle != null) 10.dp else 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -197,6 +209,15 @@ fun ActionRow(
             icon()
         }
         Spacer(modifier = Modifier.width(16.dp))
-        Text(text = text, style = MaterialTheme.typography.bodyLarge, color = textColor)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = text, style = MaterialTheme.typography.bodyLarge, color = textColor)
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }

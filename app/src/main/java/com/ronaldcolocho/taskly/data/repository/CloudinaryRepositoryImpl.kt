@@ -105,6 +105,10 @@ private class ProgressRequestBody(
     private val onProgress: (Int) -> Unit
 ) : RequestBody() {
 
+    private companion object {
+        const val MIN_PROGRESS_UPDATE_INTERVAL_MS = 100L
+    }
+
     override fun contentType(): MediaType? = body.contentType()
 
     override fun contentLength(): Long = body.contentLength()
@@ -112,12 +116,22 @@ private class ProgressRequestBody(
     override fun writeTo(sink: BufferedSink) {
         val total = body.contentLength()
         var written = 0L
+        var lastProgress = -1
+        var lastProgressAt = 0L
         val countingSink = object : Sink {
             override fun write(source: Buffer, byteCount: Long) {
                 sink.write(source, byteCount)
                 written += byteCount
                 if (total > 0) {
-                    onProgress(((written * 100) / total).toInt().coerceIn(0, 100))
+                    val progress = ((written * 100) / total).toInt().coerceIn(0, 100)
+                    val now = System.currentTimeMillis()
+                    if (progress == 100 ||
+                        (progress != lastProgress && now - lastProgressAt >= MIN_PROGRESS_UPDATE_INTERVAL_MS)
+                    ) {
+                        lastProgress = progress
+                        lastProgressAt = now
+                        onProgress(progress)
+                    }
                 }
             }
 

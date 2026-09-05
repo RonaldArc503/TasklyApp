@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ronaldcolocho.taskly.audio.AudioMode
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.audio.AudioTrack
@@ -57,29 +57,27 @@ fun AudioCard(
     mediaManager: MediaDownloadManager
 ) {
     val mediaId = att.publicId
-    val state by controller.state.collectAsState()
-    val mediaStates by mediaManager.states.collectAsState()
+    // Estado de descarga limitado a este mediaId: otras descargas no re-componen esta tarjeta.
+    val downloadState by remember(mediaId) { mediaManager.stateFor(mediaId) }
+        .collectAsStateWithLifecycle(initialValue = mediaManager.currentState(mediaId))
+
+    LaunchedEffect(mediaId) {
+        mediaManager.resolveLocalFile(mediaId, MediaKind.AUDIO)
+    }
 
     val track = remember(mediaId) {
         AudioTrack(id = mediaId, url = att.url, name = att.name, msgId = mediaId)
     }
-    val downloadState = mediaStates[mediaId]
-        ?: remember(mediaId) {
-            if (mediaManager.fileFor(mediaId, MediaKind.AUDIO) != null) MediaDownloadState.Downloaded
-            else MediaDownloadState.NotDownloaded
-        }
+
+    // Estado de reproducción acotado: el ticker de posición solo recompone la tarjeta activa.
+    val isCurrent by remember(track.id) { controller.isCurrentFlow(track.id) }.collectAsStateWithLifecycle(initialValue = false)
+    val isPlaying by remember(track.id) { controller.playingFor(track.id) }.collectAsStateWithLifecycle(initialValue = false)
+    val nowMs by remember(track.id) { controller.timeFor(track.id) }.collectAsStateWithLifecycle(initialValue = 0L)
+    val playerDurMs by remember(track.id) { controller.durationFor(track.id) }.collectAsStateWithLifecycle(initialValue = 0L)
 
     var pendingPlay by remember(mediaId) { mutableStateOf(false) }
 
-    // Descarga automática al aparecer visible por primera vez (dedup + single-flight)
-    LaunchedEffect(mediaId) {
-        mediaManager.ensureDownloaded(mediaId, att.url, MediaKind.AUDIO)
-    }
-
-    val isCurrent = state.currentTrack?.id == track.id
-    val isPlaying = isCurrent && state.playing
-    val nowMs = if (isCurrent) state.currentTimeMs else 0L
-    val durMs = if (isCurrent && state.durationMs > 0) state.durationMs
+    val durMs = if (playerDurMs > 0) playerDurMs
         else (att.duration?.toLong() ?: 0L) * 1000L
     val pct = if (durMs > 0) (nowMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
 
@@ -95,6 +93,10 @@ fun AudioCard(
             is MediaDownloadState.Downloaded -> controller.toggleTrack(track)
             is MediaDownloadState.NotDownloaded,
             is MediaDownloadState.Error -> {
+                pendingPlay = true
+                mediaManager.ensureDownloaded(mediaId, att.url, MediaKind.AUDIO)
+            }
+            is MediaDownloadState.Queued -> {
                 pendingPlay = true
                 mediaManager.ensureDownloaded(mediaId, att.url, MediaKind.AUDIO)
             }
@@ -196,6 +198,13 @@ private fun AudioPlayButton(
                     modifier = Modifier.size(18.dp)
                 )
             }
+            is MediaDownloadState.Queued -> {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = btnTint,
+                    strokeWidth = 2.dp
+                )
+            }
             is MediaDownloadState.Downloading -> {
                 CircularProgressIndicator(
                     progress = { downloadState.progress },
@@ -229,6 +238,7 @@ private fun AudioStatusLabel(
     val text = when (downloadState) {
         is MediaDownloadState.Downloading -> "Descargando ${(downloadState.progress * 100).toInt()}%"
         is MediaDownloadState.Error -> downloadState.message
+        is MediaDownloadState.Queued -> "En cola"
         is MediaDownloadState.NotDownloaded -> "Preparando descarga"
         is MediaDownloadState.Downloaded ->
             if (isCurrent) "${formatDuration(nowMs)} / ${formatDuration(durMs)}"
@@ -251,7 +261,7 @@ private fun AudioModeMenu(
     isCurrent: Boolean,
     enabled: Boolean
 ) {
-    val state by controller.state.collectAsState()
+    val mode by controller.modeState.collectAsStateWithLifecycle()
     var expanded by remember { mutableStateOf(false) }
 
     Box {
@@ -280,7 +290,7 @@ private fun AudioModeMenu(
                 label = "Individual",
                 hint = "Se detiene al terminar",
                 isMe = isMe,
-                active = state.mode == AudioMode.INDIVIDUAL,
+                active = mode == AudioMode.INDIVIDUAL,
                 onClick = {
                     if (isCurrent) controller.updateMode(AudioMode.INDIVIDUAL)
                     else controller.playWithIndividual(track)
@@ -292,7 +302,7 @@ private fun AudioModeMenu(
                 label = "Seguir con el siguiente",
                 hint = "En orden hasta el último",
                 isMe = isMe,
-                active = state.mode == AudioMode.QUEUE,
+                active = mode == AudioMode.QUEUE,
                 onClick = {
                     if (isCurrent) controller.updateMode(AudioMode.QUEUE)
                     else controller.playWithQueue(track)
@@ -304,7 +314,7 @@ private fun AudioModeMenu(
                 label = "Repetir lista",
                 hint = "Ciclo completo de la lista",
                 isMe = isMe,
-                active = state.mode == AudioMode.LOOP,
+                active = mode == AudioMode.LOOP,
                 onClick = {
                     if (isCurrent) controller.updateMode(AudioMode.LOOP)
                     else controller.playWithLoop(track)
@@ -316,7 +326,7 @@ private fun AudioModeMenu(
                 label = "Repetir este audio",
                 hint = "En bucle, sin parar",
                 isMe = isMe,
-                active = state.mode == AudioMode.REPEAT,
+                active = mode == AudioMode.REPEAT,
                 onClick = {
                     if (isCurrent) controller.updateMode(AudioMode.REPEAT)
                     else controller.playWithRepeat(track)

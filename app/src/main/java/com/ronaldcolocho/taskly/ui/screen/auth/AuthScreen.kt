@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
@@ -41,8 +42,8 @@ fun AuthScreen(viewModel: AuthViewModel = hiltViewModel()) {
     var phone by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
-    val isBusy by viewModel.isBusy.collectAsState()
-    val error by viewModel.error.collectAsState()
+    val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val googleSignInClient: GoogleSignInClient = remember(context) {

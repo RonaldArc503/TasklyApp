@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -13,8 +14,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import java.text.SimpleDateFormat
@@ -70,7 +74,7 @@ fun ChatListScreen(
     viewModel: ChatListViewModel = hiltViewModel(),
     onNavigateToChat: (String) -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val currentUserId = viewModel.currentUserId
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -119,9 +123,9 @@ fun ChatListScreen(
                             Box(
                                 modifier = Modifier
                                     .size(56.dp)
+                                    .clip(RoundedCornerShape(16.dp))
                                     .background(
-                                        color = Indigo600.copy(alpha = 0.12f),
-                                        shape = RoundedCornerShape(16.dp)
+                                        Indigo600.copy(alpha = 0.12f)
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -145,7 +149,17 @@ fun ChatListScreen(
                         }
                     }
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    val listState = rememberLazyListState()
+                    val shouldLoadMore by remember(listState, state.conversations.size) {
+                        derivedStateOf {
+                            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                            lastVisible >= state.conversations.lastIndex - 4
+                        }
+                    }
+                    LaunchedEffect(shouldLoadMore, state.hasMore, state.isLoadingMore) {
+                        if (shouldLoadMore && state.hasMore && !state.isLoadingMore) viewModel.loadMore()
+                    }
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                         items(state.conversations, key = { it.id }) { conv ->
                             ConversationItem(
                                 conv = conv,
@@ -154,7 +168,15 @@ fun ChatListScreen(
                                 onClick = { onNavigateToChat(conv.id) }
                             )
                         }
+                        if (state.isLoadingMore) {
+                            item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+                        }
                     }
+                }
+            }
+            else -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(text = "No hay conversaciones", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -195,6 +217,10 @@ private fun ConversationItem(
     }
 
     val rowBg = if (isSelected) Indigo600.copy(alpha = 0.08f) else Color.Transparent
+    val timeLabel = remember(conv.lastMessageAt) {
+        conv.lastMessageAt.takeIf { it > 0 }?.let(::formatTime)
+    }
+    val initials = remember(displayName) { initialsFromName(displayName) }
 
     Row(
         modifier = Modifier
@@ -228,7 +254,7 @@ private fun ConversationItem(
                 ) {
                     Text(
                         text = if (isGroup) (conv.name ?: "G").take(1).uppercase()
-                        else initialsFromName(displayName),
+                        else initials,
                         color = Color.White,
                         fontSize = 15.5.sp,
                         fontWeight = FontWeight.SemiBold
@@ -266,9 +292,9 @@ private fun ConversationItem(
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                if (conv.lastMessageAt > 0) {
+                if (timeLabel != null) {
                     Text(
-                        text = formatTime(conv.lastMessageAt),
+                        text = timeLabel,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -2,8 +2,10 @@ package com.ronaldcolocho.taskly.data.repository
 
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import com.ronaldcolocho.taskly.data.mapper.toDomain
 import com.ronaldcolocho.taskly.data.mapper.toDto
 import com.ronaldcolocho.taskly.data.model.ChatConversationDto
@@ -15,7 +17,9 @@ import com.ronaldcolocho.taskly.domain.repository.IChatRepository
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 class ChatRepositoryImpl @Inject constructor(
@@ -23,69 +27,264 @@ class ChatRepositoryImpl @Inject constructor(
 ) : IChatRepository {
 
     override fun getConversations(userId: String): Flow<List<ChatConversation>> = callbackFlow {
+        var emitted = false
+
+        // Lectura cache-first: entrega al instante lo que haya en disco (si existe),
+        // sin depender de que el listener remoto responda. El timeout garantiza que
+        // el flujo siempre emite aunque la caché tarde/bloquee (ej. arranque en frío offline).
+        launch(kotlinx.coroutines.Dispatchers.Default) {
+            val cached = withTimeoutOrNull(3000) {
+                runCatching {
+                    firestore.collection("conversations")
+                        .whereArrayContains("participantIds", userId)
+                        .get(Source.CACHE)
+                        .await()
+                }.getOrNull()
+            }
+
+            val convs = cached?.documents?.mapNotNull { doc ->
+                doc.toObject(ChatConversationDto::class.java)?.copy(id = doc.id)?.toDomain(userId)
+            }.orEmpty().sortedWith(
+                compareByDescending<ChatConversation> { it.participantIds.size == 1 }
+                    .thenByDescending { it.lastMessageAt }
+            )
+            emitted = true
+            trySend(convs)
+        }
+
         val listener = firestore.collection("conversations")
             .whereArrayContains("participantIds", userId)
             .addSnapshotListener { snapshot, error ->
-                if (error != null) { close(error); return@addSnapshotListener }
+                if (error != null) {
+                    // Si ya hay datos mostrados, un error de red no debe reemplazarlos.
+                    if (!emitted) close(error)
+                    return@addSnapshotListener
+                }
                 if (snapshot != null) {
-                    val convs = snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(ChatConversationDto::class.java)?.copy(id = doc.id)?.toDomain(userId)
-                    }.sortedWith(
-                        compareByDescending<ChatConversation> { it.participantIds.size == 1 }
-                            .thenByDescending { it.lastMessageAt }
-                    )
-                    trySend(convs)
+                    launch(kotlinx.coroutines.Dispatchers.Default) {
+                        val convs = snapshot.documents.mapNotNull { doc ->
+                            doc.toObject(ChatConversationDto::class.java)?.copy(id = doc.id)?.toDomain(userId)
+                        }.sortedWith(
+                            compareByDescending<ChatConversation> { it.participantIds.size == 1 }
+                                .thenByDescending { it.lastMessageAt }
+                        )
+                        emitted = true
+                        trySend(convs)
+                    }
                 }
             }
         awaitClose { listener.remove() }
     }
 
+    override fun getRecentConversations(userId: String, limit: Long): Flow<List<ChatConversation>> = callbackFlow {
+        var emitted = false
+        val orderedQuery = firestore.collection("conversations")
+            .whereArrayContains("participantIds", userId)
+            .orderBy("lastMessageAt", Query.Direction.DESCENDING)
+            .limit(limit)
+
+        fun mapConversations(documents: List<com.google.firebase.firestore.DocumentSnapshot>) =
+            documents.mapNotNull { doc ->
+                doc.toObject(ChatConversationDto::class.java)?.copy(id = doc.id)?.toDomain(userId)
+            }.sortedWith(
+                compareByDescending<ChatConversation> { it.participantIds.size == 1 }
+                    .thenByDescending { it.lastMessageAt }
+            )
+
+        launch(kotlinx.coroutines.Dispatchers.Default) {
+            val cached = withTimeoutOrNull(3000) {
+                runCatching { orderedQuery.get(Source.CACHE).await() }.getOrNull()
+            }
+            if (cached != null) {
+                emitted = true
+                trySend(mapConversations(cached.documents))
+            }
+        }
+
+        var listener: com.google.firebase.firestore.ListenerRegistration? = null
+        fun listenTo(query: Query, trimToLimit: Boolean) {
+            listener = query.addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    if (error.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION && !trimToLimit) {
+                        listener?.remove()
+                        listenTo(
+                            firestore.collection("conversations").whereArrayContains("participantIds", userId),
+                            trimToLimit = true
+                        )
+                    } else if (!emitted) {
+                        close(error)
+                    }
+                    return@addSnapshotListener
+                }
+                snapshot ?: return@addSnapshotListener
+                launch(kotlinx.coroutines.Dispatchers.Default) {
+                    val conversations = mapConversations(snapshot.documents)
+                    emitted = true
+                    trySend(if (trimToLimit) conversations.take(limit.toInt()) else conversations)
+                }
+            }
+        }
+        listenTo(orderedQuery, trimToLimit = false)
+        awaitClose { listener?.remove() }
+    }
+
+    override suspend fun getOlderConversations(
+        userId: String,
+        beforeTimestamp: Long,
+        limit: Long
+    ): List<ChatConversation> {
+        if (beforeTimestamp <= 0L) return emptyList()
+        val query = firestore.collection("conversations")
+            .whereArrayContains("participantIds", userId)
+            .orderBy("lastMessageAt", Query.Direction.DESCENDING)
+            .whereLessThan("lastMessageAt", beforeTimestamp)
+            .limit(limit)
+        val snapshot = try {
+            query.get(Source.DEFAULT).await()
+        } catch (error: FirebaseFirestoreException) {
+            if (error.code != FirebaseFirestoreException.Code.FAILED_PRECONDITION) return emptyList()
+            firestore.collection("conversations")
+                .whereArrayContains("participantIds", userId)
+                .get(Source.DEFAULT)
+                .await()
+        }
+        return snapshot.documents.mapNotNull { doc ->
+            doc.toObject(ChatConversationDto::class.java)?.copy(id = doc.id)?.toDomain(userId)
+        }.filter { it.lastMessageAt < beforeTimestamp }
+            .sortedWith(compareByDescending<ChatConversation> { it.participantIds.size == 1 }.thenByDescending { it.lastMessageAt })
+            .take(limit.toInt())
+    }
+
     override fun getConversation(convId: String, currentUserId: String): Flow<ChatConversation?> = callbackFlow {
+        var emitted = false
+
+        launch(kotlinx.coroutines.Dispatchers.Default) {
+            val cached = withTimeoutOrNull(3000) {
+                runCatching {
+                    firestore.collection("conversations").document(convId)
+                        .get(Source.CACHE)
+                        .await()
+                }.getOrNull()
+            }
+            if (cached != null && cached.exists()) {
+                val conv = cached.toObject(ChatConversationDto::class.java)?.copy(id = cached.id)?.toDomain(currentUserId)
+                emitted = true
+                trySend(conv)
+            } else {
+                // Sin datos en caché (chat nunca visitado / sin red): no colgar la pantalla.
+                emitted = true
+                trySend(fallbackConversation(convId, currentUserId))
+            }
+        }
+
         val listener = firestore.collection("conversations").document(convId)
             .addSnapshotListener { snapshot, error ->
-                if (error != null) { close(error); return@addSnapshotListener }
+                if (error != null) {
+                    if (!emitted) close(error)
+                    return@addSnapshotListener
+                }
                 if (snapshot != null && snapshot.exists()) {
-                    val conv = snapshot.toObject(ChatConversationDto::class.java)?.copy(id = snapshot.id)?.toDomain(currentUserId)
-                    trySend(conv)
+                    launch(kotlinx.coroutines.Dispatchers.Default) {
+                        val conv = snapshot.toObject(ChatConversationDto::class.java)?.copy(id = snapshot.id)?.toDomain(currentUserId)
+                        emitted = true
+                        trySend(conv)
+                    }
                 } else {
-                    trySend(null)
+                    emitted = true
+                    trySend(fallbackConversation(convId, currentUserId))
                 }
             }
         awaitClose { listener.remove() }
     }
 
     override fun getRecentMessages(convId: String, currentUserId: String): Flow<List<ChatMessage>> = callbackFlow {
-        val listener = firestore.collection("conversations")
+        var emitted = false
+
+        val query = firestore.collection("conversations")
             .document(convId)
             .collection("messages")
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .limit(30)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) { close(error); return@addSnapshotListener }
-                if (snapshot != null) {
+
+        launch(kotlinx.coroutines.Dispatchers.Default) {
+            val cached = withTimeoutOrNull(3000) {
+                runCatching { query.get(Source.CACHE).await() }.getOrNull()
+            }
+            val messages = cached?.documents?.mapNotNull { doc ->
+                doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
+            }.orEmpty()
+            emitted = true
+            trySend(messages)
+        }
+
+        val listener = query.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                if (!emitted) close(error)
+                return@addSnapshotListener
+            }
+            if (snapshot != null) {
+                launch(kotlinx.coroutines.Dispatchers.Default) {
                     val messages = snapshot.documents.mapNotNull { doc ->
                         doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
                     }
+                    emitted = true
                     trySend(messages)
                 }
             }
+        }
         awaitClose { listener.remove() }
     }
 
+    override suspend fun getChatInfoMessages(convId: String, currentUserId: String, limit: Long): List<ChatMessage> {
+        return try {
+            val snapshot = firestore.collection("conversations")
+                .document(convId)
+                .collection("messages")
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .limit(limit)
+                .get(Source.CACHE)
+                .await()
+            snapshot.documents.mapNotNull { doc ->
+                doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     override suspend fun getOlderMessages(convId: String, currentUserId: String, beforeTimestamp: Long, limit: Long): List<ChatMessage> {
-        val snapshot = firestore.collection("conversations")
+        val query = firestore.collection("conversations")
             .document(convId)
             .collection("messages")
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .whereLessThan("createdAt", beforeTimestamp)
             .limit(limit)
-            .get()
-            .await()
+
+        val snapshot = try {
+            query.get(Source.DEFAULT).await()
+        } catch (e: FirebaseFirestoreException) {
+            // Sin red: usar el historial previamente sincronizado desde la caché local.
+            withTimeoutOrNull(3000) {
+                runCatching { query.get(Source.CACHE).await() }.getOrNull()
+            }
+        } ?: return emptyList()
 
         return snapshot.documents.mapNotNull { doc ->
             doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
         }
     }
+
+    private fun fallbackConversation(convId: String, currentUserId: String): ChatConversation = ChatConversation(
+        id = convId,
+        participantIds = listOf(currentUserId),
+        members = emptyMap(),
+        unreadCount = 0,
+        lastMessage = "",
+        lastMessageAt = 0L,
+        createdAt = 0L,
+        isGroup = false,
+        name = null
+    )
 
     override suspend fun sendMessage(convId: String, currentUserId: String, message: ChatMessage): Result<Unit> = runCatching {
         val convRef = firestore.collection("conversations").document(convId)

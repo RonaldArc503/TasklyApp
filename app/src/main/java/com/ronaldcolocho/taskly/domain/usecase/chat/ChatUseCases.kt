@@ -15,6 +15,20 @@ class GetConversationsUseCase @Inject constructor(
     }
 }
 
+class GetRecentConversationsUseCase @Inject constructor(
+    private val repository: IChatRepository
+) {
+    operator fun invoke(userId: String, limit: Long): Flow<List<ChatConversation>> =
+        repository.getRecentConversations(userId, limit)
+}
+
+class GetOlderConversationsUseCase @Inject constructor(
+    private val repository: IChatRepository
+) {
+    suspend operator fun invoke(userId: String, beforeTimestamp: Long, limit: Long): List<ChatConversation> =
+        repository.getOlderConversations(userId, beforeTimestamp, limit)
+}
+
 class GetConversationUseCase @Inject constructor(
     private val repository: IChatRepository
 ) {

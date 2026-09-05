@@ -18,4 +18,7 @@ val Slate600 = Color(0xFF475569)
 // Dark Theme Colors
 val Slate950 = Color(0xFF020617)
 val Slate800 = Color(0xFF1E293B)
+val Slate700 = Color(0xFF334155)
+val Slate500 = Color(0xFF64748B)
 val Slate400 = Color(0xFF94A3B8)
+val Slate100 = Color(0xFFF1F5F9)

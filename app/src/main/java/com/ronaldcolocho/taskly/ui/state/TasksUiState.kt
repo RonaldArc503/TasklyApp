@@ -9,7 +9,8 @@ sealed interface TasksUiState {
         val allTasks: List<Task>,
         val displayedTasks: List<Task>,
         val currentTab: TaskStatus,
-        val progress: Float
+        val progress: Float,
+        val isRefreshing: Boolean = false
     ) : TasksUiState
     data class Error(val message: String) : TasksUiState
 }

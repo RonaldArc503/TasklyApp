@@ -4,6 +4,10 @@ import com.ronaldcolocho.taskly.domain.model.UserProfile
 
 sealed interface ProfileUiState {
     object Loading : ProfileUiState
-    data class Success(val user: UserProfile) : ProfileUiState
+    data class Success(
+        val user: UserProfile,
+        val isPhotoUploading: Boolean = false,
+        val photoError: String? = null
+    ) : ProfileUiState
     data class Error(val message: String) : ProfileUiState
 }

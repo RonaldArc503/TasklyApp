@@ -65,47 +65,19 @@ fun AttachmentLightbox(
 
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = items[pagerState.currentPage].attachment.name,
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                if (items.size > 1) {
-                    Text(
-                        text = "${pagerState.currentPage + 1} / ${items.size}",
-                        color = Color.White.copy(alpha = 0.6f),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(onClick = onClose, modifier = Modifier.background(Color.White.copy(alpha = 0.1f), CircleShape)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Cerrar", tint = Color.White)
-                }
-            }
-
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
+                modifier = Modifier.fillMaxSize()
             ) { page ->
                 LightboxPage(
                     item = items[page],
@@ -114,15 +86,45 @@ fun AttachmentLightbox(
                 )
             }
 
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (items.size > 1) {
+                    Text(
+                        text = "${pagerState.currentPage + 1} / ${items.size}",
+                        color = Color.White.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.background(Color.White.copy(alpha = 0.15f), CircleShape)
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = "Cerrar", tint = Color.White)
+                }
+            }
+
             if (items[pagerState.currentPage].caption.isNotBlank()) {
                 Text(
                     text = items[pagerState.currentPage].caption,
-                    color = Color.White.copy(alpha = 0.8f),
+                    color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(horizontal = 24.dp, vertical = 16.dp)
                 )
             }
         }

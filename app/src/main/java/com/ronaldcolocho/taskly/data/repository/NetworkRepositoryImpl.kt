@@ -32,6 +32,12 @@ class NetworkRepositoryImpl @Inject constructor(
             override fun onUnavailable() {
                 trySend(false)
             }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                // Reaccionar también cuando una red existente pierde/recupera Internet
+                // (p. ej. datos móviles desactivados o Wi-Fi sin salida a Internet).
+                trySend(networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+            }
         }
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)

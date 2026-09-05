@@ -1,6 +1,7 @@
 package com.ronaldcolocho.taskly.data.repository
 
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.ronaldcolocho.taskly.data.mapper.toDomain
 import com.ronaldcolocho.taskly.data.mapper.toDto
 import com.ronaldcolocho.taskly.data.model.TaskDto
@@ -38,6 +39,28 @@ class TaskRepositoryImpl @Inject constructor(
         awaitClose { listener.remove() }
     }
 
+    override fun getTasksByStatus(userId: String, status: TaskStatus): Flow<List<Task>> = callbackFlow {
+        val statusValue = when (status) {
+            TaskStatus.TODO -> "todo"
+            TaskStatus.DOING -> "doing"
+            TaskStatus.DONE -> "done"
+        }
+        val listener = tasksCollection(userId)
+            .whereEqualTo("status", statusValue)
+            .orderBy("createdAt", Query.Direction.ASCENDING)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                    return@addSnapshotListener
+                }
+                val tasks = snapshot?.documents.orEmpty().mapNotNull { doc ->
+                    doc.toObject(TaskDto::class.java)?.copy(id = doc.id)?.toDomain()
+                }
+                trySend(tasks)
+            }
+        awaitClose { listener.remove() }
+    }
+
     override suspend fun addTask(userId: String, title: String): Result<Unit> = runCatching {
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
@@ -54,6 +77,15 @@ class TaskRepositoryImpl @Inject constructor(
         tasksCollection(userId).document(taskId).update(
             mapOf(
                 "status" to statusString,
+                "updatedAt" to System.currentTimeMillis()
+            )
+        ).await()
+    }
+
+    override suspend fun updateTaskTitle(userId: String, taskId: String, title: String): Result<Unit> = runCatching {
+        tasksCollection(userId).document(taskId).update(
+            mapOf(
+                "title" to title,
                 "updatedAt" to System.currentTimeMillis()
             )
         ).await()

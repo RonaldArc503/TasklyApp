@@ -20,11 +20,15 @@ class PresenceViewModel @Inject constructor(
 ) : ViewModel() {
 
     private var job: Job? = null
+    private var activeUserId: String? = null
 
     fun start() {
         val uid = getCurrentUserIdUseCase() ?: return
-        setOnlineUseCase(uid)
+        if (activeUserId == uid && job?.isActive == true) return
+
         job?.cancel()
+        activeUserId = uid
+        setOnlineUseCase(uid)
         job = viewModelScope.launch {
             while (isActive) {
                 delay(30_000)
@@ -34,8 +38,14 @@ class PresenceViewModel @Inject constructor(
     }
 
     fun stop() {
+        val uid = activeUserId ?: return
         job?.cancel()
-        val uid = getCurrentUserIdUseCase()
-        if (uid != null) setOfflineUseCase(uid)
+        job = null
+        activeUserId = null
+        setOfflineUseCase(uid)
+    }
+
+    override fun onCleared() {
+        stop()
     }
 }

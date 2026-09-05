@@ -8,6 +8,7 @@ import java.io.File
 interface IMediaCacheRepository {
     fun isDownloaded(mediaId: String): Boolean
     fun fileFor(mediaId: String, kind: MediaKind): File?
+    suspend fun cacheLocalFile(mediaId: String, sourceFile: File, kind: MediaKind): File?
 
     /**
      * Descarga una sola vez por [mediaId] (single-flight): los llamadores

@@ -40,11 +40,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.audio.AudioTrack
 import com.ronaldcolocho.taskly.domain.model.AttachmentKind
 import com.ronaldcolocho.taskly.domain.model.ChatAttachment
+import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
 import com.ronaldcolocho.taskly.domain.util.extractMentions
 import com.ronaldcolocho.taskly.domain.util.formatDayLabel
@@ -55,8 +57,11 @@ import com.ronaldcolocho.taskly.ui.util.avatarColor
 import com.ronaldcolocho.taskly.ui.util.chatBackground
 import com.ronaldcolocho.taskly.ui.util.initialsOf
 import com.ronaldcolocho.taskly.util.AttachmentActions
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.Date
+import java.io.File
 
 private val Indigo600 = Color(0xFF4F46E5)
 private val Indigo100 = Color(0xFF312E81)
@@ -74,17 +79,21 @@ private val Red600 = Color(0xFFDC2626)
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onNavigateToInfo: (String) -> Unit = {}
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    val drafts by viewModel.drafts.collectAsState()
-    val conversations by viewModel.conversations.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val drafts by viewModel.drafts.collectAsStateWithLifecycle()
+    val conversations by viewModel.conversations.collectAsStateWithLifecycle()
+    val automaticDownloadsEnabled by viewModel.automaticDownloadsEnabled.collectAsStateWithLifecycle()
     val audioController = rememberAudioPlayerController()
     val mediaManager = rememberMediaDownloadManager()
 
     var inputValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
     var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var messageToDeleteForEveryone by remember { mutableStateOf<ChatMessage?>(null) }
+    var messageToDeleteForMe by remember { mutableStateOf<ChatMessage?>(null) }
     var lightboxItems by remember { mutableStateOf<List<LightboxItem>?>(null) }
     var lightboxIndex by remember { mutableStateOf(0) }
     var pinnedIndex by remember { mutableStateOf(0) }
@@ -125,6 +134,21 @@ fun ChatScreen(
             }
         }
         is ChatUiState.Success -> {
+            val messagesById = remember(state.messages) { state.messages.associateBy { it.id } }
+            LaunchedEffect(listState, messagesById, automaticDownloadsEnabled) {
+                if (!automaticDownloadsEnabled) {
+                    viewModel.updateAutomaticDownloads(emptyList())
+                    return@LaunchedEffect
+                }
+                snapshotFlow {
+                    listState.layoutInfo.visibleItemsInfo
+                        .mapNotNull { it.key as? String }
+                        .toSet()
+                }.distinctUntilChanged().collect { visibleIds ->
+                    val attachments = visibleIds.flatMap { messagesById[it]?.attachments.orEmpty() }
+                    viewModel.updateAutomaticDownloads(attachments)
+                }
+            }
             val isGroup = state.conversation.isGroup
             val peerId = state.conversation.participantIds.firstOrNull { it != state.currentUserId }
             val peerName = state.otherParticipant?.displayName
@@ -136,22 +160,8 @@ fun ChatScreen(
             val isSelf = !isGroup && (state.conversation.participantIds.size == 1 ||
                     (state.conversation.participantIds.size == 2 && state.conversation.participantIds.all { it == state.currentUserId }))
 
-            val now = System.currentTimeMillis()
-            val peerTyping = peerId != null && !isSelf &&
-                    (state.typingMap[peerId]?.let { now - it < 3500 } == true)
-            val typingUids = state.typingMap.entries
-                .filter { it.key != state.currentUserId && now - it.value < 3500 }
-                .map { it.key }
-            val groupTypingText = if (isGroup && typingUids.isNotEmpty()) {
-                val names = typingUids.take(2).map { state.conversation.members[it]?.displayName ?: "Alguien" }
-                when (typingUids.size) {
-                    1 -> "${names[0]} está escribiendo…"
-                    2 -> "${names[0]} y ${names[1]} están escribiendo…"
-                    else -> "${names[0]} y ${typingUids.size - 1} más están escribiendo…"
-                }
-            } else null
-
             val pinnedList = state.conversation.pinnedMessages
+            val pinnedIds = remember(pinnedList) { pinnedList.map { it.id }.toSet() }
             val safePinnedIndex = if (pinnedList.isEmpty()) 0 else pinnedIndex.coerceIn(0, pinnedList.size - 1)
 
             val isAtTop by remember {
@@ -214,7 +224,7 @@ fun ChatScreen(
                 MessageActionsSheet(
                     message = msg,
                     currentUserId = state.currentUserId,
-                    isPinned = pinnedList.any { it.id == msg.id },
+                    isPinned = pinnedIds.contains(msg.id),
                     onDismiss = { selectedMessageForActions = null },
                     onReact = { emoji -> viewModel.reactToMessage(msg, emoji) },
                     onReply = { viewModel.setReplyTo(msg) },
@@ -232,7 +242,54 @@ fun ChatScreen(
                         msg.attachments.forEach { AttachmentActions.download(context, it.url, it.name) }
                     },
                     onEdit = { viewModel.startEditing(msg) },
-                    onDelete = { viewModel.deleteMessage(msg) }
+                    onDelete = { messageToDeleteForEveryone = msg },
+                    onDeleteForMe = { messageToDeleteForMe = msg }
+                )
+            }
+
+            messageToDeleteForEveryone?.let { msg ->
+                AlertDialog(
+                    onDismissRequest = { messageToDeleteForEveryone = null },
+                    title = { Text("¿Eliminar para todos?") },
+                    text = { Text("Este mensaje se eliminará para todos los miembros de este chat.") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                viewModel.deleteMessage(msg)
+                                messageToDeleteForEveryone = null
+                            }
+                        ) {
+                            Text("Eliminar para todos", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { messageToDeleteForEveryone = null }) {
+                            Text("Cancelar")
+                        }
+                    }
+                )
+            }
+
+            messageToDeleteForMe?.let { msg ->
+                AlertDialog(
+                    onDismissRequest = { messageToDeleteForMe = null },
+                    title = { Text("¿Eliminar para mí?") },
+                    text = { Text("Este mensaje solo se eliminará para ti en este dispositivo.") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                viewModel.deleteMessageForMe(msg)
+                                messageToDeleteForMe = null
+                            }
+                        ) {
+                            Text("Eliminar para mí", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { messageToDeleteForMe = null }) {
+                            Text("Cancelar")
+                        }
+                    }
                 )
             }
 
@@ -254,82 +311,20 @@ fun ChatScreen(
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
-                // HEADER
-                Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp).clip(CircleShape)) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
-                        }
-
-                        // Header Avatar (+11% more: 46dp)
-                        Box(modifier = Modifier.size(46.dp)) {
-                            if (!isGroup && peerPhoto != null && peerPhoto.isNotBlank()) {
-                                AsyncImage(
-                                    model = peerPhoto,
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(46.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                                )
-                            } else {
-                                val bg = avatarColor(peerId ?: state.currentUserId)
-                                Box(
-                                    modifier = Modifier.size(46.dp).clip(CircleShape).background(bg),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(initialsOf(if (isGroup) state.conversation.name ?: "G" else peerName), color = Color.White, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                            if (!isSelf && !isGroup && state.peerPresence?.isOnlineNow() == true) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(14.dp)
-                                        .align(Alignment.BottomEnd)
-                                        .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                                        .clip(CircleShape)
-                                        .background(Emerald500)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (isSelf) "Mensajes guardados"
-                                else if (isGroup) (state.conversation.name ?: "Grupo")
-                                else peerName,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Slate800,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = when {
-                                    isGroup -> groupTypingText ?: "${state.conversation.members.size} miembros"
-                                    isSelf -> "Escribirte a ti mismo"
-                                    peerTyping -> "escribiendo…"
-                                    state.peerPresence?.isOnlineNow() == true -> "En línea"
-                                    state.peerPresence != null -> formatLastSeen(state.peerPresence!!.lastSeen)
-                                    else -> state.otherParticipant?.phone?.ifBlank { peerId } ?: peerId ?: ""
-                                },
-                                fontSize = 12.sp,
-                                color = when {
-                                    isGroup -> Slate500
-                                    isSelf -> Slate500
-                                    peerTyping || state.peerPresence?.isOnlineNow() == true -> Indigo600
-                                    else -> Slate500
-                                },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
+                // HEADER (colecciona typing/presencia por separado: solo el header recompone)
+                ChatHeader(
+                    conversation = state.conversation,
+                    currentUserId = state.currentUserId,
+                    isGroup = isGroup,
+                    isSelf = isSelf,
+                    peerId = peerId,
+                    peerName = peerName,
+                    peerPhoto = peerPhoto,
+                    peerPhone = state.otherParticipant?.phone,
+                    onNavigateBack = onNavigateBack,
+                    onNavigateToInfo = { onNavigateToInfo(state.conversation.id) },
+                    ephemeralState = viewModel.ephemeralState
+                )
 
                 // PINNED BAR
                 if (pinnedList.isNotEmpty()) {
@@ -399,6 +394,29 @@ fun ChatScreen(
                 // MESSAGES
                 BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().chatBackground()) {
                     val maxBubbleWidth = (maxWidth - 24.dp) * 0.8f
+                    // Pre-computar lista de imágenes para el lightbox una sola vez (no en cada burbuja)
+                    val allLightboxItems = remember(state.messages) {
+                        state.messages.flatMap { m ->
+                            m.attachments.filter { it.kind == AttachmentKind.IMAGE }
+                                .map { LightboxItem(it, m.text) }
+                        }.reversed()
+                    }
+                    
+                    val handleImageClick = remember(allLightboxItems) {
+                        { att: ChatAttachment ->
+                            val idx = allLightboxItems.indexOfFirst { it.attachment.publicId == att.publicId }
+                            lightboxIndex = if (idx >= 0) idx else 0
+                            lightboxItems = allLightboxItems
+                        }
+                    }
+                    
+                    val handleLongPress: (ChatMessage) -> Unit = remember { { msg -> selectedMessageForActions = msg } }
+                    val handleRetry: (ChatMessage) -> Unit = remember(viewModel) { { msg -> viewModel.retryMessage(msg) } }
+                    val handleReact: (ChatMessage, String) -> Unit = remember(viewModel) { { msg, emoji -> viewModel.reactToMessage(msg, emoji) } }
+                    val handleOpenFile: (ChatAttachment, File) -> Unit = remember(context) { { att, file -> AttachmentActions.openLocalFile(context, file, att.mimeType) } }
+                    val handleReplyClick: (String) -> Unit = remember { { msgId -> jumpToMessage(msgId) } }
+                    val handleLinkClick: (String) -> Unit = remember(context) { { url -> AttachmentActions.openExternal(context, url) } }
+
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
@@ -445,31 +463,21 @@ fun ChatScreen(
                                     message = message,
                                     isMe = message.senderId == state.currentUserId,
                                     currentUserId = state.currentUserId,
-                                    members = state.conversation.members,
+                                    members = com.ronaldcolocho.taskly.domain.model.MemberDirectory(state.conversation.members),
                                     maxBubbleWidth = maxBubbleWidth,
                                     showAuthor = isGroup && message.senderId != state.currentUserId,
                                     authorName = state.conversation.members[message.senderId]?.displayName,
-                                    isPinned = pinnedList.any { it.id == message.id },
+                                    isPinned = message.id in pinnedIds,
                                     highlighted = highlightedId == message.id,
                                     audioController = audioController,
                                     mediaManager = mediaManager,
-                                    onLongPress = { selectedMessageForActions = message },
-                                    onRetry = { viewModel.retryMessage(message) },
-                                    onReact = { m, emoji -> viewModel.reactToMessage(m, emoji) },
-                                    onOpenFile = { att, file -> AttachmentActions.openLocalFile(context, file, att.mimeType) },
-                                    onImageClick = { att ->
-                                        val items = state.messages.flatMap { m ->
-                                            m.attachments.filter { it.kind == AttachmentKind.IMAGE }
-                                                .map { LightboxItem(it, m.text) }
-                                        }
-                                        // Orden cronológico (más antiguas primero): deslizar a la derecha = fotos más antiguas
-                                        val ordered = items.reversed()
-                                        val idx = ordered.indexOfFirst { it.attachment.publicId == att.publicId }
-                                        lightboxIndex = if (idx >= 0) idx else 0
-                                        lightboxItems = ordered
-                                    },
-                                    onReplyClick = { msgId -> jumpToMessage(msgId) },
-                                    onLinkClick = { url -> AttachmentActions.openExternal(context, url) }
+                                    onLongPress = handleLongPress,
+                                    onRetry = handleRetry,
+                                    onReact = handleReact,
+                                    onOpenFile = handleOpenFile,
+                                    onImageClick = handleImageClick,
+                                    onReplyClick = handleReplyClick,
+                                    onLinkClick = handleLinkClick
                                 )
 
                                 if (showDay) {
@@ -491,30 +499,13 @@ fun ChatScreen(
                             }
                         }
 
-                        if (peerTyping && !isGroup) {
-                            item(key = "typing") {
-                                Row(modifier = Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.Start) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                                            .background(MaterialTheme.colorScheme.surface)
-                                            .border(1.dp, Slate200, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                                    ) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            listOf(0, 150, 300).forEach { delayMs ->
-                                                val alpha by animateTypingDot(delayMs)
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(6.dp)
-                                                        .clip(CircleShape)
-                                                        .background(Slate400.copy(alpha = alpha))
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        item(key = "typing") {
+                            TypingIndicatorItem(
+                                ephemeralState = viewModel.ephemeralState,
+                                isGroup = isGroup,
+                                peerId = peerId,
+                                currentUserId = state.currentUserId
+                            )
                         }
                     }
 
@@ -828,4 +819,151 @@ private fun animateTypingDot(delayMs: Int): State<Float> {
         ),
         label = "dotAlpha$delayMs"
     )
+}
+
+@Composable
+private fun ChatHeader(
+    conversation: ChatConversation,
+    currentUserId: String,
+    isGroup: Boolean,
+    isSelf: Boolean,
+    peerId: String?,
+    peerName: String,
+    peerPhoto: String?,
+    peerPhone: String?,
+    onNavigateBack: () -> Unit,
+    onNavigateToInfo: () -> Unit,
+    ephemeralState: StateFlow<ChatEphemeralState>
+) {
+    val ephemeral by ephemeralState.collectAsStateWithLifecycle()
+    val now = System.currentTimeMillis()
+    val typingMap = ephemeral.typingMap
+    val presence = ephemeral.peerPresence
+
+    val peerTyping = peerId != null && !isSelf && (typingMap[peerId]?.let { now - it < 3500 } == true)
+    val typingUids = typingMap.entries
+        .filter { it.key != currentUserId && now - it.value < 3500 }
+        .map { it.key }
+    val groupTypingText = if (isGroup && typingUids.isNotEmpty()) {
+        val names = typingUids.take(2).map { conversation.members[it]?.displayName ?: "Alguien" }
+        when (typingUids.size) {
+            1 -> "${names[0]} está escribiendo…"
+            2 -> "${names[0]} y ${names[1]} están escribiendo…"
+            else -> "${names[0]} y ${typingUids.size - 1} más están escribiendo…"
+        }
+    } else null
+
+    Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onNavigateToInfo)
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp).clip(CircleShape)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
+            }
+
+            // Header Avatar (+11% more: 46dp)
+            Box(modifier = Modifier.size(46.dp)) {
+                if (!isGroup && peerPhoto != null && peerPhoto.isNotBlank()) {
+                    AsyncImage(
+                        model = peerPhoto,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(46.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                    )
+                } else {
+                    val bg = avatarColor(peerId ?: currentUserId)
+                    Box(
+                        modifier = Modifier.size(46.dp).clip(CircleShape).background(bg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(initialsOf(if (isGroup) conversation.name ?: "G" else peerName), color = Color.White, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                if (!isSelf && !isGroup && presence?.isOnlineNow() == true) {
+                    Box(
+                        modifier = Modifier
+                            .size(14.dp)
+                            .align(Alignment.BottomEnd)
+                            .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                            .clip(CircleShape)
+                            .background(Emerald500)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isSelf) "Mensajes guardados"
+                    else if (isGroup) (conversation.name ?: "Grupo")
+                    else peerName,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Slate800,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = when {
+                        isGroup -> groupTypingText ?: "${conversation.members.size} miembros"
+                        isSelf -> "Escribirte a ti mismo"
+                        peerTyping -> "escribiendo…"
+                        presence?.isOnlineNow() == true -> "En línea"
+                        presence != null -> formatLastSeen(presence.lastSeen)
+                        else -> "Desconectado"
+                    },
+                    fontSize = 12.sp,
+                    color = when {
+                        isGroup -> Slate500
+                        isSelf -> Slate500
+                        peerTyping || presence?.isOnlineNow() == true -> Indigo600
+                        else -> Slate500
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicatorItem(
+    ephemeralState: StateFlow<ChatEphemeralState>,
+    isGroup: Boolean,
+    peerId: String?,
+    currentUserId: String
+) {
+    val ephemeral by ephemeralState.collectAsStateWithLifecycle()
+    val now = System.currentTimeMillis()
+    val typingMap = ephemeral.typingMap
+    val peerTyping = peerId != null && !isGroup && (typingMap[peerId]?.let { now - it < 3500 } == true)
+
+    if (!peerTyping) return
+
+    Row(modifier = Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.Start) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, Slate200, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf(0, 150, 300).forEach { delayMs ->
+                    val alpha by animateTypingDot(delayMs)
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(Slate400.copy(alpha = alpha))
+                    )
+                }
+            }
+        }
+    }
 }

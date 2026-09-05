@@ -21,12 +21,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -58,14 +62,20 @@ sealed class Route(val route: String) {
     object ChatDetail : Route("chat/{convId}") {
         fun createRoute(convId: String) = "chat/$convId"
     }
+    object ChatInfo : Route("chat_info/{convId}") {
+        fun createRoute(convId: String) = "chat_info/$convId"
+    }
     object Reminders : Route("reminders")
+    object Saved : Route("saved")
     object Profile : Route("profile")
+    object Settings : Route("settings")
+    object Converter : Route("converter")
 }
 
 @Composable
 fun AppNavigation() {
     val authViewModel: AuthViewModel = hiltViewModel()
-    val authState by authViewModel.authState.collectAsState()
+    val authState by authViewModel.authState.collectAsStateWithLifecycle()
 
     when (authState) {
         AuthState.Uninitialized -> {
@@ -90,8 +100,9 @@ private fun MainScaffold() {
     val audioController = rememberAudioPlayerController()
     val mediaManager = rememberMediaDownloadManager()
     val presenceViewModel: PresenceViewModel = hiltViewModel()
+    val lifecycleOwner = LocalLifecycleOwner.current
     val networkViewModel: NetworkViewModel = hiltViewModel()
-    val isOnline by networkViewModel.isOnline.collectAsState()
+    val isOnline by networkViewModel.isOnline.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         audioController.setTrackResolver { track -> mediaManager.fileFor(track.id, MediaKind.AUDIO) }
@@ -100,9 +111,22 @@ private fun MainScaffold() {
         }
     }
 
-    DisposableEffect(Unit) {
-        presenceViewModel.start()
-        onDispose { presenceViewModel.stop() }
+    DisposableEffect(lifecycleOwner, presenceViewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> presenceViewModel.start()
+                Lifecycle.Event.ON_STOP -> presenceViewModel.stop()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            presenceViewModel.start()
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            presenceViewModel.stop()
+        }
     }
 
     val isBottomBarVisible = currentDestination?.route in listOf(
@@ -161,12 +185,87 @@ private fun MainScaffold() {
                 composable(Route.ChatList.route) { ChatListScreen(onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) }) }
                 composable(
                     route = Route.ChatDetail.route,
-                    arguments = listOf(navArgument("convId") { type = NavType.StringType })
+                    arguments = listOf(navArgument("convId") { type = NavType.StringType }),
+                    enterTransition = {
+                        androidx.compose.animation.slideInHorizontally(
+                            initialOffsetX = { fullWidth -> fullWidth },
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 220,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            )
+                        )
+                    },
+                    exitTransition = {
+                        androidx.compose.animation.slideOutHorizontally(
+                            targetOffsetX = { fullWidth -> fullWidth },
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 220,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            )
+                        )
+                    }
                 ) {
-                    ChatScreen(onNavigateBack = { navController.popBackStack() })
+                    ChatScreen(
+                        onNavigateBack = { navController.popBackStack() },
+                        onNavigateToInfo = { convId -> navController.navigate(Route.ChatInfo.createRoute(convId)) }
+                    )
                 }
-                composable(Route.Reminders.route) { /* RemindersScreen() */ }
-                composable(Route.Profile.route) { ProfileScreen(onLogout = { }) }
+                composable(
+                    route = Route.ChatInfo.route,
+                    arguments = listOf(navArgument("convId") { type = NavType.StringType }),
+                    enterTransition = {
+                        androidx.compose.animation.slideInVertically(
+                            initialOffsetY = { fullHeight -> -fullHeight },
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 220,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            )
+                        )
+                    },
+                    exitTransition = {
+                        androidx.compose.animation.slideOutVertically(
+                            targetOffsetY = { fullHeight -> -fullHeight },
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 220,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            )
+                        )
+                    }
+                ) {
+                    com.ronaldcolocho.taskly.ui.screen.chatinfo.ChatInfoScreen(
+                        onNavigateBack = { navController.popBackStack() },
+                        audioController = audioController,
+                        mediaManager = mediaManager
+                    )
+                }
+                composable(
+                    route = Route.Reminders.route,
+                    deepLinks = listOf(androidx.navigation.navDeepLink { uriPattern = "taskly://reminders" })
+                ) { com.ronaldcolocho.taskly.ui.screen.reminders.RemindersScreen(onNavigateBack = { navController.popBackStack() }) }
+                composable(Route.Saved.route) {
+                    com.ronaldcolocho.taskly.ui.screen.saved.SavedScreen(
+                        onNavigateBack = { navController.popBackStack() },
+                        onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) }
+                    )
+                }
+                composable(Route.Converter.route) {
+                    com.ronaldcolocho.taskly.ui.screen.converter.ConverterScreen(
+                        onNavigateBack = { navController.popBackStack() }
+                    )
+                }
+                composable(Route.Profile.route) {
+                    ProfileScreen(
+                        onLogout = { },
+                        onNavigateToSaved = { navController.navigate(Route.Saved.route) },
+                        onNavigateToConverter = { navController.navigate(Route.Converter.route) },
+                        onNavigateToSettings = { navController.navigate(Route.Settings.route) }
+                    )
+                }
+                composable(Route.Settings.route) {
+                    com.ronaldcolocho.taskly.ui.screen.settings.SettingsScreen(
+                        onNavigateBack = { navController.popBackStack() }
+                    )
+                }
             }
         }
     }
@@ -174,15 +273,24 @@ private fun MainScaffold() {
 
 @Composable
 private fun OfflineBanner() {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
-    ) {
-        Text(
-            text = "Sin conexión. Los cambios se sincronizarán cuando vuelvas a estar en línea.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.tertiary,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-        )
+    var isVisible by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+    
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(2000)
+        isVisible = false
+    }
+
+    if (isVisible) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+        ) {
+            Text(
+                text = "Sin conexión. Los cambios se sincronizarán cuando vuelvas a estar en línea.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+        }
     }
 }

@@ -13,3 +13,10 @@ build_err.txt
 build_check.log
 build_check2.log
 /app/google-services.json
+*.jks
+*.keystore
+/app/release/
+recovered*.kt
+test.kt
+/AUDIT_PERFORMANCE.md
+/PLAN_OPTIMIZACION_PERFORMANCE.md

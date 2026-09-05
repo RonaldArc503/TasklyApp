@@ -7,6 +7,7 @@ import com.ronaldcolocho.taskly.data.repository.NetworkRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.PresenceRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.ProfileRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.SavedRepositoryImpl
+import com.ronaldcolocho.taskly.data.repository.SettingsRepositoryImpl
 import com.ronaldcolocho.taskly.data.repository.TaskRepositoryImpl
 import com.ronaldcolocho.taskly.domain.repository.IAuthRepository
 import com.ronaldcolocho.taskly.domain.repository.IChatRepository
@@ -15,6 +16,7 @@ import com.ronaldcolocho.taskly.domain.repository.INetworkRepository
 import com.ronaldcolocho.taskly.domain.repository.IPresenceRepository
 import com.ronaldcolocho.taskly.domain.repository.IProfileRepository
 import com.ronaldcolocho.taskly.domain.repository.ISavedRepository
+import com.ronaldcolocho.taskly.domain.repository.ISettingsRepository
 import com.ronaldcolocho.taskly.domain.repository.ITaskRepository
 import dagger.Binds
 import dagger.Module
@@ -65,6 +67,12 @@ abstract class RepositoryModule {
 
     @Binds
     @Singleton
+    abstract fun bindSettingsRepository(
+        settingsRepositoryImpl: SettingsRepositoryImpl
+    ): ISettingsRepository
+
+    @Binds
+    @Singleton
     abstract fun bindPresenceRepository(
         presenceRepositoryImpl: PresenceRepositoryImpl
     ): IPresenceRepository
@@ -80,5 +88,23 @@ abstract class RepositoryModule {
     abstract fun bindNetworkRepository(
         networkRepositoryImpl: NetworkRepositoryImpl
     ): INetworkRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindDeletedMessagesRepository(
+        deletedMessagesRepositoryImpl: com.ronaldcolocho.taskly.data.repository.DeletedMessagesRepositoryImpl
+    ): com.ronaldcolocho.taskly.domain.repository.IDeletedMessagesRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindReminderRepository(
+        reminderRepositoryImpl: com.ronaldcolocho.taskly.data.repository.ReminderRepositoryImpl
+    ): com.ronaldcolocho.taskly.domain.repository.ReminderRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindYouTubeRepository(
+        youTubeRepositoryImpl: com.ronaldcolocho.taskly.data.repository.YouTubeRepositoryImpl
+    ): com.ronaldcolocho.taskly.domain.repository.IYouTubeRepository
 }
 

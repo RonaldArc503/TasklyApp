@@ -88,7 +88,9 @@ fun ChatMessageDto.toDomain(currentUserId: String, isUnread: Boolean = false, is
         reactions = this.reactions ?: emptyMap(),
         attachments = this.attachments?.map { it.toDomain() } ?: emptyList(),
         mentions = this.mentions ?: emptyList(),
-        forwardedFrom = this.forwardedFrom?.toDomain()
+        forwardedFrom = this.forwardedFrom?.toDomain(),
+        isSearchIndexed = !this.searchTerms.isNullOrEmpty(),
+        conversationId = this.conversationId
     )
 }
 
@@ -129,5 +131,6 @@ fun ChatMessage.toDto(): ChatMessageDto = ChatMessageDto(
     attachments = this.attachments.map { it.toDto() }.ifEmpty { null },
     mentions = this.mentions.ifEmpty { null },
     forwardedFrom = this.forwardedFrom?.toDto(),
-    pending = this.status == MessageStatus.SENDING
+    pending = this.status == MessageStatus.SENDING,
+    conversationId = this.conversationId
 )

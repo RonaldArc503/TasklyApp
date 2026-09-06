@@ -5,6 +5,7 @@ import java.util.Calendar
 import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
+import java.time.ZonedDateTime
 
 @Immutable
 data class Receipt(
@@ -24,9 +25,26 @@ data class Reminder(
     val receipts: List<Receipt> = emptyList(),
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
+    , val isCompleted: Boolean = false
+    , val completedAt: Long = 0L
+    , val repeatType: ReminderRepeatType = ReminderRepeatType.NONE
+    , val snoozedUntil: Long = 0L
 ) {
     val urgency: Urgency
         get() = urgencyFor(dueDate, hasTime)
+}
+
+enum class ReminderRepeatType { NONE, DAILY, WEEKLY, MONTHLY }
+
+fun nextReminderOccurrence(dueDate: Long, repeatType: ReminderRepeatType): Long {
+    if (dueDate <= 0L || repeatType == ReminderRepeatType.NONE) return dueDate
+    val next = Instant.ofEpochMilli(dueDate).atZone(ZoneId.systemDefault())
+    return when (repeatType) {
+        ReminderRepeatType.DAILY -> next.plusDays(1)
+        ReminderRepeatType.WEEKLY -> next.plusWeeks(1)
+        ReminderRepeatType.MONTHLY -> next.plusMonths(1)
+        ReminderRepeatType.NONE -> next
+    }.toInstant().toEpochMilli()
 }
 
 enum class Urgency {

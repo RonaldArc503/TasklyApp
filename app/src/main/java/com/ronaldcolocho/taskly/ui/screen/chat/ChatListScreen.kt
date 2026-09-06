@@ -11,13 +11,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +34,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
+import com.ronaldcolocho.taskly.domain.model.UserProfile
+import kotlinx.coroutines.flow.distinctUntilChanged
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,10 +77,24 @@ private fun formatTime(epochMs: Long): String {
 @Composable
 fun ChatListScreen(
     viewModel: ChatListViewModel = hiltViewModel(),
-    onNavigateToChat: (String) -> Unit
+    onNavigateToChat: (String) -> Unit,
+    onNavigateToGlobalSearch: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val newConversation by viewModel.newConversation.collectAsStateWithLifecycle()
+    val openConversation by viewModel.openConversation.collectAsStateWithLifecycle()
     val currentUserId = viewModel.currentUserId
+    var showNewConversation by rememberSaveable { mutableStateOf(false) }
+    var savedSearchListIndex by rememberSaveable { mutableIntStateOf(0) }
+    var savedSearchListOffset by rememberSaveable { mutableIntStateOf(0) }
+    val showingArchived = (uiState as? ChatListUiState.Success)?.showingArchived == true
+
+    LaunchedEffect(openConversation) {
+        val conversationId = openConversation ?: return@LaunchedEffect
+        showNewConversation = false
+        onNavigateToChat(conversationId)
+        viewModel.consumeOpenConversation(conversationId)
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Header
@@ -87,17 +106,29 @@ fun ChatListScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Chats",
+                    text = if (showingArchived) "Archivados" else "Chats",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
-                IconButton(onClick = { }) {
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Nueva conversacion",
-                        tint = Indigo600
-                    )
+                if (showingArchived) {
+                    IconButton(onClick = { viewModel.showArchived(false) }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Volver a chats")
+                    }
+                } else {
+                    IconButton(onClick = onNavigateToGlobalSearch) {
+                        Icon(Icons.Default.Search, contentDescription = "Busqueda global")
+                    }
+                    IconButton(onClick = { viewModel.showArchived(true) }) {
+                        Icon(Icons.Default.Archive, contentDescription = "Ver archivados")
+                    }
+                    IconButton(onClick = { showNewConversation = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Nueva conversacion",
+                            tint = Indigo600
+                        )
+                    }
                 }
             }
         }
@@ -114,6 +145,38 @@ fun ChatListScreen(
                 }
             }
             is ChatListUiState.Success -> {
+                val listState = rememberLazyListState()
+                LaunchedEffect(state.searchQuery) {
+                    if (state.searchQuery.isBlank() && !state.showingArchived && state.conversations.isNotEmpty()) {
+                        listState.scrollToItem(
+                            savedSearchListIndex.coerceAtMost(state.conversations.lastIndex),
+                            savedSearchListOffset
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = state.searchQuery,
+                    onValueChange = { query ->
+                        if (state.searchQuery.isBlank() && query.isNotBlank()) {
+                            savedSearchListIndex = listState.firstVisibleItemIndex
+                            savedSearchListOffset = listState.firstVisibleItemScrollOffset
+                        }
+                        viewModel.onConversationSearchQueryChange(query)
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    singleLine = true,
+                    placeholder = { Text(if (state.showingArchived) "Buscar en archivados" else "Buscar conversaciones") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (state.isSearching) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else if (state.searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.onConversationSearchQueryChange("") }) {
+                                Icon(Icons.Default.Close, contentDescription = "Limpiar busqueda")
+                            }
+                        }
+                    }
+                )
                 if (state.conversations.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
@@ -137,19 +200,29 @@ fun ChatListScreen(
                                 )
                             }
                             Text(
-                                text = "Sin conversaciones",
+                                text = when {
+                                    state.searchQuery.isNotBlank() -> "Sin resultados"
+                                    state.showingArchived -> "Sin conversaciones archivadas"
+                                    else -> "Sin conversaciones"
+                                },
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "Toca el lapiz arriba para contactar a alguien.",
+                                text = when {
+                                    state.searchQuery.isNotBlank() -> "Prueba con otro nombre o telefono."
+                                    state.showingArchived -> "Los chats que archives apareceran aqui."
+                                    else -> "Toca el lapiz arriba para contactar a alguien."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
                 } else {
-                    val listState = rememberLazyListState()
+                    val conversationsById = remember(state.conversations) {
+                        state.conversations.associateBy(ChatConversation::id)
+                    }
                     val shouldLoadMore by remember(listState, state.conversations.size) {
                         derivedStateOf {
                             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -159,13 +232,32 @@ fun ChatListScreen(
                     LaunchedEffect(shouldLoadMore, state.hasMore, state.isLoadingMore) {
                         if (shouldLoadMore && state.hasMore && !state.isLoadingMore) viewModel.loadMore()
                     }
+                    LaunchedEffect(listState, conversationsById, currentUserId) {
+                        snapshotFlow {
+                            listState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
+                                val conversation = conversationsById[item.key as? String] ?: return@mapNotNull null
+                                if (conversation.isGroup) return@mapNotNull null
+                                conversation.participantIds.firstOrNull { it != currentUserId }
+                            }.toSet()
+                        }
+                            .distinctUntilChanged()
+                            .collect(viewModel::setVisiblePresenceUserIds)
+                    }
+                    DisposableEffect(listState) {
+                        onDispose { viewModel.setVisiblePresenceUserIds(emptySet()) }
+                    }
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                         items(state.conversations, key = { it.id }) { conv ->
+                            val otherUserId = conv.participantIds.firstOrNull { it != currentUserId }
                             ConversationItem(
                                 conv = conv,
                                 currentUserId = currentUserId,
+                                isOnline = otherUserId != null &&
+                                    state.presenceByUserId[otherUserId]?.isOnlineNow() == true,
                                 isSelected = false,
-                                onClick = { onNavigateToChat(conv.id) }
+                                onClick = { onNavigateToChat(conv.id) },
+                                onTogglePinned = { viewModel.togglePinned(conv) },
+                                onToggleArchived = { viewModel.toggleArchived(conv) }
                             )
                         }
                         if (state.isLoadingMore) {
@@ -181,15 +273,119 @@ fun ChatListScreen(
             }
         }
     }
+
+    if (showNewConversation) {
+        NewConversationSheet(
+            state = newConversation,
+            onQueryChange = viewModel::onNewConversationQueryChange,
+            onSelect = viewModel::openDirectConversation,
+            onDismiss = {
+                showNewConversation = false
+                viewModel.clearNewConversation()
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NewConversationSheet(
+    state: NewConversationUiState,
+    onQueryChange: (String) -> Unit,
+    onSelect: (UserProfile) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Nueva conversacion", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Busca por telefono o correo.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Telefono o correo") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (state.query.isNotEmpty()) {
+                        IconButton(onClick = { onQueryChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Limpiar busqueda")
+                        }
+                    }
+                }
+            )
+
+            when {
+                state.isSearching || state.isOpening -> Box(
+                    Modifier.fillMaxWidth().heightIn(min = 96.dp),
+                    contentAlignment = Alignment.Center
+                ) { CircularProgressIndicator() }
+                state.error != null -> Text(state.error, color = MaterialTheme.colorScheme.error)
+                state.query.trim().length >= 2 && state.results.isEmpty() -> Text(
+                    "No se encontraron usuarios.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                else -> LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    items(state.results, key = UserProfile::uid) { profile ->
+                        ProfileSearchResult(profile = profile, onClick = { onSelect(profile) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileSearchResult(profile: UserProfile, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        AsyncImage(
+            model = profile.photoURL.takeIf(String::isNotBlank),
+            contentDescription = profile.displayName,
+            modifier = Modifier.size(44.dp).clip(CircleShape).background(avatarColor(profile.uid)),
+            contentScale = ContentScale.Crop
+        )
+        Column(Modifier.weight(1f)) {
+            Text(profile.displayName.ifBlank { "Usuario" }, fontWeight = FontWeight.SemiBold)
+            Text(
+                profile.phone.ifBlank { profile.email },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
 }
 
 @Composable
 private fun ConversationItem(
     conv: ChatConversation,
     currentUserId: String,
+    isOnline: Boolean,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onTogglePinned: () -> Unit,
+    onToggleArchived: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
     val isGroup = conv.isGroup
     val isSelf = !isGroup && (conv.participantIds.size == 1 ||
             (conv.participantIds.size == 2 && conv.participantIds.all { it == currentUserId }))
@@ -263,7 +459,7 @@ private fun ConversationItem(
             }
 
             // Online dot (bottom-right)
-            if (!isSelf && !isGroup) {
+            if (!isSelf && !isGroup && isOnline) {
                 Box(
                     modifier = Modifier
                         .size(14.dp)
@@ -298,6 +494,29 @@ private fun ConversationItem(
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                Box {
+                    IconButton(onClick = { showMenu = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Acciones de conversacion")
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        if (!conv.isArchived) {
+                            DropdownMenuItem(
+                                text = { Text(if (conv.isPinned) "Desfijar" else "Fijar") },
+                                onClick = { showMenu = false; onTogglePinned() }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text(if (conv.isArchived) "Desarchivar" else "Archivar") },
+                            leadingIcon = {
+                                Icon(
+                                    if (conv.isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = { showMenu = false; onToggleArchived() }
+                        )
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(2.dp))

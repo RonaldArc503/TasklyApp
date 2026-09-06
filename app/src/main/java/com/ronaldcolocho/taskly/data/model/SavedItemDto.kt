@@ -13,6 +13,7 @@ data class SavedItemDto(
     val senderName: String = "",
     val convId: String = "",
     val convName: String = "",
+    val sourceMessageId: String = "",
     val createdAt: Long = 0L,
     val savedAt: Long = 0L,
     val pinned: Boolean = false,

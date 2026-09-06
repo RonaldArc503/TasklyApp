@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
             TasklyTheme(darkTheme = settings.darkTheme) {
-                StartupPermissionRequester()
                 AppNavigation()
             }
         }

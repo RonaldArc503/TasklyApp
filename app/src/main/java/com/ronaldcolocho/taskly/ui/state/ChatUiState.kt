@@ -14,7 +14,8 @@ sealed interface ChatUiState {
         val otherParticipant: UserProfile? = null,
         val replyTo: ChatMessage? = null,
         val editing: ChatMessage? = null,
-        val sendError: String? = null
+        val sendError: String? = null,
+        val unreadBoundaryMessageId: String? = null
     ) : ChatUiState
     data class Error(val message: String) : ChatUiState
 }

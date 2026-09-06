@@ -3,6 +3,7 @@ package com.ronaldcolocho.taskly.audio
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.compose.runtime.Stable
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -11,6 +12,8 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.ronaldcolocho.taskly.domain.model.MusicTrack
+import com.ronaldcolocho.taskly.domain.repository.IMusicRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,10 +38,12 @@ import javax.inject.Singleton
 
 @Singleton
 class AudioPlayerController @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val musicRepository: IMusicRepository
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickerJob: Job? = null
+    private var sleepTimerJob: Job? = null
 
     private var trackResolver: ((AudioTrack) -> File?)? = null
     private var ensureTrack: (suspend (AudioTrack) -> File?)? = null
@@ -47,7 +52,10 @@ class AudioPlayerController @Inject constructor(
     
     private val _state = MutableStateFlow(
         AudioPlayerState(
-            mode = AudioMode.valueOf(prefs.getString("audio_mode", AudioMode.INDIVIDUAL.name) ?: AudioMode.INDIVIDUAL.name)
+            mode = AudioMode.valueOf(prefs.getString("audio_mode", AudioMode.INDIVIDUAL.name) ?: AudioMode.INDIVIDUAL.name),
+            repeatMode = AudioRepeatMode.valueOf(
+                prefs.getString("audio_repeat_mode", AudioRepeatMode.OFF.name) ?: AudioRepeatMode.OFF.name
+            )
         )
     )
     val state: StateFlow<AudioPlayerState> = _state.asStateFlow()
@@ -71,9 +79,12 @@ class AudioPlayerController @Inject constructor(
         _state.map { if (it.currentTrack?.id == trackId) it.durationMs else 0L }.distinctUntilChanged()
 
     private var player: Player? = null
+    private var connectionStarted = false
     private val pendingActions = mutableListOf<(Player) -> Unit>()
 
-    init {
+    private fun ensurePlayerConnection() {
+        if (connectionStarted) return
+        connectionStarted = true
         val sessionToken = SessionToken(context, ComponentName(context, AudioPlaybackService::class.java))
         val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
         controllerFuture.addListener({
@@ -86,6 +97,7 @@ class AudioPlayerController @Inject constructor(
                 pendingActions.forEach { it(p) }
                 pendingActions.clear()
             } catch (e: Exception) {
+                connectionStarted = false
                 android.util.Log.e("AudioPlayer", "Failed to connect to MediaSession", e)
             }
         }, ContextCompat.getMainExecutor(context))
@@ -97,6 +109,7 @@ class AudioPlayerController @Inject constructor(
             action(p)
         } else {
             pendingActions.add(action)
+            ensurePlayerConnection()
         }
     }
 
@@ -104,11 +117,14 @@ class AudioPlayerController @Inject constructor(
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _state.update { it.copy(playing = isPlaying) }
-                if (isPlaying) startTicker() else stopTicker()
+                if (isPlaying) {
+                    startTicker()
+                    _state.value.currentTrack?.let(::recordPlayback)
+                } else stopTicker()
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _state.update { it.copy(playing = false) }
+                _state.update { it.copy(playing = false, error = "No se pudo reproducir el audio. Reintenta o verifica tu conexión.") }
                 android.util.Log.e("AudioPlayer", "Playback error", error)
             }
 
@@ -154,9 +170,22 @@ class AudioPlayerController @Inject constructor(
         if (isPlaying) startTicker()
     }
 
+    private fun AudioRepeatMode.toPlayerRepeatMode(): Int = when (this) {
+        AudioRepeatMode.OFF -> Player.REPEAT_MODE_OFF
+        AudioRepeatMode.ALL -> Player.REPEAT_MODE_ALL
+        AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
+    }
+
     private fun AudioTrack.toMediaItem(): MediaItem {
         val file = trackResolver?.invoke(this)
-        val uri = if (file != null && file.exists()) Uri.fromFile(file) else Uri.parse(this.url)
+        val localFile = file?.takeIf { it.exists() }
+        val uri = if (localFile != null) {
+            Log.d("AudioPlayer", "CACHE HIT: track=$id")
+            Uri.fromFile(localFile)
+        } else {
+            Log.d("AudioPlayer", "REMOTE FALLBACK: track=$id")
+            Uri.parse(this.url)
+        }
         return MediaItem.Builder()
             .setMediaId(this.id)
             .setUri(uri)
@@ -181,19 +210,36 @@ class AudioPlayerController @Inject constructor(
         _state.update { it.copy(tracks = tracks) }
     }
 
+    /** Edits only the in-memory global queue; it never mutates playlist documents. */
+    fun reorderQueue(tracks: List<AudioTrack>) {
+        _state.update { it.copy(tracks = tracks) }
+        withPlayer { player ->
+            val currentId = _state.value.currentTrack?.id
+            player.setMediaItems(tracks.map { it.toMediaItem() })
+            tracks.indexOfFirst { it.id == currentId }.takeIf { it >= 0 }?.let { player.seekToDefaultPosition(it) }
+            player.prepare()
+        }
+    }
+
+    fun removeFromQueue(trackId: String) = reorderQueue(_state.value.tracks.filterNot { it.id == trackId })
+    fun skipToQueueItem(trackId: String) {
+        val index = _state.value.tracks.indexOfFirst { it.id == trackId }
+        if (index >= 0) withPlayer { it.seekToDefaultPosition(index); it.play() }
+    }
+
     private fun applyPlaylistAndPlay(track: AudioTrack) {
+        val localAvailable = trackResolver?.invoke(track)?.exists() == true
+        if (!localAvailable && track.url.isBlank()) {
+            _state.update { it.copy(playing = false, error = "Audio no disponible") }
+            return
+        }
         withPlayer { p ->
             val s = _state.value
 
             val items = s.tracks.map { it.toMediaItem() }
             p.setMediaItems(items)
 
-            when (s.mode) {
-                AudioMode.INDIVIDUAL -> p.repeatMode = Player.REPEAT_MODE_OFF
-                AudioMode.REPEAT -> p.repeatMode = Player.REPEAT_MODE_ONE
-                AudioMode.QUEUE -> p.repeatMode = Player.REPEAT_MODE_OFF
-                AudioMode.LOOP -> p.repeatMode = Player.REPEAT_MODE_ALL
-            }
+            p.repeatMode = s.repeatMode.toPlayerRepeatMode()
 
             val idx = s.tracks.indexOfFirst { it.id == track.id }
             if (idx >= 0) {
@@ -201,7 +247,7 @@ class AudioPlayerController @Inject constructor(
             }
             
             _state.update {
-                it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true)
+                it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true, error = null)
             }
             p.prepare()
             p.play()
@@ -214,7 +260,7 @@ class AudioPlayerController @Inject constructor(
     }
 
     fun playWithQueue(track: AudioTrack) {
-        updateMode(AudioMode.QUEUE)
+        _state.update { it.copy(mode = AudioMode.QUEUE) }
         applyPlaylistAndPlay(track)
     }
 
@@ -238,17 +284,44 @@ class AudioPlayerController @Inject constructor(
         }
     }
 
+    fun retryCurrent() { _state.value.currentTrack?.let(::applyPlaylistAndPlay) }
+    fun clearError() { _state.update { it.copy(error = null) } }
+
     fun updateMode(mode: AudioMode) {
         prefs.edit().putString("audio_mode", mode.name).apply()
-        _state.update { it.copy(mode = mode) }
-        
-        withPlayer { p ->
-            when (mode) {
-                AudioMode.REPEAT -> p.repeatMode = Player.REPEAT_MODE_ONE
-                AudioMode.LOOP -> p.repeatMode = Player.REPEAT_MODE_ALL
-                else -> p.repeatMode = Player.REPEAT_MODE_OFF
-            }
+        val repeatMode = when (mode) {
+            AudioMode.REPEAT -> AudioRepeatMode.ONE
+            AudioMode.LOOP -> AudioRepeatMode.ALL
+            else -> AudioRepeatMode.OFF
         }
+        setRepeatMode(repeatMode, mode)
+    }
+
+    fun cycleRepeatMode() = setRepeatMode(_state.value.repeatMode.next())
+
+    fun setRepeatMode(repeatMode: AudioRepeatMode, mode: AudioMode? = null) {
+        prefs.edit().putString("audio_repeat_mode", repeatMode.name).apply()
+        _state.update { it.copy(repeatMode = repeatMode, mode = mode ?: it.mode) }
+        withPlayer { it.repeatMode = repeatMode.toPlayerRepeatMode() }
+    }
+
+    fun startSleepTimer(durationMs: Long) {
+        if (durationMs <= 0L) return
+        sleepTimerJob?.cancel()
+        val endAt = System.currentTimeMillis() + durationMs
+        _state.update { it.copy(sleepTimerEndAt = endAt) }
+        sleepTimerJob = scope.launch {
+            delay(durationMs)
+            withPlayer { it.pause() }
+            _state.update { it.copy(playing = false, sleepTimerEndAt = null) }
+            sleepTimerJob = null
+        }
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        _state.update { it.copy(sleepTimerEndAt = null) }
     }
 
     fun next() {
@@ -275,6 +348,7 @@ class AudioPlayerController @Inject constructor(
     }
 
     fun stop() {
+        cancelSleepTimer()
         withPlayer { p ->
             p.stop()
             p.clearMediaItems()
@@ -298,12 +372,28 @@ class AudioPlayerController @Inject constructor(
         }
     }
 
+    private fun recordPlayback(track: AudioTrack) {
+        scope.launch(Dispatchers.IO) {
+            musicRepository.recordPlayback(
+                MusicTrack(
+                    id = track.id,
+                    url = track.url,
+                    name = track.name,
+                    sourceMessageId = track.msgId,
+                    durationSeconds = track.durationSeconds,
+                    thumbnailUrl = track.thumbnailUrl
+                )
+            )
+        }
+    }
+
     private fun stopTicker() {
         tickerJob?.cancel()
         tickerJob = null
     }
 
     fun release() {
+        cancelSleepTimer()
         withPlayer { p ->
             p.release()
         }

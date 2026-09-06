@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,8 +48,17 @@ import com.ronaldcolocho.taskly.domain.model.reminder.reminderTimeLabel
 import com.ronaldcolocho.taskly.ui.theme.Indigo600
 import com.ronaldcolocho.taskly.ui.theme.Slate500
 import com.ronaldcolocho.taskly.ui.theme.TasklyTheme
+import com.ronaldcolocho.taskly.data.alarm.ReminderAlarmManager
+import com.ronaldcolocho.taskly.domain.repository.ReminderRepository
+import com.google.firebase.auth.FirebaseAuth
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.launch
 
+@AndroidEntryPoint
 class ReminderAlarmActivity : ComponentActivity() {
+    @Inject lateinit var repository: ReminderRepository
+    @Inject lateinit var alarmManager: ReminderAlarmManager
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         showOverLockScreen()
@@ -55,6 +66,7 @@ class ReminderAlarmActivity : ComponentActivity() {
         val title = intent.getStringExtra("REMINDER_TITLE") ?: "Tienes un recordatorio"
         val dueDate = intent.getLongExtra("REMINDER_DUE_DATE", 0L)
         val hasTime = intent.getBooleanExtra("REMINDER_HAS_TIME", false)
+        val reminderId = intent.getStringExtra("REMINDER_ID").orEmpty()
 
         setContent {
             TasklyTheme {
@@ -63,15 +75,27 @@ class ReminderAlarmActivity : ComponentActivity() {
                     dueLabel = reminderTimeLabel(dueDate, hasTime),
                     onOpenReminders = {
                         startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse("taskly://reminders")).apply {
+                            Intent(Intent.ACTION_VIEW, Uri.parse("taskly://reminders?reminderId=$reminderId")).apply {
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                             }
                         )
                         finish()
                     },
+                    onSnooze = { minutes -> snooze(reminderId, minutes) },
                     onDismiss = { finish() }
                 )
             }
+        }
+    }
+
+    private fun snooze(id: String, minutes: Int) {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return finish()
+        lifecycleScope.launch {
+            val reminder = repository.getReminder(uid, id) ?: return@launch finish()
+            val until = System.currentTimeMillis() + minutes * 60_000L
+            repository.updateReminder(uid, id, mapOf("snoozedUntil" to until))
+            alarmManager.scheduleAlarms(listOf(reminder.copy(snoozedUntil = until)))
+            finish()
         }
     }
 
@@ -98,6 +122,7 @@ private fun ReminderAlarmScreen(
     title: String,
     dueLabel: String,
     onOpenReminders: () -> Unit,
+    onSnooze: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     Box(
@@ -167,6 +192,12 @@ private fun ReminderAlarmScreen(
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(5, 10, 30, 60).forEach { minutes ->
+                        OutlinedButton(onClick = { onSnooze(minutes) }) { Text("${minutes}m") }
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
                 Button(
                     onClick = onOpenReminders,
                     modifier = Modifier.fillMaxWidth(),

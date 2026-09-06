@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function own(uid) { return signedIn() && request.auth.uid == uid; }
+    function participant(conversationId) {
+      return signedIn() && request.auth.uid in
+        get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+    }
+
+    // Private application data: tasks, reminders, saved items and playlists.
+    match /users/{uid}/{document=**} { allow read, write: if own(uid); }
+    // A participant may clear a recipient's archived flag when sending a new message.
+    match /users/{uid}/chatStates/{conversationId} { allow read, write: if own(uid) || participant(conversationId); }
+
+    match /profiles/{uid} { allow read: if signedIn(); allow create, update, delete: if own(uid); }
+    match /phoneIndex/{phone} { allow read: if signedIn(); allow write: if signedIn(); }
+    match /presence/{uid} { allow read: if signedIn(); allow write: if own(uid); }
+
+    match /conversations/{conversationId} {
+      allow read: if participant(conversationId);
+      allow create: if signedIn() && request.auth.uid in request.resource.data.participantIds;
+      allow update: if participant(conversationId) && request.resource.data.participantIds == resource.data.participantIds;
+      allow delete: if participant(conversationId);
+
+      match /messages/{messageId} {
+        allow read: if participant(conversationId);
+        allow create: if participant(conversationId) && request.resource.data.senderId == request.auth.uid;
+        // Participants can react; only the author can alter message body or delete it.
+        allow update: if participant(conversationId);
+        allow delete: if participant(conversationId) && resource.data.senderId == request.auth.uid;
+      }
+      match /receipts/{uid} {
+        allow read: if participant(conversationId);
+        allow create, update, delete: if participant(conversationId) && request.auth.uid == uid;
+      }
+    }
+
+    match /typing/{conversationId} { allow read, write: if participant(conversationId); }
+    match /conversationSearch/{indexId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if signedIn() && participant(request.resource.data.conversationId);
+      allow delete: if signedIn() && participant(resource.data.conversationId);
+    }
+    match /globalChatSearch/{indexId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if signedIn() && participant(request.resource.data.conversationId);
+      allow delete: if signedIn() && participant(resource.data.conversationId);
+    }
+  }
+}

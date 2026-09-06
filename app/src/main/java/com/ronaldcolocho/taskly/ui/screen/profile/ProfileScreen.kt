@@ -74,7 +74,8 @@ fun ProfileScreen(
     onLogout: () -> Unit,
     onNavigateToSaved: () -> Unit,
     onNavigateToConverter: () -> Unit,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    onNavigateToMusic: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -102,6 +103,7 @@ fun ProfileScreen(
                     onSettings = onNavigateToSettings,
                     onNavigateToSaved = onNavigateToSaved,
                     onNavigateToConverter = onNavigateToConverter,
+                    onNavigateToMusic = onNavigateToMusic,
                     onDemo = { scope.launch { snackbarHostState.showSnackbar("Proximamente") } },
                     onLogout = { viewModel.logout(onSuccess = onLogout) }
                 )
@@ -135,6 +137,7 @@ private fun ProfileContent(
     onSettings: () -> Unit,
     onNavigateToSaved: () -> Unit,
     onNavigateToConverter: () -> Unit,
+    onNavigateToMusic: () -> Unit,
     onDemo: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -208,7 +211,7 @@ private fun ProfileContent(
             FeatureRow(Icons.Default.ContentPaste, "Copia y Pega", "Proximamente", onDemo)
         }
         item {
-            FeatureRow(Icons.Default.LibraryMusic, "Mis Musicas", "Proximamente", onDemo)
+            FeatureRow(Icons.Default.LibraryMusic, "Mis Musicas", "Tus canciones y listas", onNavigateToMusic)
         }
         item {
             Spacer(Modifier.height(4.dp))

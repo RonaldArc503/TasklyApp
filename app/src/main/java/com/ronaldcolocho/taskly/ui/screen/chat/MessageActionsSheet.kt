@@ -16,8 +16,13 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Forward
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
+import com.ronaldcolocho.taskly.domain.model.MusicPlaylist
 
 val REACT_EMOJIS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
@@ -47,6 +53,10 @@ fun MessageActionsSheet(
     onPin: () -> Unit,
     onCopy: () -> Unit,
     onDownload: () -> Unit,
+    playlists: List<MusicPlaylist>,
+    isAddingToPlaylist: Boolean,
+    playlistAddError: String?,
+    onAddAudioToPlaylist: (String) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onDeleteForMe: () -> Unit
@@ -55,7 +65,12 @@ fun MessageActionsSheet(
     val isMine = message.senderId == currentUserId
     val myReaction = message.reactions[currentUserId]
     val hasAttachments = message.attachments.isNotEmpty()
+    val hasValidAudio = message.attachments.any {
+        it.kind == com.ronaldcolocho.taskly.domain.model.AttachmentKind.AUDIO &&
+            it.publicId.isNotBlank() && it.url.isNotBlank()
+    }
     val isOnlyMedia = hasAttachments && message.text.isBlank()
+    var showingPlaylists by remember(message.id) { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -148,6 +163,52 @@ fun MessageActionsSheet(
                 )
             }
 
+            if (hasValidAudio) {
+                ActionRow(
+                    icon = { Icon(Icons.Filled.LibraryMusic, contentDescription = null, tint = Violet) },
+                    text = "Agregar a una lista",
+                    enabled = !isAddingToPlaylist,
+                    onClick = { showingPlaylists = !showingPlaylists }
+                )
+                if (showingPlaylists) {
+                    if (playlistAddError != null) {
+                        Text(
+                            text = playlistAddError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 68.dp, vertical = 8.dp)
+                        )
+                    }
+                    if (isAddingToPlaylist) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 68.dp, vertical = 8.dp)
+                        )
+                    }
+                    if (playlists.isEmpty()) {
+                        Text(
+                            text = "No tienes listas creadas.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 68.dp, vertical = 8.dp)
+                        )
+                    } else {
+                        playlists.forEach { playlist ->
+                            ActionRow(
+                                icon = { Icon(Icons.Filled.LibraryMusic, contentDescription = null, tint = Teal) },
+                                text = playlist.name,
+                                subtitle = "${playlist.songCount} canciones",
+                                enabled = !isAddingToPlaylist,
+                                onClick = {
+                                    onAddAudioToPlaylist(playlist.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             if (isMine && !isOnlyMedia) {
                 ActionRow(
                     icon = { Icon(Icons.Filled.Edit, contentDescription = null, tint = Sky) },
@@ -190,12 +251,13 @@ fun ActionRow(
     text: String,
     subtitle: String? = null,
     textColor: Color = MaterialTheme.colorScheme.onSurface,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = if (subtitle != null) 10.dp else 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

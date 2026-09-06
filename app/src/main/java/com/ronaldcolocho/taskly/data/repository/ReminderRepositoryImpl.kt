@@ -2,6 +2,7 @@ package com.ronaldcolocho.taskly.data.repository
 
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.snapshots
 import com.ronaldcolocho.taskly.domain.model.reminder.Receipt
 import com.ronaldcolocho.taskly.domain.model.reminder.Reminder
@@ -22,42 +23,17 @@ class ReminderRepositoryImpl @Inject constructor(
         remindersCollection(uid).document(id)
 
     override fun getReminders(uid: String): Flow<List<Reminder>> {
-        return remindersCollection(uid).snapshots().map { snapshot ->
-            snapshot.documents.mapNotNull { doc ->
-                val id = doc.id
-                val title = doc.getString("title") ?: ""
-                val dueDate = doc.getLong("dueDate") ?: 0L
-                val hasTime = doc.getBoolean("hasTime") ?: false
-                val createdAt = doc.getLong("createdAt") ?: 0L
-                val updatedAt = doc.getLong("updatedAt") ?: 0L
-                
-                val receiptsList = doc.get("receipts") as? List<Map<String, Any>> ?: emptyList()
-                val receipts = receiptsList.mapNotNull { rMap ->
-                    try {
-                        Receipt(
-                            publicId = rMap["publicId"] as? String ?: "",
-                            url = rMap["url"] as? String ?: "",
-                            name = rMap["name"] as? String ?: "",
-                            size = (rMap["size"] as? Number)?.toLong() ?: 0L,
-                            kind = rMap["kind"] as? String ?: ""
-                        )
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-
-                Reminder(
-                    id = id,
-                    title = title,
-                    dueDate = dueDate,
-                    hasTime = hasTime,
-                    receipts = receipts,
-                    createdAt = createdAt,
-                    updatedAt = updatedAt
-                )
-            }
-        }
+        // Los documentos anteriores a completedAt no tienen isCompleted; se consideran activos.
+        return remindersCollection(uid).snapshots()
+            .map { it.documents.map(::toReminder).filterNot(Reminder::isCompleted) }
     }
+
+    override fun getCompletedReminders(uid: String): Flow<List<Reminder>> =
+        remindersCollection(uid).whereEqualTo("isCompleted", true).snapshots()
+            .map { it.documents.map(::toReminder).sortedByDescending(Reminder::completedAt) }
+
+    override suspend fun getReminder(uid: String, id: String): Reminder? =
+        reminderDoc(uid, id).get().await().takeIf { it.exists() }?.let(::toReminder)
 
     override suspend fun addReminder(uid: String, reminder: Reminder) {
         val data = mapOf(
@@ -75,8 +51,20 @@ class ReminderRepositoryImpl @Inject constructor(
             },
             "createdAt" to reminder.createdAt,
             "updatedAt" to reminder.updatedAt
+            , "isCompleted" to reminder.isCompleted
+            , "completedAt" to reminder.completedAt
+            , "repeatType" to reminder.repeatType.name
+            , "snoozedUntil" to reminder.snoozedUntil
         )
         reminderDoc(uid, reminder.id).set(data).await()
+    }
+
+    private fun toReminder(doc: DocumentSnapshot): Reminder {
+        val receipts = (doc.get("receipts") as? List<Map<String, Any>>).orEmpty().map {
+            Receipt(it["publicId"] as? String ?: "", it["url"] as? String ?: "", it["name"] as? String ?: "", (it["size"] as? Number)?.toLong() ?: 0L, it["kind"] as? String ?: "")
+        }
+        val repeat = runCatching { com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.valueOf(doc.getString("repeatType") ?: "NONE") }.getOrDefault(com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE)
+        return Reminder(doc.id, doc.getString("title") ?: "", doc.getLong("dueDate") ?: 0L, doc.getBoolean("hasTime") ?: false, receipts, doc.getLong("createdAt") ?: 0L, doc.getLong("updatedAt") ?: 0L, doc.getBoolean("isCompleted") ?: false, doc.getLong("completedAt") ?: 0L, repeat, doc.getLong("snoozedUntil") ?: 0L)
     }
 
     override suspend fun updateReminder(uid: String, id: String, patch: Map<String, Any?>) {

@@ -1,5 +1,8 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -26,8 +29,12 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
@@ -86,6 +94,10 @@ fun ChatScreen(
     val drafts by viewModel.drafts.collectAsStateWithLifecycle()
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
     val automaticDownloadsEnabled by viewModel.automaticDownloadsEnabled.collectAsStateWithLifecycle()
+    val playlistAddState by viewModel.playlistAddState.collectAsStateWithLifecycle()
+    val messageNavigation by viewModel.messageNavigation.collectAsStateWithLifecycle()
+    val messageSearch by viewModel.messageSearch.collectAsStateWithLifecycle()
+    val voiceSendState by viewModel.voiceNoteSendState.collectAsStateWithLifecycle()
     val audioController = rememberAudioPlayerController()
     val mediaManager = rememberMediaDownloadManager()
 
@@ -98,8 +110,42 @@ fun ChatScreen(
     var lightboxIndex by remember { mutableStateOf(0) }
     var pinnedIndex by remember { mutableStateOf(0) }
     var highlightedId by remember { mutableStateOf<String?>(null) }
+    var showMessageSearch by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val context = LocalContext.current
+    val voiceRecorder = remember(context) { VoiceNoteRecorder(context) }
+    var isRecordingVoice by remember { mutableStateOf(false) }
+    var recordingSeconds by remember { mutableIntStateOf(0) }
+
+    fun startVoiceRecording() {
+        voiceRecorder.start().onSuccess {
+            recordingSeconds = 0
+            isRecordingVoice = true
+        }.onFailure { viewModel.reportVoiceError(it.message ?: "No se pudo iniciar la grabacion.") }
+    }
+
+    val microphonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) startVoiceRecording()
+        else viewModel.reportVoiceError("Se necesita permiso de microfono para grabar notas de voz.")
+    }
+
+    DisposableEffect(voiceRecorder) {
+        onDispose { voiceRecorder.cancel() }
+    }
+    LaunchedEffect(isRecordingVoice) {
+        while (isRecordingVoice) {
+            kotlinx.coroutines.delay(1000)
+            recordingSeconds++
+            if (recordingSeconds >= 600) {
+                voiceRecorder.stop()
+                    .onSuccess { viewModel.sendVoiceNote(it.file, it.durationSeconds) }
+                    .onFailure { viewModel.reportVoiceError("No se pudo guardar la nota de voz.") }
+                isRecordingVoice = false
+            }
+        }
+    }
 
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()
@@ -109,17 +155,15 @@ fun ChatScreen(
 
     val scope = rememberCoroutineScope()
 
-    fun jumpToMessage(msgId: String) {
-        val state = uiState as? ChatUiState.Success ?: return
-        val index = state.messages.indexOfFirst { it.id == msgId }
-        if (index >= 0) {
-            scope.launch { listState.animateScrollToItem(index) }
-            highlightedId = msgId
-            scope.launch {
-                kotlinx.coroutines.delay(2500)
-                highlightedId = null
-            }
+    LaunchedEffect(playlistAddState) {
+        if (playlistAddState is PlaylistAddState.Success) {
+            selectedMessageForActions = null
+            viewModel.clearPlaylistAddState()
         }
+    }
+
+    fun jumpToMessage(msgId: String) {
+        viewModel.navigateToMessage(msgId)
     }
 
     when (val state = uiState) {
@@ -134,6 +178,17 @@ fun ChatScreen(
             }
         }
         is ChatUiState.Success -> {
+            LaunchedEffect(messageNavigation?.requestId, state.messages) {
+                val request = messageNavigation ?: return@LaunchedEffect
+                val index = state.messages.indexOfFirst { it.id == request.messageId }
+                if (index >= 0) {
+                    listState.animateScrollToItem(index)
+                    highlightedId = request.messageId
+                    viewModel.consumeMessageNavigation(request.requestId)
+                    kotlinx.coroutines.delay(2500)
+                    if (highlightedId == request.messageId) highlightedId = null
+                }
+            }
             val messagesById = remember(state.messages) { state.messages.associateBy { it.id } }
             LaunchedEffect(listState, messagesById, automaticDownloadsEnabled) {
                 if (!automaticDownloadsEnabled) {
@@ -148,6 +203,11 @@ fun ChatScreen(
                     val attachments = visibleIds.flatMap { messagesById[it]?.attachments.orEmpty() }
                     viewModel.updateAutomaticDownloads(attachments)
                 }
+            }
+            LaunchedEffect(listState, messagesById) {
+                snapshotFlow {
+                    listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet()
+                }.distinctUntilChanged().collect(viewModel::markVisibleMessages)
             }
             val isGroup = state.conversation.isGroup
             val peerId = state.conversation.participantIds.firstOrNull { it != state.currentUserId }
@@ -221,11 +281,15 @@ fun ChatScreen(
             }
 
             selectedMessageForActions?.let { msg ->
+                val musicPlaylists by viewModel.musicPlaylists.collectAsStateWithLifecycle()
                 MessageActionsSheet(
                     message = msg,
                     currentUserId = state.currentUserId,
                     isPinned = pinnedIds.contains(msg.id),
-                    onDismiss = { selectedMessageForActions = null },
+                    onDismiss = {
+                        selectedMessageForActions = null
+                        viewModel.clearPlaylistAddState()
+                    },
                     onReact = { emoji -> viewModel.reactToMessage(msg, emoji) },
                     onReply = { viewModel.setReplyTo(msg) },
                     onForward = { forwardMessage = msg },
@@ -241,6 +305,10 @@ fun ChatScreen(
                     onDownload = {
                         msg.attachments.forEach { AttachmentActions.download(context, it.url, it.name) }
                     },
+                    playlists = musicPlaylists,
+                    isAddingToPlaylist = playlistAddState is PlaylistAddState.Saving,
+                    playlistAddError = (playlistAddState as? PlaylistAddState.Error)?.message,
+                    onAddAudioToPlaylist = { playlistId -> viewModel.addAudioMessageToPlaylist(msg, playlistId) },
                     onEdit = { viewModel.startEditing(msg) },
                     onDelete = { messageToDeleteForEveryone = msg },
                     onDeleteForMe = { messageToDeleteForMe = msg }
@@ -323,8 +391,22 @@ fun ChatScreen(
                     peerPhone = state.otherParticipant?.phone,
                     onNavigateBack = onNavigateBack,
                     onNavigateToInfo = { onNavigateToInfo(state.conversation.id) },
+                    onSearch = { showMessageSearch = true },
                     ephemeralState = viewModel.ephemeralState
                 )
+
+                if (showMessageSearch) {
+                    MessageSearchBar(
+                        state = messageSearch,
+                        onQueryChange = viewModel::onMessageSearchQueryChange,
+                        onPrevious = { viewModel.moveMessageSearchResult(-1) },
+                        onNext = { viewModel.moveMessageSearchResult(1) },
+                        onClose = {
+                            showMessageSearch = false
+                            viewModel.clearMessageSearch()
+                        }
+                    )
+                }
 
                 // PINNED BAR
                 if (pinnedList.isNotEmpty()) {
@@ -388,6 +470,21 @@ fun ChatScreen(
                         ) {
                             Icon(Icons.Filled.Close, contentDescription = "Desfijar mensaje", tint = Indigo600, modifier = Modifier.size(16.dp))
                         }
+                    }
+                }
+
+                state.unreadBoundaryMessageId?.let {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clickable(onClick = viewModel::jumpToUnreadBoundary),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                    ) {
+                        Text(
+                            "Mensajes no leidos - tocar para ir al primero",
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
 
@@ -479,6 +576,23 @@ fun ChatScreen(
                                     onReplyClick = handleReplyClick,
                                     onLinkClick = handleLinkClick
                                 )
+
+                                if (message.id == state.unreadBoundaryMessageId) {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Surface(shape = RoundedCornerShape(14.dp), color = Indigo600) {
+                                            Text(
+                                                "Mensajes no leidos",
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
 
                                 if (showDay) {
                                     Box(
@@ -589,7 +703,8 @@ fun ChatScreen(
                 val inputBorder = if (isDark) Color(0xFF334155) else Slate200
                 val inputTextColor = if (isDark) Color(0xFFF1F5F9) else Slate800
                 val inputPlaceholderColor = if (isDark) Color(0xFF94A3B8) else Slate400
-                val canSend = inputValue.text.isNotBlank() || drafts.isNotEmpty()
+                val hasComposedContent = inputValue.text.isNotBlank() || drafts.isNotEmpty()
+                val canSend = hasComposedContent || isRecordingVoice
                 val isEditing = state.editing != null
 
                 Row(
@@ -601,11 +716,21 @@ fun ChatScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     IconButton(
-                        onClick = { filePickerLauncher.launch("*/*") },
+                        onClick = {
+                            if (isRecordingVoice) {
+                                voiceRecorder.cancel()
+                                isRecordingVoice = false
+                                recordingSeconds = 0
+                            } else filePickerLauncher.launch("*/*")
+                        },
                         enabled = state.editing == null,
                         modifier = Modifier.size(40.dp)
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Adjuntar", tint = Slate500)
+                        Icon(
+                            if (isRecordingVoice) Icons.Filled.Close else Icons.Filled.Add,
+                            contentDescription = if (isRecordingVoice) "Cancelar grabacion" else "Adjuntar",
+                            tint = Slate500
+                        )
                     }
 
                     Box(
@@ -616,7 +741,13 @@ fun ChatScreen(
                             .border(1.dp, inputBorder, RoundedCornerShape(22.dp))
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
-                        BasicTextField(
+                        if (isRecordingVoice) {
+                            Text(
+                                "Grabando ${recordingSeconds / 60}:${(recordingSeconds % 60).toString().padStart(2, '0')}",
+                                color = Red600,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        } else BasicTextField(
                             value = inputValue,
                             onValueChange = { newValue ->
                                 inputValue = newValue
@@ -644,7 +775,13 @@ fun ChatScreen(
                     // Botón de Enviar (FUERA del contenedor de texto)
                     IconButton(
                         onClick = {
-                            if (canSend) {
+                            if (isRecordingVoice) {
+                                voiceRecorder.stop()
+                                    .onSuccess { viewModel.sendVoiceNote(it.file, it.durationSeconds) }
+                                    .onFailure { viewModel.reportVoiceError("La nota de voz fue demasiado corta o no pudo guardarse.") }
+                                isRecordingVoice = false
+                                recordingSeconds = 0
+                            } else if (hasComposedContent) {
                                 when {
                                     isEditing -> {
                                         viewModel.saveEdit(inputValue.text)
@@ -659,9 +796,17 @@ fun ChatScreen(
                                         inputValue = androidx.compose.ui.text.input.TextFieldValue("")
                                     }
                                 }
+                            } else if (ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                startVoiceRecording()
+                            } else {
+                                microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         },
-                        enabled = canSend,
+                        enabled = (!voiceSendState.isUploading && state.editing == null) || hasComposedContent,
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
@@ -672,9 +817,19 @@ fun ChatScreen(
                             )
                     ) {
                         Icon(
-                            imageVector = if (isEditing) Icons.Filled.Check else Icons.AutoMirrored.Filled.Send,
-                            contentDescription = if (isEditing) "Guardar edición" else "Enviar mensaje",
-                            tint = if (canSend) Color.White else if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8),
+                            imageVector = when {
+                                isRecordingVoice -> Icons.Filled.Stop
+                                isEditing -> Icons.Filled.Check
+                                hasComposedContent -> Icons.AutoMirrored.Filled.Send
+                                else -> Icons.Filled.Mic
+                            },
+                            contentDescription = when {
+                                isRecordingVoice -> "Detener y enviar nota de voz"
+                                isEditing -> "Guardar edicion"
+                                hasComposedContent -> "Enviar mensaje"
+                                else -> "Grabar nota de voz"
+                            },
+                            tint = if (canSend) Color.White else Slate500,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -833,6 +988,7 @@ private fun ChatHeader(
     peerPhone: String?,
     onNavigateBack: () -> Unit,
     onNavigateToInfo: () -> Unit,
+    onSearch: () -> Unit,
     ephemeralState: StateFlow<ChatEphemeralState>
 ) {
     val ephemeral by ephemeralState.collectAsStateWithLifecycle()
@@ -926,6 +1082,49 @@ private fun ChatHeader(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            IconButton(onClick = onSearch) {
+                Icon(Icons.Default.Search, contentDescription = "Buscar mensajes", tint = Slate500)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageSearchBar(
+    state: MessageSearchUiState,
+    onQueryChange: (String) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(shadowElevation = 1.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                placeholder = { Text("Buscar mensajes") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+            )
+            if (state.isSearching) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text(
+                if (state.results.isEmpty()) "0 de 0" else "${state.currentIndex + 1} de ${state.results.size}",
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 6.dp)
+            )
+            IconButton(onClick = onPrevious, enabled = state.results.isNotEmpty()) {
+                Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Resultado anterior")
+            }
+            IconButton(onClick = onNext, enabled = state.results.isNotEmpty()) {
+                Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Resultado siguiente")
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, contentDescription = "Cerrar busqueda")
             }
         }
     }

@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -47,10 +49,13 @@ import kotlinx.coroutines.launch
 @Composable
 fun RemindersScreen(
     viewModel: RemindersViewModel = hiltViewModel(),
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    highlightReminderId: String? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var editingReminder by remember { mutableStateOf<Reminder?>(null) }
+    var showCompleted by remember { mutableStateOf(false) }
+    var pendingDeletion by remember { mutableStateOf<Reminder?>(null) }
 
     Scaffold(
         topBar = {
@@ -80,8 +85,14 @@ fun RemindersScreen(
                     item {
                         ReminderHeaderStats(state.items)
                     }
-                    
                     item {
+                        TabRow(selectedTabIndex = if (showCompleted) 1 else 0) {
+                            Tab(selected = !showCompleted, onClick = { showCompleted = false }, text = { Text("Activos") })
+                            Tab(selected = showCompleted, onClick = { showCompleted = true }, text = { Text("Completados (${state.completedItems.size})") })
+                        }
+                    }
+                    
+                    if (!showCompleted) item {
                         AddReminderForm(
                             onAdd = { title, date, hasTime ->
                                 viewModel.addReminder(title, date, hasTime)
@@ -91,20 +102,24 @@ fun RemindersScreen(
                         )
                     }
 
-                    if (state.items.isEmpty()) {
+                    val visibleItems = if (showCompleted) state.completedItems else state.items
+                    if (visibleItems.isEmpty()) {
                         item {
                             EmptyRemindersState()
                         }
                     } else {
-                        items(state.items, key = { it.id }) { reminder ->
+                        items(visibleItems, key = { it.id }) { reminder ->
                             ReminderCard(
                                 item = reminder,
+                                highlighted = reminder.id == highlightReminderId,
                                 onUpdateDate = { newDate -> viewModel.updateDueDate(reminder.id, newDate) },
                                 onRestart = { viewModel.updateDueDate(reminder.id, nextMonthDueDate(reminder.dueDate)) },
                                 onUploadReceipt = { file, kind -> viewModel.uploadReceipt(reminder.id, file, kind) },
                                 onRemoveReceipt = { r -> viewModel.removeReceipt(reminder.id, r) },
                                 onLongClick = { editingReminder = reminder },
-                                onDelete = { viewModel.deleteReminder(reminder.id) }
+                                onDelete = { pendingDeletion = reminder },
+                                onComplete = { viewModel.completeReminder(reminder) },
+                                onRestore = { viewModel.restoreReminder(reminder) }
                             )
                         }
                     }
@@ -119,10 +134,19 @@ fun RemindersScreen(
         ReminderEditorDialog(
             reminder = reminder,
             onDismiss = { editingReminder = null },
-            onSave = { title, dueDate, hasTime ->
-                viewModel.updateReminder(reminder.id, title, dueDate, hasTime)
+            onSave = { title, dueDate, hasTime, repeatType ->
+                viewModel.updateReminder(reminder.id, title, dueDate, hasTime, repeatType)
                 editingReminder = null
             }
+        )
+    }
+    pendingDeletion?.let { reminder ->
+        AlertDialog(
+            onDismissRequest = { pendingDeletion = null },
+            title = { Text("Eliminar recordatorio") },
+            text = { Text("Esta acción eliminará el recordatorio y cancelará su alarma.") },
+            confirmButton = { TextButton(onClick = { viewModel.deleteReminder(reminder.id); pendingDeletion = null }) { Text("Eliminar") } },
+            dismissButton = { TextButton(onClick = { pendingDeletion = null }) { Text("Cancelar") } }
         )
     }
 }
@@ -318,7 +342,7 @@ fun AddReminderForm(
 private fun ReminderEditorDialog(
     reminder: Reminder,
     onDismiss: () -> Unit,
-    onSave: (String, Long, Boolean) -> Unit
+    onSave: (String, Long, Boolean, ReminderRepeatType) -> Unit
 ) {
     val context = LocalContext.current
     val initialCalendar = remember(reminder.id) {
@@ -329,6 +353,7 @@ private fun ReminderEditorDialog(
     var title by remember(reminder.id) { mutableStateOf(reminder.title) }
     var dueDate by remember(reminder.id) { mutableStateOf(reminder.dueDate) }
     var hasTime by remember(reminder.id) { mutableStateOf(reminder.hasTime) }
+    var repeatType by remember(reminder.id) { mutableStateOf(reminder.repeatType) }
     var selectedHour by remember(reminder.id) { mutableStateOf(initialCalendar.get(Calendar.HOUR_OF_DAY)) }
     var selectedMinute by remember(reminder.id) { mutableStateOf(initialCalendar.get(Calendar.MINUTE)) }
 
@@ -400,6 +425,12 @@ private fun ReminderEditorDialog(
                         Text("Hoy")
                     }
                 }
+                Text("Repetir", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    ReminderRepeatType.entries.forEach { type ->
+                        FilterChip(selected = repeatType == type, onClick = { repeatType = type }, label = { Text(when(type) { ReminderRepeatType.NONE -> "Nunca"; ReminderRepeatType.DAILY -> "Diario"; ReminderRepeatType.WEEKLY -> "Semanal"; ReminderRepeatType.MONTHLY -> "Mensual" }) })
+                    }
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -419,7 +450,7 @@ private fun ReminderEditorDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(title, dueDate, hasTime) },
+                onClick = { onSave(title, dueDate, hasTime, repeatType) },
                 enabled = title.isNotBlank() && dueDate > 0L
             ) {
                 Text("Guardar")
@@ -455,12 +486,15 @@ fun EmptyRemindersState() {
 @Composable
 fun ReminderCard(
     item: Reminder,
+    highlighted: Boolean = false,
     onUpdateDate: (Long) -> Unit,
     onRestart: () -> Unit,
     onUploadReceipt: (File, String) -> Unit,
     onRemoveReceipt: (Receipt) -> Unit,
     onLongClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onComplete: () -> Unit,
+    onRestore: () -> Unit
 ) {
     val context = LocalContext.current
     val isDark = androidx.compose.foundation.isSystemInDarkTheme()
@@ -516,7 +550,7 @@ fun ReminderCard(
             .combinedClickable(onClick = {}, onLongClick = onLongClick)
             .clip(RoundedCornerShape(16.dp))
             .background(bgColor)
-            .border(2.dp, borderColor, RoundedCornerShape(16.dp))
+            .border(2.dp, if (highlighted) Indigo600 else borderColor, RoundedCornerShape(16.dp))
             .padding(16.dp)
     ) {
         Box(modifier = Modifier.padding(top = 6.dp, end = 12.dp).size(10.dp).clip(CircleShape).background(dotColor))
@@ -531,6 +565,11 @@ fun ReminderCard(
             Spacer(modifier = Modifier.height(12.dp))
             
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = if (item.isCompleted) onRestore else onComplete, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp), modifier = Modifier.height(32.dp)) {
+                    Icon(if (item.isCompleted) Icons.Default.Restore else Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (item.isCompleted) "Restaurar" else "Completar", fontSize = 11.sp)
+                }
                 OutlinedButton(
                     onClick = { datePickerDialog.show() },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),

@@ -59,7 +59,18 @@ data class ChatMessage(
     val reactions: Map<String, String> = emptyMap(),
     val attachments: List<ChatAttachment> = emptyList(),
     val mentions: List<String> = emptyList(),
-    val forwardedFrom: ForwardedFrom? = null
+    val forwardedFrom: ForwardedFrom? = null,
+    val isSearchIndexed: Boolean = false,
+    val conversationId: String = ""
+)
+
+@Immutable
+data class ConversationReceipt(
+    val userId: String,
+    val lastDeliveredAt: Long = 0L,
+    val lastDeliveredMessageId: String? = null,
+    val lastReadAt: Long = 0L,
+    val lastReadMessageId: String? = null
 )
 
 @Immutable
@@ -83,5 +94,18 @@ data class ChatConversation(
     val createdAt: Long,
     val isGroup: Boolean,
     val name: String?,
-    val pinnedMessages: List<PinnedMessage> = emptyList()
+    val pinnedMessages: List<PinnedMessage> = emptyList(),
+    val isPinned: Boolean = false,
+    val pinnedAt: Long = 0L,
+    val isArchived: Boolean = false,
+    val archivedAt: Long = 0L
+)
+
+@Immutable
+data class ConversationUserState(
+    val conversationId: String,
+    val pinned: Boolean = false,
+    val pinnedAt: Long = 0L,
+    val archived: Boolean = false,
+    val archivedAt: Long = 0L
 )

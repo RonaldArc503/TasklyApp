@@ -17,14 +17,16 @@ class ReminderAlarmManager @Inject constructor(
 ) {
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
+    fun canScheduleExactAlarms(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+
     fun scheduleAlarms(reminders: List<Reminder>) {
         val now = System.currentTimeMillis()
         
-        reminders.forEach { reminder ->
+        reminders.filterNot(Reminder::isCompleted).forEach { reminder ->
             val intent = Intent(context, ReminderReceiver::class.java).apply {
                 putExtra("REMINDER_ID", reminder.id)
                 putExtra("REMINDER_TITLE", reminder.title)
-                putExtra("REMINDER_DUE_DATE", reminder.dueDate)
+                putExtra("REMINDER_DUE_DATE", reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate)
                 putExtra("REMINDER_HAS_TIME", reminder.hasTime)
             }
             
@@ -35,19 +37,20 @@ class ReminderAlarmManager @Inject constructor(
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            if (reminder.hasTime && reminder.dueDate > now) {
+            val triggerAt = reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate
+            if (reminder.hasTime && triggerAt > now && canScheduleExactAlarms()) {
                 // Schedule
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         alarmManager.setExactAndAllowWhileIdle(
                             AlarmManager.RTC_WAKEUP,
-                            reminder.dueDate,
+                            triggerAt,
                             pendingIntent
                         )
                     } else {
                         alarmManager.setExact(
                             AlarmManager.RTC_WAKEUP,
-                            reminder.dueDate,
+                            triggerAt,
                             pendingIntent
                         )
                     }

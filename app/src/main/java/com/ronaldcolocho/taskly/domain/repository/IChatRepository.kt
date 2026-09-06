@@ -2,7 +2,10 @@ package com.ronaldcolocho.taskly.domain.repository
 
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
+import com.ronaldcolocho.taskly.domain.model.ConversationUserState
+import com.ronaldcolocho.taskly.domain.model.ConversationReceipt
 import com.ronaldcolocho.taskly.domain.model.PinnedMessage
+import com.ronaldcolocho.taskly.domain.model.UserProfile
 import kotlinx.coroutines.flow.Flow
 
 interface IChatRepository {
@@ -14,6 +17,49 @@ interface IChatRepository {
     fun getRecentMessages(convId: String, currentUserId: String): Flow<List<ChatMessage>>
     suspend fun getChatInfoMessages(convId: String, currentUserId: String, limit: Long): List<ChatMessage>
     suspend fun getOlderMessages(convId: String, currentUserId: String, beforeTimestamp: Long, limit: Long): List<ChatMessage>
+    suspend fun getMessageWindowById(
+        convId: String,
+        currentUserId: String,
+        messageId: String,
+        windowSize: Long
+    ): List<ChatMessage>
+
+    suspend fun findOrCreateDirectConversation(
+        currentUser: UserProfile,
+        otherUser: UserProfile
+    ): Result<String>
+
+    fun subscribeConversationStates(
+        userId: String,
+        conversationIds: Set<String>
+    ): Flow<Map<String, ConversationUserState>>
+    fun getPinnedConversations(userId: String, limit: Long): Flow<List<ChatConversation>>
+    suspend fun getArchivedConversations(
+        userId: String,
+        beforeArchivedAt: Long?,
+        limit: Long
+    ): List<ChatConversation>
+    suspend fun searchConversations(userId: String, normalizedPrefix: String, limit: Long): List<ChatConversation>
+    suspend fun ensureConversationSearchIndexes(userId: String, conversations: List<ChatConversation>): Result<Unit>
+    suspend fun setConversationPinned(userId: String, conversationId: String, pinned: Boolean): Result<Unit>
+    suspend fun setConversationArchived(userId: String, conversationId: String, archived: Boolean): Result<Unit>
+    suspend fun searchMessages(convId: String, currentUserId: String, normalizedPrefix: String, limit: Long): List<ChatMessage>
+    suspend fun ensureMessageSearchIndexes(convId: String, messages: List<ChatMessage>): Result<Unit>
+    fun subscribeConversationReceipts(convId: String): Flow<Map<String, ConversationReceipt>>
+    suspend fun updateDeliveredCursor(
+        convId: String,
+        userId: String,
+        messageId: String,
+        deliveredAt: Long
+    ): Result<Unit>
+    suspend fun updateReadCursor(
+        convId: String,
+        userId: String,
+        messageId: String,
+        readAt: Long,
+        clearUnread: Boolean
+    ): Result<Unit>
+    suspend fun searchGlobalMessages(userId: String, normalizedPrefix: String, limit: Long): List<ChatMessage>
 
     suspend fun sendMessage(convId: String, currentUserId: String, message: ChatMessage): Result<Unit>
     suspend fun markAsRead(convId: String, currentUserId: String): Result<Unit>

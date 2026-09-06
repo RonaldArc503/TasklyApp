@@ -3,6 +3,7 @@ package com.ronaldcolocho.taskly.data.repository
 import android.content.Context
 import com.ronaldcolocho.taskly.domain.model.MediaDownloadState
 import com.ronaldcolocho.taskly.domain.model.MediaKind
+import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
 import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +22,8 @@ import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONArray
+import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +35,7 @@ class MediaCacheRepositoryImpl @Inject constructor(
 
     private val activeDownloads = ConcurrentHashMap<String, Flow<MediaDownloadState>>()
     private val rootDir: File by lazy { File(context.filesDir, "Taskly") }
+    private val audioCatalog = context.getSharedPreferences("taskly_media_catalog", Context.MODE_PRIVATE)
 
     /** Caché en memoria de rutas resueltas y estado de descarga (evita stats de disco en composición).
      *  ConcurrentHashMap no admite null, así que usamos un File centinela para "no encontrado". */
@@ -125,6 +129,45 @@ class MediaCacheRepositoryImpl @Inject constructor(
                 }
             }.getOrNull()
         }
+
+    override fun registerDownloadedAudio(reference: CachedAudioReference) {
+        if (reference.mediaId.isBlank() || reference.url.isBlank()) return
+        ioScope.launch {
+            val entries = readAudioCatalog().filterNot { it.mediaId == reference.mediaId }.toMutableList()
+            entries += reference.copy(downloadedAt = System.currentTimeMillis())
+            val bounded = entries.sortedByDescending { it.downloadedAt }.take(MAX_AUDIO_CATALOG)
+            val array = JSONArray()
+            bounded.forEach { item ->
+                array.put(JSONObject().apply {
+                    put("mediaId", item.mediaId); put("url", item.url); put("name", item.name)
+                    put("sourceMessageId", item.sourceMessageId); put("durationSeconds", item.durationSeconds)
+                    put("downloadedAt", item.downloadedAt)
+                })
+            }
+            audioCatalog.edit().putString(KEY_AUDIO_CATALOG, array.toString()).apply()
+        }
+    }
+
+    override suspend fun downloadedAudioReferences(): List<CachedAudioReference> = withContext(Dispatchers.IO) {
+        readAudioCatalog().filter { reference ->
+            val file = File(categoryDir(MediaKind.AUDIO), fileName(reference.mediaId, MediaKind.AUDIO))
+            file.exists() && file.length() > 0
+        }.sortedByDescending { it.downloadedAt }
+    }
+
+    private fun readAudioCatalog(): List<CachedAudioReference> = runCatching {
+        val array = JSONArray(audioCatalog.getString(KEY_AUDIO_CATALOG, "[]"))
+        buildList {
+            for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                add(CachedAudioReference(
+                    mediaId = item.optString("mediaId"), url = item.optString("url"),
+                    name = item.optString("name"), sourceMessageId = item.optString("sourceMessageId"),
+                    durationSeconds = item.optInt("durationSeconds"), downloadedAt = item.optLong("downloadedAt")
+                ))
+            }
+        }.filter { it.mediaId.isNotBlank() && it.url.isNotBlank() }
+    }.getOrDefault(emptyList())
 
     private fun resolveFile(mediaId: String): File? {
         MediaKind.entries.forEach { kind ->
@@ -262,6 +305,8 @@ class MediaCacheRepositoryImpl @Inject constructor(
     }
 
     private companion object {
+        const val KEY_AUDIO_CATALOG = "audio_references"
+        const val MAX_AUDIO_CATALOG = 500
         private val HEX = "0123456789abcdef".toCharArray()
     }
 }

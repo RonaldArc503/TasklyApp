@@ -8,8 +8,8 @@ import javax.inject.Inject
 class GetSavedItemsUseCase @Inject constructor(
     private val savedRepository: ISavedRepository
 ) {
-    operator fun invoke(uid: String, filter: String): Flow<List<SavedItem>> {
-        return savedRepository.getSavedItems(uid, filter)
+    operator fun invoke(uid: String): Flow<List<SavedItem>> {
+        return savedRepository.getSavedItems(uid)
     }
 }
 

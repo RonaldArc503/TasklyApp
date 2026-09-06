@@ -5,11 +5,13 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.Source
 import com.ronaldcolocho.taskly.data.mapper.toDto
 import com.ronaldcolocho.taskly.data.mapper.toDomain
 import com.ronaldcolocho.taskly.domain.model.SavedItem
 import com.ronaldcolocho.taskly.domain.repository.SavedCounts
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.launch
 import com.ronaldcolocho.taskly.domain.repository.ISavedRepository
 import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
@@ -25,56 +27,34 @@ class SavedRepositoryImpl @Inject constructor(
             .await()
     }
 
-    override fun getSavedItems(uid: String, filter: String): kotlinx.coroutines.flow.Flow<List<SavedItem>> = kotlinx.coroutines.flow.callbackFlow {
+    override fun getSavedItems(uid: String): kotlinx.coroutines.flow.Flow<List<SavedItem>> = kotlinx.coroutines.flow.callbackFlow {
         val collection = firestore.collection("users").document(uid).collection("saved")
-        val query: Query = when (filter) {
-            "messages" -> collection.whereEqualTo("kind", "message")
-                .orderBy("pinned", Query.Direction.DESCENDING)
-                .orderBy("pinnedAt", Query.Direction.DESCENDING)
-                .orderBy("savedAt", Query.Direction.DESCENDING)
-            "links" -> collection.whereEqualTo("kind", "link")
-                .orderBy("pinned", Query.Direction.DESCENDING)
-                .orderBy("pinnedAt", Query.Direction.DESCENDING)
-                .orderBy("savedAt", Query.Direction.DESCENDING)
-            "pinned" -> collection.whereEqualTo("pinned", true)
-                .orderBy("pinnedAt", Query.Direction.DESCENDING)
-                .orderBy("savedAt", Query.Direction.DESCENDING)
-            else -> collection.orderBy("pinned", Query.Direction.DESCENDING)
-                .orderBy("pinnedAt", Query.Direction.DESCENDING)
-                .orderBy("savedAt", Query.Direction.DESCENDING)
+        var emitted = false
+        fun map(snapshot: com.google.firebase.firestore.QuerySnapshot): List<SavedItem> = snapshot.documents.mapNotNull { doc ->
+            doc.toObject(com.ronaldcolocho.taskly.data.model.SavedItemDto::class.java)?.toDomain(doc.id)
         }
 
-        // This fallback keeps the screen usable until a newly declared composite
-        // index has been deployed and finished building in the Firebase project.
-        val fallbackQuery: Query = when (filter) {
-            "messages" -> collection.whereEqualTo("kind", "message")
-            "links" -> collection.whereEqualTo("kind", "link")
-            "pinned" -> collection.whereEqualTo("pinned", true)
-            else -> collection
+        launch {
+            runCatching { collection.get(Source.CACHE).await() }
+                .getOrNull()
+                ?.let { cached ->
+                    emitted = true
+                    trySend(map(cached))
+                }
         }
-        var listener: ListenerRegistration? = null
-        fun listen(activeQuery: Query, sortLocally: Boolean) {
-            listener = activeQuery.addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    if (error.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION && !sortLocally) {
-                        listener?.remove()
-                        listen(fallbackQuery, sortLocally = true)
-                    } else {
-                        close(error)
-                    }
-                    return@addSnapshotListener
-                }
-                if (snapshot != null) {
-                    val mapped = snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(com.ronaldcolocho.taskly.data.model.SavedItemDto::class.java)?.toDomain(doc.id)
-                    }
-                    val items = if (sortLocally) mapped.sortedWith(savedItemComparator) else mapped
-                    trySend(items)
-                }
+        val listener = collection.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                // Un fallo de red o del listener no debe ocultar la cache local.
+                // La pantalla parte de un estado vacio seguro y la lectura CACHE
+                // anterior puede completar despues de este callback.
+                return@addSnapshotListener
+            }
+            snapshot?.let {
+                emitted = true
+                trySend(map(it))
             }
         }
-        listen(query, sortLocally = false)
-        awaitClose { listener?.remove() }
+        awaitClose { listener.remove() }
     }
 
     override suspend fun getSavedCounts(uid: String): SavedCounts {
@@ -99,9 +79,4 @@ class SavedRepositoryImpl @Inject constructor(
             .await()
     }
 
-    private companion object {
-        val savedItemComparator = compareByDescending<SavedItem> { it.pinned }
-            .thenByDescending { if (it.pinned) it.pinnedAt else it.savedAt }
-            .thenByDescending { it.savedAt }
-    }
 }

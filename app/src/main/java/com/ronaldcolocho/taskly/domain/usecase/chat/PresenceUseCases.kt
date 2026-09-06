@@ -11,6 +11,13 @@ class SubscribePresenceUseCase @Inject constructor(
     operator fun invoke(uid: String): Flow<Presence?> = repository.subscribePresence(uid)
 }
 
+class SubscribePresencesUseCase @Inject constructor(
+    private val repository: IPresenceRepository
+) {
+    operator fun invoke(uids: Set<String>): Flow<Map<String, Presence>> =
+        repository.subscribePresences(uids)
+}
+
 class SetOnlineUseCase @Inject constructor(
     private val repository: IPresenceRepository
 ) {

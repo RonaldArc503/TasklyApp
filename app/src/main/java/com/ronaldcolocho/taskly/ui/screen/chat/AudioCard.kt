@@ -38,6 +38,7 @@ import com.ronaldcolocho.taskly.audio.AudioTrack
 import com.ronaldcolocho.taskly.domain.model.ChatAttachment
 import com.ronaldcolocho.taskly.domain.model.MediaDownloadState
 import com.ronaldcolocho.taskly.domain.model.MediaKind
+import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
 import com.ronaldcolocho.taskly.domain.util.formatBytes
 import com.ronaldcolocho.taskly.domain.util.formatDuration
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
@@ -66,7 +67,13 @@ fun AudioCard(
     }
 
     val track = remember(mediaId) {
-        AudioTrack(id = mediaId, url = att.url, name = att.name, msgId = mediaId)
+        AudioTrack(
+            id = mediaId,
+            url = att.url,
+            name = att.name,
+            msgId = mediaId,
+            durationSeconds = att.duration ?: 0
+        )
     }
 
     // Estado de reproducción acotado: el ticker de posición solo recompone la tarjeta activa.
@@ -85,6 +92,18 @@ fun AudioCard(
         if (pendingPlay && downloadState is MediaDownloadState.Downloaded) {
             pendingPlay = false
             controller.toggleTrack(track)
+        }
+        if (downloadState is MediaDownloadState.Downloaded) {
+            mediaManager.registerDownloadedAudio(
+                CachedAudioReference(
+                    mediaId = mediaId,
+                    url = att.url,
+                    name = att.name,
+                    sourceMessageId = mediaId,
+                    durationSeconds = att.duration ?: 0,
+                    downloadedAt = System.currentTimeMillis()
+                )
+            )
         }
     }
 

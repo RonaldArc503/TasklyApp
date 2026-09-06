@@ -11,8 +11,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -23,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
+import com.ronaldcolocho.taskly.domain.util.ChatSearchNormalizer
 import com.ronaldcolocho.taskly.ui.util.avatarColor
 import com.ronaldcolocho.taskly.ui.util.initialsOf
 
@@ -37,7 +40,17 @@ fun ForwardSheet(
     onDismiss: () -> Unit,
     onSend: (List<String>) -> Unit
 ) {
-    val targets = conversations.filter { it.id != currentConvId }
+    var query by rememberSaveable { mutableStateOf("") }
+    val targets = remember(conversations, currentConvId, query) {
+        val normalized = ChatSearchNormalizer.normalize(query)
+        conversations.filter { conversation ->
+            conversation.id != currentConvId && (
+                normalized.isBlank() || forwardSearchValues(conversation).any {
+                    ChatSearchNormalizer.matches(it, normalized)
+                }
+            )
+        }
+    }
     val selected = remember { mutableStateListOf<String>() }
     var sending by remember { mutableStateOf(false) }
 
@@ -79,6 +92,22 @@ fun ForwardSheet(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                singleLine = true,
+                placeholder = { Text("Buscar conversacion") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "Limpiar busqueda")
+                        }
+                    }
+                }
+            )
 
             if (targets.isEmpty()) {
                 Box(modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
@@ -170,5 +199,13 @@ fun ForwardSheet(
                 }
             }
         }
+    }
+}
+
+private fun forwardSearchValues(conversation: ChatConversation): List<String> = buildList {
+    conversation.name?.let(::add)
+    conversation.members.values.forEach { member ->
+        add(member.displayName)
+        add(member.phone)
     }
 }

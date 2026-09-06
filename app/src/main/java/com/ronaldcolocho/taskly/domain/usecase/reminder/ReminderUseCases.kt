@@ -2,6 +2,7 @@ package com.ronaldcolocho.taskly.domain.usecase.reminder
 
 import com.ronaldcolocho.taskly.domain.model.reminder.Receipt
 import com.ronaldcolocho.taskly.domain.model.reminder.Reminder
+import com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType
 import com.ronaldcolocho.taskly.domain.repository.ReminderRepository
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -9,9 +10,12 @@ import javax.inject.Inject
 class GetRemindersUseCase @Inject constructor(private val repo: ReminderRepository) {
     operator fun invoke(uid: String): Flow<List<Reminder>> = repo.getReminders(uid)
 }
+class GetCompletedRemindersUseCase @Inject constructor(private val repo: ReminderRepository) {
+    operator fun invoke(uid: String): Flow<List<Reminder>> = repo.getCompletedReminders(uid)
+}
 
 class CreateReminderUseCase @Inject constructor(private val repo: ReminderRepository) {
-    suspend operator fun invoke(uid: String, title: String, dueDate: Long, hasTime: Boolean) {
+    suspend operator fun invoke(uid: String, title: String, dueDate: Long, hasTime: Boolean, repeatType: ReminderRepeatType = ReminderRepeatType.NONE) {
         val id = "rem-${System.currentTimeMillis().toString(36)}-${java.util.UUID.randomUUID().toString().take(6)}"
         val now = System.currentTimeMillis()
         val reminder = Reminder(
@@ -19,6 +23,7 @@ class CreateReminderUseCase @Inject constructor(private val repo: ReminderReposi
             title = title,
             dueDate = dueDate,
             hasTime = hasTime,
+            repeatType = repeatType,
             receipts = emptyList(),
             createdAt = now,
             updatedAt = now

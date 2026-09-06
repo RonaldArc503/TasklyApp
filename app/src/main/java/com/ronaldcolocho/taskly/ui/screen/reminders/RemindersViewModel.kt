@@ -19,6 +19,7 @@ sealed interface RemindersUiState {
     object Loading : RemindersUiState
     data class Success(
         val items: List<Reminder>,
+        val completedItems: List<Reminder> = emptyList(),
         val error: String? = null,
         val isRefreshing: Boolean = false
     ) : RemindersUiState
@@ -27,6 +28,7 @@ sealed interface RemindersUiState {
 @HiltViewModel
 class RemindersViewModel @Inject constructor(
     private val getRemindersUseCase: GetRemindersUseCase,
+    private val getCompletedRemindersUseCase: GetCompletedRemindersUseCase,
     private val createReminderUseCase: CreateReminderUseCase,
     private val updateReminderUseCase: UpdateReminderUseCase,
     private val deleteReminderUseCase: DeleteReminderUseCase,
@@ -43,6 +45,8 @@ class RemindersViewModel @Inject constructor(
     val uiState: StateFlow<RemindersUiState> = _uiState.asStateFlow()
 
     private val currentUserId = getCurrentUserIdUseCase()
+    private val activeReminders = MutableStateFlow<List<Reminder>>(emptyList())
+    private val completedReminders = MutableStateFlow<List<Reminder>>(emptyList())
 
     init {
         loadReminders()
@@ -51,11 +55,19 @@ class RemindersViewModel @Inject constructor(
     private fun loadReminders() {
         if (currentUserId == null) return
         viewModelScope.launch {
+            getCompletedRemindersUseCase(currentUserId).collect { completed ->
+                completedReminders.value = completed
+                val state = _uiState.value as? RemindersUiState.Success ?: return@collect
+                _uiState.value = state.copy(completedItems = completed)
+            }
+        }
+        viewModelScope.launch {
             var lastAlarmSignature: List<Triple<String, Long, String>>? = null
             getRemindersUseCase(currentUserId)
                 .onStart { emit(emptyList()) }
                 .collect { list ->
-                val alarmSignature = list.map { Triple(it.id, it.dueDate, "${it.title}:${it.hasTime}") }.sortedBy { it.first }
+                activeReminders.value = list
+                val alarmSignature = list.map { Triple(it.id, it.snoozedUntil.takeIf { t -> t > 0L } ?: it.dueDate, "${it.title}:${it.hasTime}") }.sortedBy { it.first }
                 if (alarmSignature != lastAlarmSignature) {
                     lastAlarmSignature = alarmSignature
                     launch(kotlinx.coroutines.Dispatchers.Default) {
@@ -71,7 +83,7 @@ class RemindersViewModel @Inject constructor(
                     if (a.dueDate > 0 && b.dueDate > 0) return@sortedWith a.dueDate.compareTo(b.dueDate)
                     b.createdAt.compareTo(a.createdAt)
                 }
-                _uiState.value = RemindersUiState.Success(sorted, isRefreshing = false)
+                _uiState.value = RemindersUiState.Success(sorted, completedReminders.value, isRefreshing = false)
             }
         }
     }
@@ -106,7 +118,7 @@ class RemindersViewModel @Inject constructor(
         }
     }
 
-    fun updateReminder(id: String, title: String, dueDate: Long, hasTime: Boolean) {
+    fun updateReminder(id: String, title: String, dueDate: Long, hasTime: Boolean, repeatType: com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType = com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
         if (currentUserId == null) return
         if (title.isBlank()) {
             showError("Escribe el detalle del aviso.")
@@ -117,7 +129,7 @@ class RemindersViewModel @Inject constructor(
                 updateReminderUseCase(
                     currentUserId,
                     id,
-                    mapOf("title" to title.trim(), "dueDate" to dueDate, "hasTime" to hasTime)
+                    mapOf("title" to title.trim(), "dueDate" to dueDate, "hasTime" to hasTime, "repeatType" to repeatType.name, "snoozedUntil" to 0L)
                 )
             } catch (e: Exception) {
                 showError("No se pudo actualizar el recordatorio.")
@@ -135,6 +147,32 @@ class RemindersViewModel @Inject constructor(
                 showError("Error al eliminar.")
             }
         }
+    }
+
+    fun completeReminder(reminder: Reminder) {
+        if (currentUserId == null) return
+        viewModelScope.launch {
+            alarmManager.cancel(reminder.id)
+            val patch = if (reminder.repeatType == com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
+                mapOf("isCompleted" to true, "completedAt" to System.currentTimeMillis(), "snoozedUntil" to 0L)
+            } else {
+                mapOf("dueDate" to com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence(reminder.dueDate, reminder.repeatType), "snoozedUntil" to 0L)
+            }
+            runCatching { updateReminderUseCase(currentUserId, reminder.id, patch) }.onFailure { showError("No se pudo completar el recordatorio.") }
+        }
+    }
+
+    fun restoreReminder(reminder: Reminder) {
+        if (currentUserId == null) return
+        viewModelScope.launch {
+            runCatching { updateReminderUseCase(currentUserId, reminder.id, mapOf("isCompleted" to false, "completedAt" to 0L)) }
+                .onFailure { showError("No se pudo restaurar el recordatorio.") }
+        }
+    }
+
+    fun snoozeReminder(id: String, until: Long) {
+        if (currentUserId == null) return
+        viewModelScope.launch { runCatching { updateReminderUseCase(currentUserId, id, mapOf("snoozedUntil" to until)) } }
     }
 
     fun uploadReceipt(reminderId: String, file: File, kind: String) {

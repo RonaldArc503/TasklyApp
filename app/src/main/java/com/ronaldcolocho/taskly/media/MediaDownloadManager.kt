@@ -4,6 +4,7 @@ import androidx.compose.runtime.Stable
 import com.ronaldcolocho.taskly.domain.model.MediaDownloadState
 import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
+import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,6 +61,8 @@ class MediaDownloadManager @Inject constructor(
     fun isDownloaded(mediaId: String): Boolean = cache.isDownloaded(mediaId)
 
     fun fileFor(mediaId: String, kind: MediaKind): File? = cache.fileFor(mediaId, kind)
+
+    fun registerDownloadedAudio(reference: CachedAudioReference) = cache.registerDownloadedAudio(reference)
 
     fun resolveLocalFile(mediaId: String, kind: MediaKind) {
         if (_states.value[mediaId] is MediaDownloadState.Downloaded) return

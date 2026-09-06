@@ -65,7 +65,10 @@ data class ChatMessageDto(
     val attachments: List<ChatAttachmentDto>? = null,
     val mentions: List<String>? = null,
     val forwardedFrom: ForwardedFromDto? = null,
-    val pending: Boolean = false
+    val pending: Boolean = false,
+    val searchTerms: List<String>? = null,
+    val contentKinds: List<String>? = null,
+    val conversationId: String = ""
 )
 
 

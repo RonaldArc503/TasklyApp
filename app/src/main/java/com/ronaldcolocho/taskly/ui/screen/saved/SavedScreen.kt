@@ -34,20 +34,51 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.SavedItem
+import com.ronaldcolocho.taskly.domain.model.ChatAttachment
+import com.ronaldcolocho.taskly.domain.model.AttachmentKind
+import com.ronaldcolocho.taskly.domain.model.MediaKind
+import com.ronaldcolocho.taskly.media.MediaDownloadManager
+import com.ronaldcolocho.taskly.ui.screen.chat.AttachmentLightbox
+import com.ronaldcolocho.taskly.ui.screen.chat.LightboxItem
+import com.ronaldcolocho.taskly.ui.screen.chat.rememberMediaDownloadManager
 import com.ronaldcolocho.taskly.ui.theme.*
+import com.ronaldcolocho.taskly.util.AttachmentActions
+import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SavedScreen(
     viewModel: SavedViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
-    onNavigateToChat: (String) -> Unit
+    onNavigateToChat: (String, String?) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var selectedItem by remember { mutableStateOf<SavedItem?>(null) }
     val sheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
+    val mediaManager = rememberMediaDownloadManager()
+    var lightboxItems by remember { mutableStateOf<List<LightboxItem>?>(null) }
+    var showSortMenu by remember { mutableStateOf(false) }
+
+    fun openOriginal(item: SavedItem) {
+        onNavigateToChat(item.convId, item.sourceMessageId.takeIf { it.isNotBlank() })
+    }
+
+    fun openAttachment(item: SavedItem, attachment: ChatAttachment) {
+        when (attachment.kind) {
+            AttachmentKind.IMAGE -> lightboxItems = listOf(LightboxItem(attachment, item.text))
+            AttachmentKind.PDF, AttachmentKind.DOC, AttachmentKind.FILE -> scope.launch {
+                val local = mediaManager.fileFor(attachment.publicId, MediaKind.DOCUMENT)
+                    ?: mediaManager.awaitLocalFile(attachment.publicId, attachment.url, MediaKind.DOCUMENT)
+                if (local != null) AttachmentActions.openLocalFile(context, local, attachment.mimeType)
+                else AttachmentActions.openExternal(context, attachment.url)
+            }
+            else -> openOriginal(item)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -79,7 +110,22 @@ fun SavedScreen(
                 ) {
                     // Header
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        Text("Mis guardados", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Mis guardados", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+                            Box {
+                                IconButton(onClick = { showSortMenu = true }) {
+                                    Icon(Icons.Default.Sort, contentDescription = "Ordenar guardados")
+                                }
+                                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                                    SavedSort.entries.forEach { sort ->
+                                        DropdownMenuItem(
+                                            text = { Text(sort.label) },
+                                            onClick = { viewModel.setSort(sort); showSortMenu = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         Text(
                             "Mensajes y links que guardaste, con los más importantes fijados al inicio.",
                             fontSize = 14.sp,
@@ -87,6 +133,20 @@ fun SavedScreen(
                             modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
                         )
                     }
+
+                    OutlinedTextField(
+                        value = state.query,
+                        onValueChange = viewModel::setQuery,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        singleLine = true,
+                        placeholder = { Text("Buscar texto, archivo, enlace, chat o remitente") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (state.query.isNotEmpty()) IconButton(onClick = { viewModel.setQuery("") }) {
+                                Icon(Icons.Default.Close, contentDescription = "Limpiar busqueda")
+                            }
+                        }
+                    )
 
                     // Filters
                     Row(
@@ -155,10 +215,11 @@ fun SavedScreen(
                         ) {
                             items(state.items, key = { it.id }) { item ->
                                 SavedCard(
-                                    item = item,
-                                    onPin = { pinned -> viewModel.pinItem(item.id, pinned) },
-                                    onMenu = { selectedItem = item },
-                                    onClick = { onNavigateToChat(item.convId) }
+                                item = item,
+                                onPin = { pinned -> viewModel.pinItem(item.id, pinned) },
+                                onMenu = { selectedItem = item },
+                                onClick = { openOriginal(item) },
+                                onOpenAttachment = { attachment -> openAttachment(item, attachment) }
                                 )
                             }
                         }
@@ -166,6 +227,15 @@ fun SavedScreen(
                 }
             }
         }
+    }
+
+    lightboxItems?.let { items ->
+        AttachmentLightbox(
+            items = items,
+            initialIndex = 0,
+            mediaManager = mediaManager,
+            onClose = { lightboxItems = null }
+        )
     }
 
     if (selectedItem != null) {
@@ -188,6 +258,19 @@ fun SavedScreen(
                         modifier = Modifier.padding(bottom = 16.dp)
                     )
                 }
+
+                ListItem(
+                    headlineContent = { Text("Ir al mensaje") },
+                    leadingContent = {
+                        Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(Indigo100), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Forward, contentDescription = null, tint = Indigo600, modifier = Modifier.size(20.dp))
+                        }
+                    },
+                    modifier = Modifier.clickable {
+                        openOriginal(selectedItem!!)
+                        selectedItem = null
+                    }
+                )
 
                 ListItem(
                     headlineContent = { Text("Copiar") },
@@ -295,7 +378,8 @@ fun SavedCard(
     item: SavedItem,
     onPin: (Boolean) -> Unit,
     onMenu: () -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onOpenAttachment: (ChatAttachment) -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
     val borderColor = if (item.pinned) Color(0xFFFCD34D) else Slate200
@@ -381,11 +465,17 @@ fun SavedCard(
                         .fillMaxWidth()
                         .height(200.dp)
                         .clip(RoundedCornerShape(8.dp))
+                        .clickable { onOpenAttachment(image) }
                 )
             }
 
             if (otherAttachments.isNotEmpty()) {
-                Box(modifier = Modifier.padding(top = 8.dp).clip(CircleShape).background(Slate100).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                Box(modifier = Modifier
+                    .padding(top = 8.dp)
+                    .clip(CircleShape)
+                    .background(Slate100)
+                    .clickable { onOpenAttachment(otherAttachments.first()) }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)) {
                     Text(
                         text = if (otherAttachments.size == 1) otherAttachments.first().name else "${otherAttachments.size} archivos",
                         fontSize = 11.sp,
@@ -394,6 +484,13 @@ fun SavedCard(
                     )
                 }
             }
+
+            Text(
+                text = savedDateLabel(item),
+                fontSize = 11.sp,
+                color = Slate500,
+                modifier = Modifier.padding(top = 8.dp)
+            )
         }
 
         Spacer(modifier = Modifier.width(8.dp))
@@ -411,5 +508,16 @@ fun SavedCard(
         ) {
             Icon(Icons.Default.Star, contentDescription = null, tint = pinTint, modifier = Modifier.size(16.dp))
         }
+    }
+}
+
+private fun savedDateLabel(item: SavedItem): String {
+    val formatter = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+    val saved = formatter.format(Date(item.savedAt))
+    val original = item.createdAt.takeIf { it > 0L }?.let { formatter.format(Date(it)) }
+    return if (original != null && original != saved) {
+        "Guardado: $saved · Mensaje: $original"
+    } else {
+        "Guardado: $saved"
     }
 }

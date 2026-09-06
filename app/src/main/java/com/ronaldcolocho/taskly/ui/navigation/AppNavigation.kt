@@ -59,9 +59,11 @@ sealed class Route(val route: String) {
     object Home : Route("home")
     object Tasks : Route("tasks")
     object ChatList : Route("chat_list")
-    object ChatDetail : Route("chat/{convId}") {
-        fun createRoute(convId: String) = "chat/$convId"
+    object ChatDetail : Route("chat/{convId}?messageId={messageId}") {
+        fun createRoute(convId: String, messageId: String? = null) =
+            "chat/$convId" + (messageId?.let { "?messageId=${android.net.Uri.encode(it)}" } ?: "")
     }
+    object GlobalChatSearch : Route("chat_search")
     object ChatInfo : Route("chat_info/{convId}") {
         fun createRoute(convId: String) = "chat_info/$convId"
     }
@@ -70,6 +72,10 @@ sealed class Route(val route: String) {
     object Profile : Route("profile")
     object Settings : Route("settings")
     object Converter : Route("converter")
+    object Music : Route("music")
+    object MusicPlaylist : Route("music/playlist/{playlistId}") {
+        fun createRoute(playlistId: String) = "music/playlist/$playlistId"
+    }
 }
 
 @Composable
@@ -182,10 +188,26 @@ private fun MainScaffold() {
             ) {
                 composable(Route.Home.route) { HomeScreen() }
                 composable(Route.Tasks.route) { TasksScreen() }
-                composable(Route.ChatList.route) { ChatListScreen(onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) }) }
+                composable(Route.ChatList.route) {
+                    ChatListScreen(
+                        onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) },
+                        onNavigateToGlobalSearch = { navController.navigate(Route.GlobalChatSearch.route) }
+                    )
+                }
+                composable(Route.GlobalChatSearch.route) {
+                    com.ronaldcolocho.taskly.ui.screen.chat.GlobalChatSearchScreen(
+                        onBack = { navController.popBackStack() },
+                        onOpenResult = { conversationId, messageId ->
+                            navController.navigate(Route.ChatDetail.createRoute(conversationId, messageId))
+                        }
+                    )
+                }
                 composable(
                     route = Route.ChatDetail.route,
-                    arguments = listOf(navArgument("convId") { type = NavType.StringType }),
+                    arguments = listOf(
+                        navArgument("convId") { type = NavType.StringType },
+                        navArgument("messageId") { type = NavType.StringType; nullable = true; defaultValue = null }
+                    ),
                     enterTransition = {
                         androidx.compose.animation.slideInHorizontally(
                             initialOffsetX = { fullWidth -> fullWidth },
@@ -240,12 +262,18 @@ private fun MainScaffold() {
                 }
                 composable(
                     route = Route.Reminders.route,
-                    deepLinks = listOf(androidx.navigation.navDeepLink { uriPattern = "taskly://reminders" })
-                ) { com.ronaldcolocho.taskly.ui.screen.reminders.RemindersScreen(onNavigateBack = { navController.popBackStack() }) }
+                    arguments = listOf(androidx.navigation.navArgument("reminderId") { nullable = true; defaultValue = null }),
+                    deepLinks = listOf(androidx.navigation.navDeepLink { uriPattern = "taskly://reminders?reminderId={reminderId}" })
+                ) { entry -> com.ronaldcolocho.taskly.ui.screen.reminders.RemindersScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    highlightReminderId = entry.arguments?.getString("reminderId")
+                ) }
                 composable(Route.Saved.route) {
                     com.ronaldcolocho.taskly.ui.screen.saved.SavedScreen(
                         onNavigateBack = { navController.popBackStack() },
-                        onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) }
+                        onNavigateToChat = { convId, messageId ->
+                            navController.navigate(Route.ChatDetail.createRoute(convId, messageId))
+                        }
                     )
                 }
                 composable(Route.Converter.route) {
@@ -258,11 +286,28 @@ private fun MainScaffold() {
                         onLogout = { },
                         onNavigateToSaved = { navController.navigate(Route.Saved.route) },
                         onNavigateToConverter = { navController.navigate(Route.Converter.route) },
-                        onNavigateToSettings = { navController.navigate(Route.Settings.route) }
+                        onNavigateToSettings = { navController.navigate(Route.Settings.route) },
+                        onNavigateToMusic = { navController.navigate(Route.Music.route) }
                     )
                 }
                 composable(Route.Settings.route) {
                     com.ronaldcolocho.taskly.ui.screen.settings.SettingsScreen(
+                        onNavigateBack = { navController.popBackStack() }
+                    )
+                }
+                composable(Route.Music.route) {
+                    com.ronaldcolocho.taskly.ui.screen.music.MusicScreen(
+                        audioController = audioController,
+                        onNavigateBack = { navController.popBackStack() },
+                        onOpenPlaylist = { id -> navController.navigate(Route.MusicPlaylist.createRoute(id)) }
+                    )
+                }
+                composable(
+                    Route.MusicPlaylist.route,
+                    arguments = listOf(navArgument("playlistId") { type = NavType.StringType })
+                ) {
+                    com.ronaldcolocho.taskly.ui.screen.music.PlaylistDetailScreen(
+                        audioController = audioController,
                         onNavigateBack = { navController.popBackStack() }
                     )
                 }

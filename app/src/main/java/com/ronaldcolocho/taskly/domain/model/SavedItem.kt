@@ -10,6 +10,7 @@ data class SavedItem(
     val senderName: String,
     val convId: String,
     val convName: String,
+    val sourceMessageId: String = "",
     val createdAt: Long,
     val savedAt: Long,
     val pinned: Boolean,

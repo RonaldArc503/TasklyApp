@@ -44,8 +44,6 @@ import com.ronaldcolocho.taskly.ui.screen.chat.rememberMediaDownloadManager
 import com.ronaldcolocho.taskly.ui.theme.*
 import com.ronaldcolocho.taskly.util.AttachmentActions
 import kotlinx.coroutines.launch
-import java.text.DateFormat
-import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,10 +81,25 @@ fun SavedScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { },
+                title = { Text("Mis guardados", fontWeight = FontWeight.ExtraBold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showSortMenu = true }) {
+                            Icon(Icons.Default.Sort, contentDescription = "Ordenar guardados")
+                        }
+                        DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                            SavedSort.entries.forEach { sort ->
+                                DropdownMenuItem(
+                                    text = { Text(sort.label) },
+                                    onClick = { viewModel.setSort(sort); showSortMenu = false }
+                                )
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -108,38 +121,13 @@ fun SavedScreen(
                         .fillMaxSize()
                         .padding(padding)
                 ) {
-                    // Header
-                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Mis guardados", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
-                            Box {
-                                IconButton(onClick = { showSortMenu = true }) {
-                                    Icon(Icons.Default.Sort, contentDescription = "Ordenar guardados")
-                                }
-                                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                                    SavedSort.entries.forEach { sort ->
-                                        DropdownMenuItem(
-                                            text = { Text(sort.label) },
-                                            onClick = { viewModel.setSort(sort); showSortMenu = false }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        Text(
-                            "Mensajes y links que guardaste, con los más importantes fijados al inicio.",
-                            fontSize = 14.sp,
-                            color = Slate500,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
-                        )
-                    }
-
+                    // Esta cabecera queda fuera de LazyColumn y no se desplaza con los guardados.
                     OutlinedTextField(
                         value = state.query,
                         onValueChange = viewModel::setQuery,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                         singleLine = true,
-                        placeholder = { Text("Buscar texto, archivo, enlace, chat o remitente") },
+                        placeholder = { Text("Escribe tu búsqueda") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = {
                             if (state.query.isNotEmpty()) IconButton(onClick = { viewModel.setQuery("") }) {
@@ -485,12 +473,6 @@ fun SavedCard(
                 }
             }
 
-            Text(
-                text = savedDateLabel(item),
-                fontSize = 11.sp,
-                color = Slate500,
-                modifier = Modifier.padding(top = 8.dp)
-            )
         }
 
         Spacer(modifier = Modifier.width(8.dp))
@@ -508,16 +490,5 @@ fun SavedCard(
         ) {
             Icon(Icons.Default.Star, contentDescription = null, tint = pinTint, modifier = Modifier.size(16.dp))
         }
-    }
-}
-
-private fun savedDateLabel(item: SavedItem): String {
-    val formatter = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-    val saved = formatter.format(Date(item.savedAt))
-    val original = item.createdAt.takeIf { it > 0L }?.let { formatter.format(Date(it)) }
-    return if (original != null && original != saved) {
-        "Guardado: $saved · Mensaje: $original"
-    } else {
-        "Guardado: $saved"
     }
 }

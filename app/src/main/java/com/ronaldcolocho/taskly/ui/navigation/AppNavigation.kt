@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +80,10 @@ sealed class Route(val route: String) {
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    sharedUrl: String? = null,
+    onSharedUrlHandled: (String) -> Unit = {}
+) {
     val authViewModel: AuthViewModel = hiltViewModel()
     val authState by authViewModel.authState.collectAsStateWithLifecycle()
 
@@ -93,13 +97,16 @@ fun AppNavigation() {
             AuthScreen()
         }
         AuthState.LoggedIn -> {
-            MainScaffold()
+            MainScaffold(sharedUrl, onSharedUrlHandled)
         }
     }
 }
 
 @Composable
-private fun MainScaffold() {
+private fun MainScaffold(
+    sharedUrl: String?,
+    onSharedUrlHandled: (String) -> Unit
+) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
@@ -109,6 +116,16 @@ private fun MainScaffold() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val networkViewModel: NetworkViewModel = hiltViewModel()
     val isOnline by networkViewModel.isOnline.collectAsStateWithLifecycle()
+
+    LaunchedEffect(sharedUrl) {
+        sharedUrl ?: return@LaunchedEffect
+        navController.navigate(Route.Converter.route) {
+            launchSingleTop = true
+        }
+        navController.getBackStackEntry(Route.Converter.route)
+            .savedStateHandle[SHARED_URL_KEY] = sharedUrl
+        onSharedUrlHandled(sharedUrl)
+    }
 
     LaunchedEffect(Unit) {
         audioController.setTrackResolver { track -> mediaManager.fileFor(track.id, MediaKind.AUDIO) }
@@ -139,6 +156,16 @@ private fun MainScaffold() {
         Route.Home.route, Route.Tasks.route, Route.ChatList.route, Route.Reminders.route, Route.Profile.route
     )
 
+    val navigateToTopLevel: (Route) -> Unit = { route ->
+        navController.navigate(route.route) {
+            popUpTo(navController.graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     Scaffold(
         bottomBar = {
             if (isBottomBarVisible) {
@@ -155,15 +182,7 @@ private fun MainScaffold() {
                             icon = { Icon(imageVector = icon as ImageVector, contentDescription = label) },
                             label = { Text(label) },
                             selected = currentDestination?.hierarchy?.any { it.route == routeObj.route } == true,
-                            onClick = {
-                                navController.navigate(routeObj.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            }
+                            onClick = { navigateToTopLevel(routeObj) }
                         )
                     }
                 }
@@ -186,7 +205,13 @@ private fun MainScaffold() {
                 startDestination = Route.Home.route,
                 modifier = Modifier.weight(1f)
             ) {
-                composable(Route.Home.route) { HomeScreen() }
+                composable(Route.Home.route) { 
+                    HomeScreen(
+                        onNavigateToTasks = { navigateToTopLevel(Route.Tasks) },
+                        onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) },
+                        onNavigateToReminders = { navigateToTopLevel(Route.Reminders) }
+                    ) 
+                }
                 composable(Route.Tasks.route) { TasksScreen() }
                 composable(Route.ChatList.route) {
                     ChatListScreen(
@@ -276,8 +301,12 @@ private fun MainScaffold() {
                         }
                     )
                 }
-                composable(Route.Converter.route) {
+                composable(Route.Converter.route) { entry ->
+                    val sharedUrl = remember(entry) {
+                        entry.savedStateHandle.remove<String>(SHARED_URL_KEY)
+                    }
                     com.ronaldcolocho.taskly.ui.screen.converter.ConverterScreen(
+                        sharedUrl = sharedUrl,
                         onNavigateBack = { navController.popBackStack() }
                     )
                 }
@@ -315,6 +344,8 @@ private fun MainScaffold() {
         }
     }
 }
+
+private const val SHARED_URL_KEY = "shared_url"
 
 @Composable
 private fun OfflineBanner() {

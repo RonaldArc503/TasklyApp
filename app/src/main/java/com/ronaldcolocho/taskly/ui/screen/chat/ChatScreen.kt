@@ -178,6 +178,9 @@ fun ChatScreen(
             }
         }
         is ChatUiState.Success -> {
+            LaunchedEffect(state.messages) {
+                viewModel.indexAvailableChatAudio(state.messages)
+            }
             LaunchedEffect(messageNavigation?.requestId, state.messages) {
                 val request = messageNavigation ?: return@LaunchedEffect
                 val index = state.messages.indexOfFirst { it.id == request.messageId }

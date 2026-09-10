@@ -25,36 +25,61 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ronaldcolocho.taskly.ui.navigation.AppNavigation
 import com.ronaldcolocho.taskly.ui.theme.TasklyTheme
 import com.ronaldcolocho.taskly.ui.screen.settings.SettingsViewModel
+import com.ronaldcolocho.taskly.util.SharedUrlParser
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val settingsViewModel: SettingsViewModel by viewModels()
+    private val sharedUrlViewModel: SharedUrlViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        receiveSharedUrl(intent)
         enableEdgeToEdge()
         setContent {
             val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
+            val sharedUrl by sharedUrlViewModel.sharedUrl.collectAsStateWithLifecycle()
             TasklyTheme(darkTheme = settings.darkTheme) {
-                AppNavigation()
+                StartupPermissionRequester()
+                AppNavigation(
+                    sharedUrl = sharedUrl,
+                    onSharedUrlHandled = sharedUrlViewModel::markHandled
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        receiveSharedUrl(intent)
+    }
+
+    private fun receiveSharedUrl(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND || intent.type?.startsWith("text/plain") != true) return
+        SharedUrlParser.extract(intent.getCharSequenceExtra(Intent.EXTRA_TEXT))?.let(
+            sharedUrlViewModel::receive
+        )
     }
 }
 
 @Composable
 private fun StartupPermissionRequester() {
     val context = LocalContext.current
+    val preferences = context.getSharedPreferences("startup_permissions", Context.MODE_PRIVATE)
+    val overlayLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { }
     val exactAlarmLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        openFullScreenIntentSettingsIfNeeded(context)
+        requestOverlayPermissionIfNeeded(context, overlayLauncher)
     }
     val notificationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
-        requestExactAlarmOrFullScreen(context, exactAlarmLauncher)
+        requestExactAlarmOrOverlay(context, exactAlarmLauncher, overlayLauncher)
     }
 
     LaunchedEffect(Unit) {
@@ -62,21 +87,24 @@ private fun StartupPermissionRequester() {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS
-            ) != PackageManager.PERMISSION_GRANTED
+            ) != PackageManager.PERMISSION_GRANTED &&
+            !preferences.getBoolean("requested", false)
         ) {
+            preferences.edit().putBoolean("requested", true).apply()
             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            requestExactAlarmOrFullScreen(context, exactAlarmLauncher)
+            requestExactAlarmOrOverlay(context, exactAlarmLauncher, overlayLauncher)
         }
     }
 }
 
-private fun requestExactAlarmOrFullScreen(
+private fun requestExactAlarmOrOverlay(
     context: Context,
-    exactAlarmLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
+    exactAlarmLauncher: androidx.activity.result.ActivityResultLauncher<Intent>,
+    overlayLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
 ) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-        openFullScreenIntentSettingsIfNeeded(context)
+        requestOverlayPermissionIfNeeded(context, overlayLauncher)
         return
     }
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -87,18 +115,18 @@ private fun requestExactAlarmOrFullScreen(
             }
         )
     } else {
-        openFullScreenIntentSettingsIfNeeded(context)
+        requestOverlayPermissionIfNeeded(context, overlayLauncher)
     }
 }
 
-private fun openFullScreenIntentSettingsIfNeeded(context: Context) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
-    val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (!notificationManager.canUseFullScreenIntent()) {
-        context.startActivity(
-            Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+private fun requestOverlayPermissionIfNeeded(
+    context: Context,
+    overlayLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
+) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+        overlayLauncher.launch(
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
                 data = Uri.parse("package:${context.packageName}")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
         )
     }

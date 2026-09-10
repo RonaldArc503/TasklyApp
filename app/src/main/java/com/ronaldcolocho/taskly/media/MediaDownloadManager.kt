@@ -64,6 +64,9 @@ class MediaDownloadManager @Inject constructor(
 
     fun registerDownloadedAudio(reference: CachedAudioReference) = cache.registerDownloadedAudio(reference)
 
+    fun registerDownloadedAudios(references: Collection<CachedAudioReference>) =
+        cache.registerDownloadedAudios(references)
+
     fun resolveLocalFile(mediaId: String, kind: MediaKind) {
         if (_states.value[mediaId] is MediaDownloadState.Downloaded) return
         scope.launch(Dispatchers.IO) {

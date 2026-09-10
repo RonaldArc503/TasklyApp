@@ -7,9 +7,9 @@ import com.ronaldcolocho.taskly.domain.model.UserProfile
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetRecentConversationsUseCase
 import com.ronaldcolocho.taskly.domain.usecase.profile.GetCurrentUserIdUseCase
 import com.ronaldcolocho.taskly.domain.usecase.profile.GetProfileUseCase
+import com.ronaldcolocho.taskly.domain.usecase.reminder.GetRemindersUseCase
 import com.ronaldcolocho.taskly.domain.usecase.task.GetTasksUseCase
 import com.ronaldcolocho.taskly.ui.state.HomeUiState
-import com.ronaldcolocho.taskly.ui.state.RecentItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
@@ -19,17 +19,11 @@ class HomeViewModel @Inject constructor(
     private val getCurrentUserIdUseCase: GetCurrentUserIdUseCase,
     private val getProfileUseCase: GetProfileUseCase,
     private val getTasksUseCase: GetTasksUseCase,
-    private val getRecentConversationsUseCase: GetRecentConversationsUseCase
+    private val getRecentConversationsUseCase: GetRecentConversationsUseCase,
+    private val getRemindersUseCase: GetRemindersUseCase
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow<HomeUiState>(
-        HomeUiState.Success(
-            user = null,
-            pendingTasks = emptyList(),
-            recentActivity = emptyList(),
-            isRefreshing = true
-        )
-    )
+    private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
@@ -52,24 +46,33 @@ class HomeViewModel @Inject constructor(
         val conversationsFlow = getRecentConversationsUseCase(uid, RECENT_ACTIVITY_LIMIT)
             .onStart { emit(emptyList()) }
             .catch { emit(emptyList()) }
+        val remindersFlow = getRemindersUseCase(uid)
+            .onStart { emit(emptyList()) }
+            .catch { emit(emptyList()) }
 
         combine(
             profileFlow,
             tasksFlow,
-            conversationsFlow
-        ) { profile, tasks, conversations ->
+            conversationsFlow,
+            remindersFlow
+        ) { profile, tasks, conversations, reminders ->
             val pendingTasks = tasks.filter { it.status == TaskStatus.TODO || it.status == TaskStatus.DOING }
+            val recentPendingTasks = pendingTasks.sortedByDescending { it.updatedAt }.take(3)
             
-            val recentTasks = tasks.map { RecentItem.TaskItem(it) }
-            val recentChats = conversations.map { RecentItem.ChatItem(it) }
-            val recentActivity = (recentTasks + recentChats)
-                .sortedByDescending { it.timestamp }
-                .take(5)
+            val upcomingReminders = reminders
+                .filter { !it.isCompleted && it.dueDate > System.currentTimeMillis() - 86400000L } // only uncompleted, maybe past due a bit but mostly future
+                .sortedBy { it.dueDate }
+                .take(3)
+                
+            val unreadChatsCount = conversations.count { it.unreadCount > 0 }
 
             HomeUiState.Success(
                 user = profile,
-                pendingTasks = pendingTasks,
-                recentActivity = recentActivity,
+                pendingTasksCount = pendingTasks.size,
+                recentPendingTasks = recentPendingTasks,
+                recentConversations = conversations.take(5),
+                unreadConversationsCount = unreadChatsCount,
+                upcomingReminders = upcomingReminders,
                 isRefreshing = false
             )
         }

@@ -8,44 +8,19 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.ronaldcolocho.taskly.R
 import com.ronaldcolocho.taskly.ui.screen.reminders.ReminderAlarmActivity
-import com.ronaldcolocho.taskly.data.alarm.ReminderAlarmManager
-import com.ronaldcolocho.taskly.domain.repository.ReminderRepository
-import com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType
-import com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence
-import com.google.firebase.auth.FirebaseAuth
 import dagger.hilt.android.AndroidEntryPoint
-import javax.inject.Inject
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class ReminderReceiver : BroadcastReceiver() {
-    @Inject lateinit var repository: ReminderRepository
-    @Inject lateinit var alarmManager: ReminderAlarmManager
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra("REMINDER_ID") ?: return
         val title = intent.getStringExtra("REMINDER_TITLE") ?: "Tienes un pago pendiente"
         val dueDate = intent.getLongExtra("REMINDER_DUE_DATE", 0L)
         val hasTime = intent.getBooleanExtra("REMINDER_HAS_TIME", false)
-        val uid = FirebaseAuth.getInstance().currentUser?.uid
-        if (uid != null) {
-            val pending = goAsync()
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val reminder = repository.getReminder(uid, id)
-                    if (reminder != null && !reminder.isCompleted && reminder.repeatType != ReminderRepeatType.NONE) {
-                        val next = nextReminderOccurrence(reminder.dueDate, reminder.repeatType)
-                        repository.updateReminder(uid, id, mapOf("dueDate" to next, "snoozedUntil" to 0L))
-                        alarmManager.scheduleAlarms(listOf(reminder.copy(dueDate = next, snoozedUntil = 0L)))
-                    }
-                } finally { pending.finish() }
-            }
-        }
-
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -90,10 +65,25 @@ class ReminderReceiver : BroadcastReceiver() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setFullScreenIntent(fullScreenIntent, true)
-            .setAutoCancel(true)
+            .setAutoCancel(false)
+            .setOngoing(true)
             .setContentIntent(fullScreenIntent)
             .build()
 
-        notificationManager.notify(id.hashCode(), notification)
+        try {
+            notificationManager.notify(id.hashCode(), notification)
+        } catch (error: SecurityException) {
+            android.util.Log.e("ReminderAlarm", "Notification permission denied", error)
+        }
+
+        // Existing alarms may still target this receiver after an app update. Once the user has
+        // granted overlay access, Android permits this alarm activity to appear over other apps.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)) {
+            try {
+                context.startActivity(alarmIntent)
+            } catch (error: RuntimeException) {
+                android.util.Log.e("ReminderAlarm", "Alarm activity could not be opened", error)
+            }
+        }
     }
 }

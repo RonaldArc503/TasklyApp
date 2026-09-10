@@ -25,7 +25,8 @@ data class ConverterUiState(
     val results: List<YouTubeVideo> = emptyList(),
     val iframeUrl: String = "",
     val selectedTitle: String = "",
-    val selectedMediaLabel: String = ""
+    val selectedMediaLabel: String = "",
+    val isManualUrlInputExpanded: Boolean = false
 )
 
 @HiltViewModel
@@ -94,6 +95,23 @@ class ConverterViewModel @Inject constructor(
 
     fun onManualUrlChange(newUrl: String) {
         _uiState.update { it.copy(manualUrl = newUrl) }
+    }
+
+    fun onSharedUrlReceived(url: String) {
+        _uiState.update {
+            it.copy(
+                manualUrl = url,
+                manualError = null,
+                iframeUrl = "",
+                selectedTitle = "",
+                selectedMediaLabel = "",
+                isManualUrlInputExpanded = true
+            )
+        }
+    }
+
+    fun setManualUrlInputExpanded(expanded: Boolean) {
+        _uiState.update { it.copy(isManualUrlInputExpanded = expanded) }
     }
 
     fun submitManualUrl() {

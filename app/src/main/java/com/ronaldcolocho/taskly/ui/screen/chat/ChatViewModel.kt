@@ -7,6 +7,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ronaldcolocho.taskly.domain.model.ChatAttachment
+import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.ConversationReceipt
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
@@ -954,6 +955,32 @@ class ChatViewModel @Inject constructor(
             }
             .toList()
         mediaDownloadManager.updateAutomaticWindow(candidates)
+    }
+
+    /** Makes already-cached chat audio available to Mis Músicas without downloading it again. */
+    fun indexAvailableChatAudio(messages: List<ChatMessage>) {
+        mediaDownloadManager.registerDownloadedAudios(
+            messages.asSequence()
+                .flatMap { message ->
+                    message.attachments.asSequence()
+                        .filter { attachment ->
+                            attachment.kind == AttachmentKind.AUDIO &&
+                                attachment.publicId.isNotBlank() &&
+                                attachment.url.isNotBlank()
+                        }
+                        .map { attachment ->
+                            CachedAudioReference(
+                                mediaId = attachment.publicId,
+                                url = attachment.url,
+                                name = attachment.name,
+                                sourceMessageId = message.id,
+                                durationSeconds = attachment.duration ?: 0,
+                                downloadedAt = message.createdAt
+                            )
+                        }
+                }
+                .toList()
+        )
     }
 
     fun addAudioMessageToPlaylist(message: ChatMessage, playlistId: String) {

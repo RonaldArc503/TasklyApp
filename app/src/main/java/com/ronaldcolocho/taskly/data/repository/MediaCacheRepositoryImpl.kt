@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -36,6 +38,7 @@ class MediaCacheRepositoryImpl @Inject constructor(
     private val activeDownloads = ConcurrentHashMap<String, Flow<MediaDownloadState>>()
     private val rootDir: File by lazy { File(context.filesDir, "Taskly") }
     private val audioCatalog = context.getSharedPreferences("taskly_media_catalog", Context.MODE_PRIVATE)
+    private val audioCatalogMutex = Mutex()
 
     /** Caché en memoria de rutas resueltas y estado de descarga (evita stats de disco en composición).
      *  ConcurrentHashMap no admite null, así que usamos un File centinela para "no encontrado". */
@@ -131,20 +134,43 @@ class MediaCacheRepositoryImpl @Inject constructor(
         }
 
     override fun registerDownloadedAudio(reference: CachedAudioReference) {
-        if (reference.mediaId.isBlank() || reference.url.isBlank()) return
+        registerDownloadedAudios(listOf(reference))
+    }
+
+    /**
+     * Stores descriptive data only for audio that is already in Taskly's local cache.
+     * This lets the music library discover chat downloads after a restart without
+     * treating remote-only attachments as downloaded music.
+     */
+    override fun registerDownloadedAudios(references: Collection<CachedAudioReference>) {
+        if (references.isEmpty()) return
         ioScope.launch {
-            val entries = readAudioCatalog().filterNot { it.mediaId == reference.mediaId }.toMutableList()
-            entries += reference.copy(downloadedAt = System.currentTimeMillis())
-            val bounded = entries.sortedByDescending { it.downloadedAt }.take(MAX_AUDIO_CATALOG)
-            val array = JSONArray()
-            bounded.forEach { item ->
-                array.put(JSONObject().apply {
-                    put("mediaId", item.mediaId); put("url", item.url); put("name", item.name)
-                    put("sourceMessageId", item.sourceMessageId); put("durationSeconds", item.durationSeconds)
-                    put("downloadedAt", item.downloadedAt)
-                })
+            val cachedReferences = references.asSequence()
+                .filter { it.mediaId.isNotBlank() && it.url.isNotBlank() }
+                .filter { reference ->
+                    val file = File(categoryDir(MediaKind.AUDIO), fileName(reference.mediaId, MediaKind.AUDIO))
+                    file.exists() && file.length() > 0
+                }
+                .toList()
+            if (cachedReferences.isEmpty()) return@launch
+
+            audioCatalogMutex.withLock {
+                val latestById = readAudioCatalog().associateByTo(linkedMapOf()) { it.mediaId }
+                val now = System.currentTimeMillis()
+                cachedReferences.forEach { reference ->
+                    latestById[reference.mediaId] = reference.copy(downloadedAt = now)
+                }
+                val bounded = latestById.values.sortedByDescending { it.downloadedAt }.take(MAX_AUDIO_CATALOG)
+                val array = JSONArray()
+                bounded.forEach { item ->
+                    array.put(JSONObject().apply {
+                        put("mediaId", item.mediaId); put("url", item.url); put("name", item.name)
+                        put("sourceMessageId", item.sourceMessageId); put("durationSeconds", item.durationSeconds)
+                        put("downloadedAt", item.downloadedAt)
+                    })
+                }
+                audioCatalog.edit().putString(KEY_AUDIO_CATALOG, array.toString()).apply()
             }
-            audioCatalog.edit().putString(KEY_AUDIO_CATALOG, array.toString()).apply()
         }
     }
 

@@ -1,7 +1,6 @@
 package com.ronaldcolocho.taskly.ui.screen.reminders
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -9,11 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,14 +21,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,6 +37,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ronaldcolocho.taskly.domain.model.reminder.reminderTimeLabel
+import com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType
+import com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence
 import com.ronaldcolocho.taskly.ui.theme.Indigo600
 import com.ronaldcolocho.taskly.ui.theme.Slate500
 import com.ronaldcolocho.taskly.ui.theme.TasklyTheme
@@ -62,39 +56,53 @@ class ReminderAlarmActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         showOverLockScreen()
+        showReminder(intent)
+    }
 
-        val title = intent.getStringExtra("REMINDER_TITLE") ?: "Tienes un recordatorio"
-        val dueDate = intent.getLongExtra("REMINDER_DUE_DATE", 0L)
-        val hasTime = intent.getBooleanExtra("REMINDER_HAS_TIME", false)
-        val reminderId = intent.getStringExtra("REMINDER_ID").orEmpty()
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        showReminder(intent)
+    }
+
+    @Deprecated("The reminder must remain visible until the user chooses an action.")
+    override fun onBackPressed() = Unit
+
+    private fun showReminder(alarmIntent: Intent) {
+        val title = alarmIntent.getStringExtra("REMINDER_TITLE") ?: "Tienes un recordatorio"
+        val dueDate = alarmIntent.getLongExtra("REMINDER_DUE_DATE", 0L)
+        val hasTime = alarmIntent.getBooleanExtra("REMINDER_HAS_TIME", false)
+        val reminderId = alarmIntent.getStringExtra("REMINDER_ID").orEmpty()
 
         setContent {
             TasklyTheme {
                 ReminderAlarmScreen(
                     title = title,
                     dueLabel = reminderTimeLabel(dueDate, hasTime),
-                    onOpenReminders = {
-                        startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse("taskly://reminders?reminderId=$reminderId")).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            }
-                        )
-                        finish()
-                    },
-                    onSnooze = { minutes -> snooze(reminderId, minutes) },
-                    onDismiss = { finish() }
+                    onComplete = { complete(reminderId) },
                 )
             }
         }
     }
 
-    private fun snooze(id: String, minutes: Int) {
-        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return finish()
+    private fun complete(id: String) {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         lifecycleScope.launch {
-            val reminder = repository.getReminder(uid, id) ?: return@launch finish()
-            val until = System.currentTimeMillis() + minutes * 60_000L
-            repository.updateReminder(uid, id, mapOf("snoozedUntil" to until))
-            alarmManager.scheduleAlarms(listOf(reminder.copy(snoozedUntil = until)))
+            val reminder = repository.getReminder(uid, id) ?: return@launch
+            if (reminder.repeatType == ReminderRepeatType.NONE) {
+                repository.updateReminder(
+                    uid,
+                    id,
+                    mapOf("isCompleted" to true, "completedAt" to System.currentTimeMillis(), "snoozedUntil" to 0L)
+                )
+                alarmManager.cancel(id)
+            } else {
+                val next = nextReminderOccurrence(reminder.dueDate, reminder.repeatType)
+                repository.updateReminder(uid, id, mapOf("dueDate" to next, "snoozedUntil" to 0L))
+                alarmManager.scheduleAlarms(listOf(reminder.copy(dueDate = next, snoozedUntil = 0L)))
+            }
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+            notificationManager.cancel(id.hashCode())
             finish()
         }
     }
@@ -121,9 +129,7 @@ class ReminderAlarmActivity : ComponentActivity() {
 private fun ReminderAlarmScreen(
     title: String,
     dueLabel: String,
-    onOpenReminders: () -> Unit,
-    onSnooze: (Int) -> Unit,
-    onDismiss: () -> Unit
+    onComplete: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -147,12 +153,6 @@ private fun ReminderAlarmScreen(
                 modifier = Modifier.padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Slate500)
-                    }
-                }
-
                 Box(
                     modifier = Modifier
                         .size(86.dp)
@@ -192,22 +192,16 @@ private fun ReminderAlarmScreen(
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(24.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(5, 10, 30, 60).forEach { minutes ->
-                        OutlinedButton(onClick = { onSnooze(minutes) }) { Text("${minutes}m") }
-                    }
-                }
-                Spacer(modifier = Modifier.height(12.dp))
                 Button(
-                    onClick = onOpenReminders,
+                    onClick = onComplete,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Indigo600)
                 ) {
-                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.size(8.dp))
-                    Text("Ver aviso", fontWeight = FontWeight.Bold)
+                    Text("Marcar como completado", fontWeight = FontWeight.Bold)
                 }
             }
         }

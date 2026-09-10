@@ -88,6 +88,10 @@ class RemindersViewModel @Inject constructor(
         }
     }
 
+    fun refreshAlarms() {
+        alarmManager.scheduleAlarms(activeReminders.value)
+    }
+
     fun addReminder(title: String, dueDate: Long, hasTime: Boolean) {
         if (currentUserId == null) return
         if (title.isBlank()) {

@@ -11,6 +11,7 @@ interface IMediaCacheRepository {
     fun fileFor(mediaId: String, kind: MediaKind): File?
     suspend fun cacheLocalFile(mediaId: String, sourceFile: File, kind: MediaKind): File?
     fun registerDownloadedAudio(reference: CachedAudioReference)
+    fun registerDownloadedAudios(references: Collection<CachedAudioReference>)
     suspend fun downloadedAudioReferences(): List<CachedAudioReference>
 
     /**

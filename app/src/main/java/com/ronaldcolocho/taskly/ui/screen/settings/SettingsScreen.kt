@@ -60,6 +60,7 @@ fun SettingsScreen(
             }
         }
         item { Spacer(Modifier.height(8.dp)) }
+        item { com.ronaldcolocho.taskly.ui.screen.reminders.ReminderPermissionsCard() }
         item { SectionTitle("Apariencia") }
         item {
             SettingCard {

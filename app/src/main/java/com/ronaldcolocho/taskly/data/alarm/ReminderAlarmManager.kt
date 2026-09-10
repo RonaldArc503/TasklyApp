@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import com.ronaldcolocho.taskly.data.receiver.ReminderReceiver
 import com.ronaldcolocho.taskly.domain.model.reminder.Reminder
+import com.ronaldcolocho.taskly.ui.screen.reminders.ReminderAlarmActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,19 +24,9 @@ class ReminderAlarmManager @Inject constructor(
         val now = System.currentTimeMillis()
         
         reminders.filterNot(Reminder::isCompleted).forEach { reminder ->
-            val intent = Intent(context, ReminderReceiver::class.java).apply {
-                putExtra("REMINDER_ID", reminder.id)
-                putExtra("REMINDER_TITLE", reminder.title)
-                putExtra("REMINDER_DUE_DATE", reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate)
-                putExtra("REMINDER_HAS_TIME", reminder.hasTime)
-            }
-            
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                reminder.id.hashCode(),
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            // Migrate old direct-activity schedules and always preserve notification delivery.
+            alarmManager.cancel(alarmActivityPendingIntent(reminder))
+            val pendingIntent = reminderReceiverPendingIntent(reminder)
 
             val triggerAt = reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate
             if (reminder.hasTime && triggerAt > now && canScheduleExactAlarms()) {
@@ -55,7 +46,7 @@ class ReminderAlarmManager @Inject constructor(
                         )
                     }
                 } catch (e: SecurityException) {
-                    // The startup permission flow normally prevents this path.
+                    android.util.Log.e("ReminderAlarm", "Exact alarm permission denied", e)
                 }
             } else {
                 // Cancel if passed or no due date
@@ -65,13 +56,57 @@ class ReminderAlarmManager @Inject constructor(
     }
 
     fun cancel(reminderId: String) {
-        val intent = Intent(context, ReminderReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
+        val intent = Intent(context, ReminderAlarmActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
             context,
             reminderId.hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         alarmManager.cancel(pendingIntent)
+        alarmManager.cancel(
+            PendingIntent.getBroadcast(
+                context,
+                reminderId.hashCode(),
+                Intent(context, ReminderReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        )
     }
+
+    private fun alarmActivityPendingIntent(reminder: Reminder): PendingIntent {
+        val triggerAt = reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate
+        val intent = Intent(context, ReminderAlarmActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("REMINDER_ID", reminder.id)
+            putExtra("REMINDER_TITLE", reminder.title)
+            putExtra("REMINDER_DUE_DATE", triggerAt)
+            putExtra("REMINDER_HAS_TIME", reminder.hasTime)
+        }
+        return PendingIntent.getActivity(
+            context,
+            reminder.id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun reminderReceiverPendingIntent(reminder: Reminder): PendingIntent {
+        val triggerAt = reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            putExtra("REMINDER_ID", reminder.id)
+            putExtra("REMINDER_TITLE", reminder.title)
+            putExtra("REMINDER_DUE_DATE", triggerAt)
+            putExtra("REMINDER_HAS_TIME", reminder.hasTime)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            reminder.id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
 }

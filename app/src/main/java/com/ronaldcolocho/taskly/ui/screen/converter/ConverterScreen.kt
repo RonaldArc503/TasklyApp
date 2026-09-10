@@ -46,9 +46,14 @@ import com.ronaldcolocho.taskly.util.AttachmentActions
 @Composable
 fun ConverterScreen(
     viewModel: ConverterViewModel = hiltViewModel(),
+    sharedUrl: String? = null,
     onNavigateBack: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(sharedUrl) {
+        sharedUrl?.let(viewModel::onSharedUrlReceived)
+    }
 
     Column(
         modifier = Modifier
@@ -63,6 +68,7 @@ fun ConverterScreen(
                 onPickVideo = viewModel::pickVideo,
                 onManualUrlChange = viewModel::onManualUrlChange,
                 onSubmitManualUrl = viewModel::submitManualUrl,
+                onManualUrlInputExpandedChange = viewModel::setManualUrlInputExpanded,
                 onNavigateBack = onNavigateBack
             )
         } else {
@@ -83,6 +89,7 @@ private fun SearchMode(
     onPickVideo: (YouTubeVideo) -> Unit,
     onManualUrlChange: (String) -> Unit,
     onSubmitManualUrl: () -> Unit,
+    onManualUrlInputExpandedChange: (Boolean) -> Unit,
     onNavigateBack: () -> Unit
 ) {
     Column(
@@ -223,7 +230,6 @@ private fun SearchMode(
 
             item {
                 Spacer(modifier = Modifier.height(16.dp))
-                var expanded by remember { mutableStateOf(false) }
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -235,9 +241,12 @@ private fun SearchMode(
                             style = MaterialTheme.typography.labelMedium, 
                             fontWeight = FontWeight.SemiBold, 
                             color = Slate600,
-                            modifier = Modifier.clickable { expanded = !expanded }.fillMaxWidth().padding(vertical = 4.dp)
+                            modifier = Modifier
+                                .clickable { onManualUrlInputExpandedChange(!uiState.isManualUrlInputExpanded) }
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
                         )
-                        if (expanded) {
+                        if (uiState.isManualUrlInputExpanded) {
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("Enlace o ID de YouTube", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
                             Spacer(modifier = Modifier.height(8.dp))

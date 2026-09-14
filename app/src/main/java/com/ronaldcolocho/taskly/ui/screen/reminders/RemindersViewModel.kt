@@ -92,7 +92,12 @@ class RemindersViewModel @Inject constructor(
         alarmManager.scheduleAlarms(activeReminders.value)
     }
 
-    fun addReminder(title: String, dueDate: Long, hasTime: Boolean) {
+    fun addReminder(
+        title: String,
+        dueDate: Long,
+        hasTime: Boolean,
+        repeatType: com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType
+    ) {
         if (currentUserId == null) return
         if (title.isBlank()) {
             showError("Escribe el detalle del aviso.")
@@ -104,7 +109,7 @@ class RemindersViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                createReminderUseCase(currentUserId, title.trim(), dueDate, hasTime)
+                createReminderUseCase(currentUserId, title.trim(), dueDate, hasTime, repeatType)
             } catch (e: Exception) {
                 showError("No se pudo crear el recordatorio.")
             }

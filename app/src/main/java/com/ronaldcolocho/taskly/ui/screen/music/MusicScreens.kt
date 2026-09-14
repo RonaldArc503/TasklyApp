@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -829,6 +830,9 @@ fun PlaylistDetailScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val playerState by audioController.state.collectAsStateWithLifecycle()
     val playlist = playlists.firstOrNull { it.id == viewModel.selectedPlaylistId }
+    val isPlayingFromThisPlaylist = playerState.currentTrack?.let { current ->
+        tracks.any { it.id == current.id }
+    } == true
 
     var showAdd by remember { mutableStateOf(false) }
     var showSleepTimer by remember { mutableStateOf(false) }
@@ -890,10 +894,26 @@ fun PlaylistDetailScreen(
                 playlist = playlist,
                 trackCount = tracks.size,
                 playerState = playerState,
-                onPlayAll = { if (tracks.isNotEmpty()) playTracks(audioController, tracks, tracks.first()) },
+                isPlayingFromThisPlaylist = isPlayingFromThisPlaylist,
+                onPlayPause = {
+                    if (isPlayingFromThisPlaylist) {
+                        audioController.toggleCurrent()
+                    } else if (tracks.isNotEmpty()) {
+                        playTracks(audioController, tracks, tracks.first())
+                    }
+                },
                 onShuffle = {
-                    val shuffled = tracks.shuffled()
-                    if (shuffled.isNotEmpty()) playTracks(audioController, shuffled, shuffled.first())
+                    val shuffled = tracks.shuffled().let { shuffledTracks ->
+                        if (tracks.size > 1 && shuffledTracks == tracks) {
+                            tracks.drop(1) + tracks.first()
+                        } else {
+                            shuffledTracks
+                        }
+                    }
+                    if (shuffled.isNotEmpty()) {
+                        viewModel.reorderTracks(shuffled)
+                        playTracks(audioController, shuffled, shuffled.first())
+                    }
                 },
                 onRepeat = audioController::cycleRepeatMode,
                 onTimer = { showSleepTimer = true },
@@ -902,8 +922,7 @@ fun PlaylistDetailScreen(
         }
 
         val nowPlaying = playerState.currentTrack
-        val isPlayingFromThisList = nowPlaying != null && tracks.any { it.id == nowPlaying.id }
-        if (isPlayingFromThisList && playerState.durationMs > 0) {
+        if (isPlayingFromThisPlaylist && playerState.durationMs > 0) {
             item {
                 NowPlayingBar(
                     track = nowPlaying!!,
@@ -957,7 +976,8 @@ fun PlaylistDetailScreen(
         DownloadedAudioDialog(
             tracks = downloadedTracks,
             existingIds = tracks.mapTo(mutableSetOf()) { it.id },
-            onAdd = viewModel::addTrack
+            onAdd = viewModel::addTrack,
+            onPreview = { track -> previewTrack(audioController, track) }
         ) { showAdd = false }
     }
     if (showSleepTimer) {
@@ -1004,7 +1024,8 @@ private fun PlaylistHero(
     playlist: MusicPlaylist?,
     trackCount: Int,
     playerState: com.ronaldcolocho.taskly.audio.AudioPlayerState,
-    onPlayAll: () -> Unit,
+    isPlayingFromThisPlaylist: Boolean,
+    onPlayPause: () -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
     onTimer: () -> Unit,
@@ -1075,14 +1096,25 @@ private fun PlaylistHero(
                 Icon(Icons.Default.Shuffle, contentDescription = "Aleatorio")
             }
             Button(
-                onClick = onPlayAll,
+                onClick = onPlayPause,
                 contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
                 shape = RoundedCornerShape(14.dp),
                 elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
             ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(22.dp))
+                Icon(
+                    imageVector = if (isPlayingFromThisPlaylist && playerState.playing) {
+                        Icons.Default.Pause
+                    } else {
+                        Icons.Default.PlayArrow
+                    },
+                    contentDescription = if (isPlayingFromThisPlaylist && playerState.playing) "Pausar" else "Reproducir",
+                    modifier = Modifier.size(22.dp)
+                )
                 Spacer(Modifier.width(6.dp))
-                Text("Reproducir", fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (isPlayingFromThisPlaylist && playerState.playing) "Pausa" else "Reproducir",
+                    fontWeight = FontWeight.SemiBold
+                )
             }
             FilledTonalIconButton(onClick = onRepeat, modifier = Modifier.size(48.dp)) {
                 Icon(
@@ -1403,6 +1435,7 @@ private fun DownloadedAudioDialog(
     tracks: List<MusicTrack>,
     existingIds: Set<String>,
     onAdd: (MusicTrack) -> Unit,
+    onPreview: (MusicTrack) -> Unit,
     onDismiss: () -> Unit
 ) = AlertDialog(
     onDismissRequest = onDismiss,
@@ -1417,13 +1450,27 @@ private fun DownloadedAudioDialog(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = !exists) { onAdd(track) }
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        SmallCover(Modifier.size(42.dp))
+                        IconButton(
+                            onClick = { onPreview(track) },
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            SmallCover(Modifier.fillMaxSize())
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = "Escuchar vista previa de ${track.name}",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .clickable(enabled = !exists) { onAdd(track) }
+                                .padding(vertical = 6.dp)
+                        ) {
                             Text(track.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
                                 "Audio descargado",
@@ -1515,4 +1562,18 @@ private fun playTracks(controller: AudioPlayerController, tracks: List<MusicTrac
     }
     controller.updatePlaylist(audioTracks)
     audioTracks.firstOrNull { it.id == selected.id }?.let(controller::playWithQueue)
+}
+
+/** Plays a downloaded song by itself, so previewing never changes the playlist being edited. */
+private fun previewTrack(controller: AudioPlayerController, track: MusicTrack) {
+    val audioTrack = AudioTrack(
+        track.id,
+        track.url,
+        track.name,
+        track.sourceMessageId,
+        track.durationSeconds,
+        track.thumbnailUrl
+    )
+    controller.updatePlaylist(listOf(audioTrack))
+    controller.toggleTrack(audioTrack)
 }

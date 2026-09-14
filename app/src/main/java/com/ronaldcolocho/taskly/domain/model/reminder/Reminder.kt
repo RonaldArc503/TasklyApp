@@ -36,9 +36,22 @@ data class Reminder(
 
 enum class ReminderRepeatType { NONE, DAILY, WEEKLY, MONTHLY }
 
-fun nextReminderOccurrence(dueDate: Long, repeatType: ReminderRepeatType): Long {
+fun nextReminderOccurrence(
+    dueDate: Long,
+    repeatType: ReminderRepeatType,
+    completedAt: Long = System.currentTimeMillis()
+): Long {
     if (dueDate <= 0L || repeatType == ReminderRepeatType.NONE) return dueDate
-    val next = Instant.ofEpochMilli(dueDate).atZone(ZoneId.systemDefault())
+    val zone = ZoneId.systemDefault()
+    val scheduled = Instant.ofEpochMilli(dueDate).atZone(zone)
+    // A manual "Completar ahora" starts the next cycle today, not after a future due date.
+    // Keep the chosen time of day for reminders that have one.
+    val completed = Instant.ofEpochMilli(completedAt).atZone(zone)
+    val next = completed
+        .withHour(scheduled.hour)
+        .withMinute(scheduled.minute)
+        .withSecond(0)
+        .withNano(0)
     return when (repeatType) {
         ReminderRepeatType.DAILY -> next.plusDays(1)
         ReminderRepeatType.WEEKLY -> next.plusWeeks(1)

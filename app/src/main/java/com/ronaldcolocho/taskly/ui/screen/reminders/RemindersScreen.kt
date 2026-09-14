@@ -94,8 +94,8 @@ fun RemindersScreen(
                     
                     if (!showCompleted) item {
                         AddReminderForm(
-                            onAdd = { title, date, hasTime ->
-                                viewModel.addReminder(title, date, hasTime)
+                            onAdd = { title, date, hasTime, repeatType ->
+                                viewModel.addReminder(title, date, hasTime, repeatType)
                             },
                             error = state.error,
                             onClearError = { viewModel.clearError() }
@@ -158,7 +158,6 @@ fun ReminderHeaderStats(items: List<Reminder>) {
     val orange = items.count { it.urgency == Urgency.ORANGE }
 
     Column {
-        Text("Lleva el control de tus pagos y sube los comprobantes.", color = Slate500, fontSize = 14.sp)
         if (overdue > 0 || red > 0 || orange > 0) {
             Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (overdue > 0) BadgeChip("$overdue vencidos", Color(0xFFFEE2E2), Color(0xFFB91C1C))
@@ -179,13 +178,14 @@ fun BadgeChip(text: String, bgColor: Color, textColor: Color) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddReminderForm(
-    onAdd: (String, Long, Boolean) -> Unit,
+    onAdd: (String, Long, Boolean, ReminderRepeatType) -> Unit,
     error: String?,
     onClearError: () -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var dueDate by remember { mutableStateOf(0L) }
     var hasTime by remember { mutableStateOf(false) }
+    var repeatType by remember { mutableStateOf(ReminderRepeatType.NONE) }
     var selectedHour by remember { mutableStateOf(9) }
     var selectedMinute by remember { mutableStateOf(0) }
     
@@ -312,6 +312,31 @@ fun AddReminderForm(
             }
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+        Text("Repetir", style = MaterialTheme.typography.labelLarge)
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ReminderRepeatType.entries.chunked(3).forEach { repeatRow ->
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    repeatRow.forEach { type ->
+                        FilterChip(
+                            selected = repeatType == type,
+                            onClick = { repeatType = type },
+                            label = {
+                                Text(
+                                    when (type) {
+                                        ReminderRepeatType.NONE -> "Nunca"
+                                        ReminderRepeatType.DAILY -> "Diario"
+                                        ReminderRepeatType.WEEKLY -> "Semanal"
+                                        ReminderRepeatType.MONTHLY -> "Mensual"
+                                    }
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
         if (error != null) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -321,11 +346,12 @@ fun AddReminderForm(
 
         Button(
             onClick = {
-                onAdd(title, dueDate, hasTime)
+                onAdd(title, dueDate, hasTime, repeatType)
                 if (title.isBlank() || dueDate <= 0L) return@Button
                 title = ""
                 dueDate = 0L
                 hasTime = false
+                repeatType = ReminderRepeatType.NONE
                 selectedHour = 9
                 selectedMinute = 0
             },
@@ -426,9 +452,13 @@ private fun ReminderEditorDialog(
                     }
                 }
                 Text("Repetir", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    ReminderRepeatType.entries.forEach { type ->
-                        FilterChip(selected = repeatType == type, onClick = { repeatType = type }, label = { Text(when(type) { ReminderRepeatType.NONE -> "Nunca"; ReminderRepeatType.DAILY -> "Diario"; ReminderRepeatType.WEEKLY -> "Semanal"; ReminderRepeatType.MONTHLY -> "Mensual" }) })
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    ReminderRepeatType.entries.chunked(3).forEach { repeatRow ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            repeatRow.forEach { type ->
+                                FilterChip(selected = repeatType == type, onClick = { repeatType = type }, label = { Text(when(type) { ReminderRepeatType.NONE -> "Nunca"; ReminderRepeatType.DAILY -> "Diario"; ReminderRepeatType.WEEKLY -> "Semanal"; ReminderRepeatType.MONTHLY -> "Mensual" }) })
+                            }
+                        }
                     }
                 }
                 Row(

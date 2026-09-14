@@ -41,6 +41,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.ronaldcolocho.taskly.domain.model.MediaKind
+import com.ronaldcolocho.taskly.domain.model.TaskStatus
 import com.ronaldcolocho.taskly.ui.screen.auth.AuthScreen
 import com.ronaldcolocho.taskly.ui.screen.auth.AuthViewModel
 import com.ronaldcolocho.taskly.ui.screen.chat.AudioPlayerBar
@@ -55,10 +56,12 @@ import com.ronaldcolocho.taskly.ui.screen.profile.ProfileScreen
 import com.ronaldcolocho.taskly.ui.screen.tasks.TasksScreen
 import com.ronaldcolocho.taskly.ui.state.AuthState
 
-sealed class Route(val route: String) {
+sealed class Route(val route: String, val navigationRoute: String = route) {
     object Auth : Route("auth")
     object Home : Route("home")
-    object Tasks : Route("tasks")
+    object Tasks : Route("tasks?tab={tab}", navigationRoute = "tasks") {
+        fun createRoute(status: TaskStatus) = "tasks?tab=${status.name}"
+    }
     object ChatList : Route("chat_list")
     object ChatDetail : Route("chat/{convId}?messageId={messageId}") {
         fun createRoute(convId: String, messageId: String? = null) =
@@ -157,12 +160,18 @@ private fun MainScaffold(
     )
 
     val navigateToTopLevel: (Route) -> Unit = { route ->
-        navController.navigate(route.route) {
+        navController.navigate(route.navigationRoute) {
             popUpTo(navController.graph.findStartDestination().id) {
                 saveState = true
             }
             launchSingleTop = true
             restoreState = true
+        }
+    }
+    val navigateToTaskTab: (TaskStatus) -> Unit = { status ->
+        navController.navigate(Route.Tasks.createRoute(status)) {
+            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
         }
     }
 
@@ -207,12 +216,20 @@ private fun MainScaffold(
             ) {
                 composable(Route.Home.route) { 
                     HomeScreen(
-                        onNavigateToTasks = { navigateToTopLevel(Route.Tasks) },
+                        onNavigateToTasks = { taskStatus ->
+                            taskStatus?.let(navigateToTaskTab) ?: navigateToTopLevel(Route.Tasks)
+                        },
+                        onNavigateToProfile = { navigateToTopLevel(Route.Profile) },
                         onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) },
                         onNavigateToReminders = { navigateToTopLevel(Route.Reminders) }
                     ) 
                 }
-                composable(Route.Tasks.route) { TasksScreen() }
+                composable(
+                    route = Route.Tasks.route,
+                    arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true; defaultValue = null })
+                ) { entry ->
+                    TasksScreen(initialTab = entry.arguments?.getString("tab"))
+                }
                 composable(Route.ChatList.route) {
                     ChatListScreen(
                         onNavigateToChat = { convId -> navController.navigate(Route.ChatDetail.createRoute(convId)) },

@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TasksScreen(
+    initialTab: String? = null,
     viewModel: TasksViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -54,6 +55,10 @@ fun TasksScreen(
     var taskToEdit by remember { mutableStateOf<Task?>(null) }
     var editTaskTitleInput by remember { mutableStateOf("") }
     var taskToDelete by remember { mutableStateOf<Task?>(null) }
+
+    LaunchedEffect(initialTab) {
+        TaskStatus.entries.firstOrNull { it.name == initialTab }?.let(viewModel::setTab)
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) }

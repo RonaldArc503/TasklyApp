@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Mic
@@ -38,6 +39,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -395,21 +398,17 @@ fun ChatScreen(
                     onNavigateBack = onNavigateBack,
                     onNavigateToInfo = { onNavigateToInfo(state.conversation.id) },
                     onSearch = { showMessageSearch = true },
+                    isMessageSearchActive = showMessageSearch,
+                    messageSearch = messageSearch,
+                    onMessageSearchQueryChange = viewModel::onMessageSearchQueryChange,
+                    onPreviousSearchResult = { viewModel.moveMessageSearchResult(-1) },
+                    onNextSearchResult = { viewModel.moveMessageSearchResult(1) },
+                    onCloseMessageSearch = {
+                        showMessageSearch = false
+                        viewModel.clearMessageSearch()
+                    },
                     ephemeralState = viewModel.ephemeralState
                 )
-
-                if (showMessageSearch) {
-                    MessageSearchBar(
-                        state = messageSearch,
-                        onQueryChange = viewModel::onMessageSearchQueryChange,
-                        onPrevious = { viewModel.moveMessageSearchResult(-1) },
-                        onNext = { viewModel.moveMessageSearchResult(1) },
-                        onClose = {
-                            showMessageSearch = false
-                            viewModel.clearMessageSearch()
-                        }
-                    )
-                }
 
                 // PINNED BAR
                 if (pinnedList.isNotEmpty()) {
@@ -992,6 +991,12 @@ private fun ChatHeader(
     onNavigateBack: () -> Unit,
     onNavigateToInfo: () -> Unit,
     onSearch: () -> Unit,
+    isMessageSearchActive: Boolean,
+    messageSearch: MessageSearchUiState,
+    onMessageSearchQueryChange: (String) -> Unit,
+    onPreviousSearchResult: () -> Unit,
+    onNextSearchResult: () -> Unit,
+    onCloseMessageSearch: () -> Unit,
     ephemeralState: StateFlow<ChatEphemeralState>
 ) {
     val ephemeral by ephemeralState.collectAsStateWithLifecycle()
@@ -1013,16 +1018,25 @@ private fun ChatHeader(
     } else null
 
     Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onNavigateToInfo)
-                .padding(horizontal = 8.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp).clip(CircleShape)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
-            }
+        if (isMessageSearchActive) {
+            MessageSearchHeader(
+                state = messageSearch,
+                onQueryChange = onMessageSearchQueryChange,
+                onPrevious = onPreviousSearchResult,
+                onNext = onNextSearchResult,
+                onClose = onCloseMessageSearch
+            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onNavigateToInfo)
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp).clip(CircleShape)) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
+                }
 
             // Header Avatar (+11% more: 46dp)
             Box(modifier = Modifier.size(46.dp)) {
@@ -1086,48 +1100,50 @@ private fun ChatHeader(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onSearch) {
-                Icon(Icons.Default.Search, contentDescription = "Buscar mensajes", tint = Slate500)
+                IconButton(onClick = onSearch) {
+                    Icon(Icons.Default.Search, contentDescription = "Buscar mensajes", tint = Slate500)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MessageSearchBar(
+private fun MessageSearchHeader(
     state: MessageSearchUiState,
     onQueryChange: (String) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onClose: () -> Unit
 ) {
-    Surface(shadowElevation = 1.dp) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = state.query,
-                onValueChange = onQueryChange,
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                placeholder = { Text("Buscar mensajes") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
-            )
-            if (state.isSearching) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            else Text(
-                if (state.results.isEmpty()) "0 de 0" else "${state.currentIndex + 1} de ${state.results.size}",
-                fontSize = 12.sp,
-                modifier = Modifier.padding(horizontal = 6.dp)
-            )
+    val searchFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { searchFocusRequester.requestFocus() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cerrar busqueda", tint = Slate500)
+        }
+        OutlinedTextField(
+            value = state.query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.weight(1f).focusRequester(searchFocusRequester),
+            singleLine = true,
+            placeholder = { Text("Buscar mensajes") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+        )
+        if (state.query.isNotBlank()) {
+            if (state.isSearching) {
+                CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(20.dp), strokeWidth = 2.dp)
+            }
             IconButton(onClick = onPrevious, enabled = state.results.isNotEmpty()) {
-                Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Resultado anterior")
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Resultado anterior")
             }
             IconButton(onClick = onNext, enabled = state.results.isNotEmpty()) {
-                Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Resultado siguiente")
-            }
-            IconButton(onClick = onClose) {
-                Icon(Icons.Default.Close, contentDescription = "Cerrar busqueda")
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Resultado siguiente")
             }
         }
     }

@@ -9,16 +9,17 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,8 +33,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.Task
 import com.ronaldcolocho.taskly.domain.model.TaskStatus
@@ -51,9 +54,10 @@ import java.util.Locale
 
 @Composable
 fun HomeScreen(
-    onNavigateToTasks: () -> Unit,
+    onNavigateToTasks: (TaskStatus?) -> Unit,
     onNavigateToChat: (String) -> Unit,
     onNavigateToReminders: () -> Unit,
+    onNavigateToProfile: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -65,7 +69,8 @@ fun HomeScreen(
             state = state,
             onNavigateToTasks = onNavigateToTasks,
             onNavigateToChat = onNavigateToChat,
-            onNavigateToReminders = onNavigateToReminders
+            onNavigateToReminders = onNavigateToReminders,
+            onNavigateToProfile = onNavigateToProfile
         )
     }
 }
@@ -125,11 +130,12 @@ private fun HomeErrorState(message: String) {
 @Composable
 private fun HomeContent(
     state: HomeUiState.Success,
-    onNavigateToTasks: () -> Unit,
+    onNavigateToTasks: (TaskStatus?) -> Unit,
     onNavigateToChat: (String) -> Unit,
-    onNavigateToReminders: () -> Unit
+    onNavigateToReminders: () -> Unit,
+    onNavigateToProfile: () -> Unit
 ) {
-    val firstName = state.user?.displayName?.split(" ")?.firstOrNull().orEmpty()
+    val firstName = state.user?.displayName?.trim()?.split("\\s+".toRegex())?.firstOrNull().orEmpty()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -145,9 +151,11 @@ private fun HomeContent(
             ) {
                 HomeHeader(
                     firstName = firstName,
+                    profilePhotoUrl = state.user?.photoURL.orEmpty(),
                     pendingTasksCount = state.pendingTasksCount,
                     unreadConversationsCount = state.unreadConversationsCount,
-                    upcomingRemindersCount = state.upcomingReminders.size
+                    upcomingRemindersCount = state.upcomingReminders.size,
+                    onNavigateToProfile = onNavigateToProfile
                 )
             }
         }
@@ -162,7 +170,7 @@ private fun HomeContent(
                     title = "Pendientes",
                     count = state.pendingTasksCount,
                     actionLabel = if (state.pendingTasksCount > 0) "Ver todas" else null,
-                    onAction = onNavigateToTasks
+                    onAction = { onNavigateToTasks(null) }
                 )
             }
         }
@@ -184,7 +192,7 @@ private fun HomeContent(
                     enter = fadeIn(tween(220, delayMillis = 80 + index * 40)) +
                             slideInVertically(tween(220, delayMillis = 80 + index * 40)) { 20 }
                 ) {
-                    HomeTaskItem(task = task, onClick = onNavigateToTasks)
+                    HomeTaskItem(task = task, onClick = { onNavigateToTasks(task.status) })
                 }
             }
         }
@@ -273,37 +281,63 @@ private fun HomeContent(
 @Composable
 private fun HomeHeader(
     firstName: String,
+    profilePhotoUrl: String,
     pendingTasksCount: Int,
     unreadConversationsCount: Int,
-    upcomingRemindersCount: Int
+    upcomingRemindersCount: Int,
+    onNavigateToProfile: () -> Unit
 ) {
+    val greeting = remember {
+        when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
+            in 5..11 -> "Buenos días"
+            in 12..18 -> "Buenas tardes"
+            else -> "Buenas noches"
+        }
+    }
+    val positiveMessage = remember {
+        listOf(
+            "Un pequeño avance hoy cuenta mucho.",
+            "Paso a paso, vas logrando grandes cosas.",
+            "Tu enfoque de hoy construye tu mañana.",
+            "Confía en ti: puedes con lo que sigue.",
+            "Cada tarea completada es una victoria."
+        ).random()
+    }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        // Saludo
+        // Saludo, Name, Texto positivo y Avatar de Perfil
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
                 Text(
-                    text = if (firstName.isNotBlank()) "Hola, $firstName 👋" else "Hola 👋",
+                    text = if (firstName.isNotBlank()) "$greeting, $firstName 👋" else "$greeting 👋",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "¿Qué tienes pendiente hoy?",
+                    text = positiveMessage,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // Avatar placeholder circular
+            // Avatar placeholder circular responsivo (tamaño fijo garantizado)
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(48.dp)
+                    .aspectRatio(1f)
                     .clip(CircleShape)
+                    .clickable(onClick = onNavigateToProfile)
                     .background(
                         brush = Brush.linearGradient(
                             colors = listOf(
@@ -314,20 +348,33 @@ private fun HomeHeader(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = firstName.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
+                if (profilePhotoUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = profilePhotoUrl,
+                        contentDescription = "Abrir perfil",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Text(
+                        text = firstName.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
             }
         }
 
-        // Chips de resumen rápido
+        // Chips de resumen rápido (con scroll horizontal responsivo)
         if (pendingTasksCount > 0 || unreadConversationsCount > 0 || upcomingRemindersCount > 0) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
             ) {
                 if (pendingTasksCount > 0) {
                     SummaryChip(

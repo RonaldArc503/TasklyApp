@@ -1,5 +1,8 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
@@ -27,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -85,8 +90,6 @@ fun ChatListScreen(
     val openConversation by viewModel.openConversation.collectAsStateWithLifecycle()
     val currentUserId = viewModel.currentUserId
     var showNewConversation by rememberSaveable { mutableStateOf(false) }
-    var savedSearchListIndex by rememberSaveable { mutableIntStateOf(0) }
-    var savedSearchListOffset by rememberSaveable { mutableIntStateOf(0) }
     val showingArchived = (uiState as? ChatListUiState.Success)?.showingArchived == true
 
     LaunchedEffect(openConversation) {
@@ -146,37 +149,7 @@ fun ChatListScreen(
             }
             is ChatListUiState.Success -> {
                 val listState = rememberLazyListState()
-                LaunchedEffect(state.searchQuery) {
-                    if (state.searchQuery.isBlank() && !state.showingArchived && state.conversations.isNotEmpty()) {
-                        listState.scrollToItem(
-                            savedSearchListIndex.coerceAtMost(state.conversations.lastIndex),
-                            savedSearchListOffset
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = state.searchQuery,
-                    onValueChange = { query ->
-                        if (state.searchQuery.isBlank() && query.isNotBlank()) {
-                            savedSearchListIndex = listState.firstVisibleItemIndex
-                            savedSearchListOffset = listState.firstVisibleItemScrollOffset
-                        }
-                        viewModel.onConversationSearchQueryChange(query)
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    singleLine = true,
-                    placeholder = { Text(if (state.showingArchived) "Buscar en archivados" else "Buscar conversaciones") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (state.isSearching) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else if (state.searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.onConversationSearchQueryChange("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "Limpiar busqueda")
-                            }
-                        }
-                    }
-                )
+
                 if (state.conversations.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
@@ -310,21 +283,55 @@ private fun NewConversationSheet(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            OutlinedTextField(
+            TextField(
                 value = state.query,
                 onValueChange = onQueryChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Telefono o correo") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                shape = RoundedCornerShape(28.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                    focusedLeadingIconColor = MaterialTheme.colorScheme.primary,
+                    unfocusedLeadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                ),
+                placeholder = {
+                    Text(
+                        "Telefono o correo",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
                 trailingIcon = {
-                    if (state.query.isNotEmpty()) {
+                    AnimatedVisibility(
+                        visible = state.query.isNotEmpty(),
+                        enter = fadeIn(),
+                        exit = fadeOut()
+                    ) {
                         IconButton(onClick = { onQueryChange("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "Limpiar busqueda")
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Limpiar busqueda",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-                }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search)
             )
+
 
             when {
                 state.isSearching || state.isOpening -> Box(

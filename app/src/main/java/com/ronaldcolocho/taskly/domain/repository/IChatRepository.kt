@@ -29,6 +29,10 @@ interface IChatRepository {
         otherUser: UserProfile
     ): Result<String>
 
+    suspend fun getOrCreateSavedMessagesConversation(
+        currentUser: UserProfile
+    ): Result<String>
+
     fun subscribeConversationStates(
         userId: String,
         conversationIds: Set<String>

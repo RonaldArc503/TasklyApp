@@ -54,8 +54,10 @@ class ReminderReceiver : BroadcastReceiver() {
             alarmIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val canUseFullScreenIntent = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+            notificationManager.canUseFullScreenIntent()
 
-        val notification = NotificationCompat.Builder(context, channelId)
+        val notificationBuilder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Alarma de recordatorio")
             .setContentText(title)
@@ -64,14 +66,24 @@ class ReminderReceiver : BroadcastReceiver() {
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
-            .setFullScreenIntent(fullScreenIntent, true)
             .setAutoCancel(false)
             .setOngoing(true)
             .setContentIntent(fullScreenIntent)
-            .build()
+
+        // A full-screen intent is optional presentation. When Android has denied it,
+        // keep publishing the normal high-priority notification instead of attaching
+        // a full-screen request that the system will reject.
+        if (canUseFullScreenIntent) {
+            notificationBuilder.setFullScreenIntent(fullScreenIntent, true)
+        }
+        val notification = notificationBuilder.build()
 
         try {
             notificationManager.notify(id.hashCode(), notification)
+            android.util.Log.i(
+                "ReminderAlarm",
+                "Reminder notification posted: id=$id, fullScreenAllowed=$canUseFullScreenIntent"
+            )
         } catch (error: SecurityException) {
             android.util.Log.e("ReminderAlarm", "Notification permission denied", error)
         }

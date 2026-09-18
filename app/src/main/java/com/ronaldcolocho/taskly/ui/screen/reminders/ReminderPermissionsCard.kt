@@ -56,7 +56,7 @@ fun ReminderPermissionsCard(onRefresh: () -> Unit = {}) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Diagnóstico de recordatorios", style = MaterialTheme.typography.titleMedium)
-            Text("Estado actual del sistema. Tener permisos no confirma que la alarma se haya ejecutado.", style = MaterialTheme.typography.bodySmall)
+            Text("Estado actual del sistema. Android controla estos permisos y puede revocarlos tras una actualizaciÃ³n o cambio del sistema.", style = MaterialTheme.typography.bodySmall)
             rows.forEach { (title, status, action) ->
                 Row(Modifier.fillMaxWidth()) {
                     Column(Modifier.weight(1f)) {

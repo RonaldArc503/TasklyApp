@@ -71,15 +71,25 @@ private fun StartupPermissionRequester() {
     val overlayLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { }
-    val exactAlarmLauncher = rememberLauncherForActivityResult(
+    val fullScreenIntentLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         requestOverlayPermissionIfNeeded(context, overlayLauncher)
     }
+    val exactAlarmLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        requestFullScreenIntentOrOverlay(context, fullScreenIntentLauncher, overlayLauncher)
+    }
     val notificationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
-        requestExactAlarmOrOverlay(context, exactAlarmLauncher, overlayLauncher)
+        requestExactAlarmThenFullScreenIntent(
+            context,
+            exactAlarmLauncher,
+            fullScreenIntentLauncher,
+            overlayLauncher
+        )
     }
 
     LaunchedEffect(Unit) {
@@ -93,18 +103,24 @@ private fun StartupPermissionRequester() {
             preferences.edit().putBoolean("requested", true).apply()
             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            requestExactAlarmOrOverlay(context, exactAlarmLauncher, overlayLauncher)
+            requestExactAlarmThenFullScreenIntent(
+                context,
+                exactAlarmLauncher,
+                fullScreenIntentLauncher,
+                overlayLauncher
+            )
         }
     }
 }
 
-private fun requestExactAlarmOrOverlay(
+private fun requestExactAlarmThenFullScreenIntent(
     context: Context,
     exactAlarmLauncher: androidx.activity.result.ActivityResultLauncher<Intent>,
+    fullScreenIntentLauncher: androidx.activity.result.ActivityResultLauncher<Intent>,
     overlayLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
 ) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-        requestOverlayPermissionIfNeeded(context, overlayLauncher)
+        requestFullScreenIntentOrOverlay(context, fullScreenIntentLauncher, overlayLauncher)
         return
     }
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -115,8 +131,27 @@ private fun requestExactAlarmOrOverlay(
             }
         )
     } else {
-        requestOverlayPermissionIfNeeded(context, overlayLauncher)
+        requestFullScreenIntentOrOverlay(context, fullScreenIntentLauncher, overlayLauncher)
     }
+}
+
+private fun requestFullScreenIntentOrOverlay(
+    context: Context,
+    fullScreenIntentLauncher: androidx.activity.result.ActivityResultLauncher<Intent>,
+    overlayLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
+) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val notifications = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!notifications.canUseFullScreenIntent()) {
+            fullScreenIntentLauncher.launch(
+                Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                }
+            )
+            return
+        }
+    }
+    requestOverlayPermissionIfNeeded(context, overlayLauncher)
 }
 
 private fun requestOverlayPermissionIfNeeded(

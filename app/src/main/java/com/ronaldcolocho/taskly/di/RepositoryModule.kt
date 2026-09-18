@@ -103,6 +103,7 @@ abstract class RepositoryModule {
         deletedMessagesRepositoryImpl: com.ronaldcolocho.taskly.data.repository.DeletedMessagesRepositoryImpl
     ): com.ronaldcolocho.taskly.domain.repository.IDeletedMessagesRepository
 
+
     @Binds
     @Singleton
     abstract fun bindReminderRepository(
@@ -114,5 +115,10 @@ abstract class RepositoryModule {
     abstract fun bindYouTubeRepository(
         youTubeRepositoryImpl: com.ronaldcolocho.taskly.data.repository.YouTubeRepositoryImpl
     ): com.ronaldcolocho.taskly.domain.repository.IYouTubeRepository
-}
 
+    @Binds
+    @Singleton
+    abstract fun bindDownloadHistoryRepository(
+        downloadHistoryRepositoryImpl: com.ronaldcolocho.taskly.data.repository.DownloadHistoryRepositoryImpl
+    ): com.ronaldcolocho.taskly.domain.repository.IDownloadHistoryRepository
+}

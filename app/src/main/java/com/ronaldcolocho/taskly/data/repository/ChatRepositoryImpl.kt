@@ -404,6 +404,58 @@ class ChatRepositoryImpl @Inject constructor(
         }.await()
     }
 
+    override suspend fun getOrCreateSavedMessagesConversation(
+        currentUser: UserProfile
+    ): Result<String> = runCatching {
+        require(currentUser.uid.isNotBlank()) { "Usuario no valido." }
+
+        val conversations = firestore.collection("conversations")
+        val querySnapshot = conversations
+            .whereArrayContains("participantIds", currentUser.uid)
+            .limit(20L)
+            .get(Source.DEFAULT)
+            .await()
+
+        val existing = querySnapshot.documents.firstOrNull { doc ->
+            val participants = doc.get("participantIds") as? List<*> ?: emptyList<Any>()
+            val isGroup = doc.getBoolean("isGroup") ?: false
+            !isGroup && (participants.size == 1 || (participants.size == 2 && participants.all { it == currentUser.uid }))
+        }
+        if (existing != null) return@runCatching existing.id
+
+        val canonicalParticipants = listOf(currentUser.uid)
+        val conversationId = deterministicDirectConversationId(canonicalParticipants)
+        val ref = conversations.document(conversationId)
+
+        firestore.runTransaction { transaction ->
+            if (!transaction.get(ref).exists()) {
+                val members = mapOf(
+                    currentUser.uid to mapOf(
+                        "displayName" to currentUser.displayName,
+                        "photoURL" to currentUser.photoURL,
+                        "phone" to currentUser.phone
+                    )
+                )
+                val now = System.currentTimeMillis()
+                transaction.set(
+                    ref,
+                    mapOf(
+                        "participantIds" to canonicalParticipants,
+                        "members" to members,
+                        "unread" to mapOf(currentUser.uid to 0),
+                        "lastMessage" to "",
+                        "lastMessageAt" to 0L,
+                        "createdAt" to now,
+                        "kind" to "dm",
+                        "isGroup" to false,
+                        "directKey" to currentUser.uid
+                    )
+                )
+            }
+            conversationId
+        }.await()
+    }
+
     override fun subscribeConversationStates(
         userId: String,
         conversationIds: Set<String>

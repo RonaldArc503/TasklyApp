@@ -4,6 +4,8 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
@@ -37,6 +39,13 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.io.File
 import javax.inject.Inject
 
@@ -58,6 +67,10 @@ data class ConverterUiState(
     val iframeUrl: String = "",
     val selectedTitle: String = "",
     val selectedMediaLabel: String = "",
+    val converterProviderLabel: String = "",
+    val primaryConversionStatus: String? = null,
+    val isPrimaryConversionRunning: Boolean = false,
+    val primaryQuality: String = "192",
     val isManualUrlInputExpanded: Boolean = false,
     val selectedVideo: YouTubeVideo? = null,
     val downloadFeedback: String? = null
@@ -72,7 +85,8 @@ class ConverterViewModel @Inject constructor(
     private val mediaDownloadManager: MediaDownloadManager,
     private val audioPlayerController: AudioPlayerController,
     private val getCurrentUserIdUseCase: GetCurrentUserIdUseCase,
-    private val getProfileUseCase: GetProfileUseCase
+    private val getProfileUseCase: GetProfileUseCase,
+    private val okHttpClient: OkHttpClient
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ConverterUiState())
@@ -159,6 +173,7 @@ class ConverterViewModel @Inject constructor(
                 iframeUrl = "",
                 selectedTitle = "",
                 selectedMediaLabel = "",
+                converterProviderLabel = "",
                 isManualUrlInputExpanded = true,
                 selectedVideo = null
             )
@@ -180,7 +195,8 @@ class ConverterViewModel @Inject constructor(
                 manualError = null,
                 selectedTitle = "",
                 selectedMediaLabel = "Audio MP3 / Video MP4",
-                iframeUrl = veviozUrl(videoId),
+                converterProviderLabel = OWN_SERVICE_LABEL,
+                iframeUrl = "",
                 selectedVideo = null
             )
         }
@@ -191,9 +207,10 @@ class ConverterViewModel @Inject constructor(
             it.copy(
                 manualError = null,
                 selectedTitle = video.title,
-                manualUrl = video.url,
+                manualUrl = "https://www.youtube.com/watch?v=${video.id}",
                 selectedMediaLabel = "Audio MP3 / Video MP4",
-                iframeUrl = veviozUrl(video.id),
+                converterProviderLabel = OWN_SERVICE_LABEL,
+                iframeUrl = "",
                 selectedVideo = video
             )
         }
@@ -206,9 +223,144 @@ class ConverterViewModel @Inject constructor(
                 manualUrl = "",
                 selectedTitle = "",
                 selectedMediaLabel = "",
+                converterProviderLabel = "",
                 manualError = null,
                 selectedVideo = null
             )
+        }
+    }
+
+    /** Keeps the prior provider available if ClickAPI is temporarily unavailable. */
+    fun useFallbackConverter() {
+        val videoId = resolveSelectedVideoId() ?: return
+        _uiState.update {
+            it.copy(
+                converterProviderLabel = VEVIOZ_LABEL,
+                iframeUrl = veviozUrl(videoId),
+                downloadFeedback = "Usando la fuente alternativa."
+            )
+        }
+    }
+
+    fun startPrimaryConversion(context: Context) {
+        Log.i(CONVERTER_LOG_TAG, "Convert button pressed")
+        val videoId = resolveSelectedVideoId()
+        if (videoId == null) {
+            val message = "No se pudo identificar el video. Selecciona otro o pega su enlace de YouTube."
+            _uiState.update { it.copy(primaryConversionStatus = message, downloadFeedback = message) }
+            Log.w(CONVERTER_LOG_TAG, "Conversion rejected: invalid video ID")
+            showConversionFeedback(context, message)
+            return
+        }
+        val sourceUrl = "https://www.youtube.com/watch?v=$videoId"
+        if (_uiState.value.isPrimaryConversionRunning) return
+
+        _uiState.update {
+            it.copy(
+                isPrimaryConversionRunning = true,
+                primaryConversionStatus = "Enviando conversión a tu servicio...",
+                downloadFeedback = "Iniciando conversión en calidad ${qualityLabel(it.primaryQuality)}..."
+            )
+        }
+        showConversionFeedback(context, "Enviando conversión al servicio...")
+        Log.i(CONVERTER_LOG_TAG, "Conversion requested: quality=${_uiState.value.primaryQuality}")
+        viewModelScope.launch {
+            try {
+                val response = withContext(Dispatchers.IO) { createConversion(sourceUrl, _uiState.value.primaryQuality) }
+                val id = response.getString("id")
+                Log.i(CONVERTER_LOG_TAG, "Conversion accepted: id=$id status=${response.optString("status")}")
+                showConversionFeedback(context, "Conversión en cola. Preparando audio...")
+                val downloadUrl = withContext(Dispatchers.IO) { waitForConversion(id, response) }
+                onDownloadRequested(
+                    context = context,
+                    url = downloadUrl,
+                    contentDisposition = null,
+                    mimeType = "audio/mpeg",
+                    userAgent = null,
+                    cookies = null,
+                    referer = API_BASE_URL
+                )
+                _uiState.update { it.copy(primaryConversionStatus = "Archivo listo. Iniciando descarga...") }
+                showConversionFeedback(context, "Archivo listo. Iniciando descarga...")
+            } catch (e: Exception) {
+                Log.e(CONVERTER_LOG_TAG, "Conversion failed", e)
+                _uiState.update {
+                    it.copy(
+                        primaryConversionStatus = "Error: ${e.message ?: "error desconocido"}",
+                        downloadFeedback = "Tu servicio no pudo convertir el archivo: ${e.message ?: "error desconocido"}"
+                    )
+                }
+                showConversionFeedback(context, "No se pudo iniciar la conversión: ${e.message ?: "error desconocido"}")
+            } finally {
+                _uiState.update { it.copy(isPrimaryConversionRunning = false) }
+            }
+        }
+    }
+
+    fun selectPrimaryQuality(quality: String) {
+        if (quality !in SUPPORTED_AUDIO_QUALITIES || _uiState.value.isPrimaryConversionRunning) return
+        _uiState.update { it.copy(primaryQuality = quality) }
+    }
+
+    private fun createConversion(sourceUrl: String, quality: String): JSONObject {
+        val body = JSONObject()
+            .put("source_url", sourceUrl)
+            .put("output_format", "mp3")
+            .put("quality", quality)
+            .put("rights_confirmed", true)
+            .toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
+        return executeJson(Request.Builder().url("$API_BASE_URL/v1/conversions").post(body).build(), expectedCode = 202)
+    }
+
+    private suspend fun waitForConversion(id: String, initial: JSONObject): String {
+        var conversion = initial
+        repeat(MAX_SERVICE_STATUS_CHECKS) {
+            when (conversion.optString("status").lowercase()) {
+                "completed" -> return conversion.optString("download_url")
+                    .takeIf { it.isNotBlank() }
+                    ?.let(::absoluteServiceUrl)
+                    ?: "$API_BASE_URL/v1/conversions/$id/download"
+                "failed" -> throw IllegalStateException(conversion.optString("error", "La conversión falló."))
+            }
+            Log.i(CONVERTER_LOG_TAG, "Conversion status: ${conversion.optString("status", "queued")}")
+            _uiState.update { it.copy(primaryConversionStatus = "Convirtiendo en tu servicio...") }
+            delay(SERVICE_STATUS_POLL_MS)
+            conversion = withContext(Dispatchers.IO) {
+                executeJson(Request.Builder().url("$API_BASE_URL/v1/conversions/$id").get().build(), expectedCode = 200)
+            }
+        }
+        throw IllegalStateException("La conversión tardó demasiado. Intenta nuevamente.")
+    }
+
+    private fun executeJson(request: Request, expectedCode: Int): JSONObject = okHttpClient.newCall(request).execute().use { response ->
+        val payload = response.body?.string().orEmpty()
+        if (response.code != expectedCode) {
+            throw IllegalStateException(JSONObject(payload).optString("detail", "HTTP ${response.code}"))
+        }
+        JSONObject(payload)
+    }
+
+    private fun absoluteServiceUrl(url: String): String =
+        if (url.startsWith("http://") || url.startsWith("https://")) url else "$API_BASE_URL${if (url.startsWith('/')) "" else "/"}$url"
+
+    private fun qualityLabel(quality: String): String = when (quality) {
+        "128" -> "baja (128 kbps)"
+        "320" -> "alta (320 kbps)"
+        else -> "media (192 kbps)"
+    }
+
+    private fun showConversionFeedback(context: Context, message: String) {
+        Toast.makeText(context.applicationContext, message, Toast.LENGTH_SHORT).show()
+    }
+
+    /** Lets the browser complete provider-specific flows that a WebView cannot support. */
+    fun completeConversionInBrowser(context: Context) {
+        val url = _uiState.value.iframeUrl
+        if (url.isBlank()) return
+        AttachmentActions.openExternal(context, url)
+        _uiState.update {
+            it.copy(downloadFeedback = "Se abrió el conversor en el navegador para completar la descarga.")
         }
     }
 
@@ -216,7 +368,10 @@ class ConverterViewModel @Inject constructor(
         context: Context,
         url: String,
         contentDisposition: String?,
-        mimeType: String?
+        mimeType: String?,
+        userAgent: String?,
+        cookies: String?,
+        referer: String?
     ) {
         val selected = _uiState.value.selectedVideo
         val rawTitle = selected?.title ?: _uiState.value.selectedTitle.ifBlank { "Audio" }
@@ -242,6 +397,9 @@ class ConverterViewModel @Inject constructor(
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 setDestinationInExternalFilesDir(context, Environment.DIRECTORY_MUSIC, targetFile.name)
                 setMimeType(cleanMime)
+                userAgent?.takeIf { it.isNotBlank() }?.let { addRequestHeader("User-Agent", it) }
+                cookies?.takeIf { it.isNotBlank() }?.let { addRequestHeader("Cookie", it) }
+                referer?.takeIf { it.isNotBlank() }?.let { addRequestHeader("Referer", it) }
             }
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             if (dm != null) {
@@ -257,16 +415,54 @@ class ConverterViewModel @Inject constructor(
                         mimeType = cleanMime
                     )
                 )
-                _uiState.update { it.copy(downloadFeedback = "Descarga iniciada: $rawTitle") }
+                _uiState.update { it.copy(downloadFeedback = "Descargando: $rawTitle") }
+                observeDownloadResult(dm, downloadId, targetFile, rawTitle)
             } else {
-                AttachmentActions.download(context, url, targetFile.name)
+                _uiState.update { it.copy(downloadFeedback = "No se pudo acceder al gestor de descargas del dispositivo.") }
             }
         } catch (e: Exception) {
-            try {
-                AttachmentActions.download(context, url, targetFile.name)
-            } catch (_: Exception) {
-                _uiState.update { it.copy(downloadFeedback = "Error al iniciar la descarga: ${e.message}") }
+            _uiState.update { it.copy(downloadFeedback = "Error al iniciar la descarga: ${e.message ?: "URL no valida"}") }
+        }
+    }
+
+    /**
+     * Enqueue only means Android accepted the request. Keep watching the system download so the
+     * UI does not report success until the target file has actually been written.
+     */
+    private fun observeDownloadResult(
+        downloadManager: DownloadManager,
+        downloadId: Long,
+        targetFile: File,
+        title: String
+    ) {
+        viewModelScope.launch {
+            repeat(MAX_DOWNLOAD_STATUS_CHECKS) {
+                delay(DOWNLOAD_STATUS_POLL_MS)
+                val cursor = downloadManager.query(DownloadManager.Query().setFilterById(downloadId)) ?: return@launch
+                cursor.use {
+                    if (!it.moveToFirst()) return@launch
+                    when (it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))) {
+                        DownloadManager.STATUS_SUCCESSFUL -> {
+                            val message = if (targetFile.exists() && targetFile.length() > 0L) {
+                                "Descarga completada: $title"
+                            } else {
+                                "La descarga termino, pero el archivo no se guardo. Intenta nuevamente."
+                            }
+                            _uiState.update { state -> state.copy(downloadFeedback = message) }
+                            return@launch
+                        }
+                        DownloadManager.STATUS_FAILED -> {
+                            val reasonIndex = it.getColumnIndex(DownloadManager.COLUMN_REASON)
+                            val reason = if (reasonIndex >= 0) it.getInt(reasonIndex) else null
+                            _uiState.update { state ->
+                                state.copy(downloadFeedback = "La descarga fallo${reason?.let { code -> " (codigo $code)" } ?: ""}. Intenta nuevamente.")
+                            }
+                            return@launch
+                        }
+                    }
+                }
             }
+            _uiState.update { it.copy(downloadFeedback = "La descarga sigue pendiente. Revisa la notificacion de Android.") }
         }
     }
 
@@ -399,6 +595,10 @@ class ConverterViewModel @Inject constructor(
         return (1..20).map { chars.random() }.joinToString("")
     }
 
+    private fun resolveSelectedVideoId(): String? =
+        _uiState.value.selectedVideo?.id?.let(::extractYouTubeVideoId)
+            ?: extractYouTubeVideoId(_uiState.value.manualUrl)
+
     private fun extractYouTubeVideoId(input: String): String? {
         val trimmed = input.trim()
         if (Regex("^[a-zA-Z0-9_-]{11}$").matches(trimmed)) return trimmed
@@ -425,4 +625,25 @@ class ConverterViewModel @Inject constructor(
     }
 
     private fun veviozUrl(videoId: String): String = "https://api.vevioz.com/$videoId"
+
+    /** ClickAPI widgetplus accepts the canonical YouTube URL as its source. */
+    private fun clickApiWidgetPlusUrl(videoId: String): String {
+        val youtubeUrl = "https://www.youtube.com/watch?v=$videoId"
+        return "https://clickapi.net/api/widgetplus?url=${Uri.encode(youtubeUrl)}"
+    }
+
+    private companion object {
+        const val API_BASE_URL = "http://3.19.79.99:8000"
+        const val CONVERTER_LOG_TAG = "TasklyConverter"
+        const val OWN_SERVICE_LABEL = "Tu servicio"
+        const val CLICK_API_LABEL = "ClickAPI"
+        const val VEVIOZ_LABEL = "Fuente alternativa"
+        const val DOWNLOAD_STATUS_POLL_MS = 1_000L
+        const val MAX_DOWNLOAD_STATUS_CHECKS = 120
+        const val SERVICE_STATUS_POLL_MS = 2_000L
+        const val MAX_SERVICE_STATUS_CHECKS = 150
+        const val DEFAULT_AUDIO_QUALITY = "192"
+        val SUPPORTED_AUDIO_QUALITIES = setOf("128", "192", "320")
+    }
 }
+

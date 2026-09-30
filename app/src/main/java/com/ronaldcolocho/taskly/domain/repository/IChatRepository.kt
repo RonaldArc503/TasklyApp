@@ -17,6 +17,7 @@ interface IChatRepository {
     fun getRecentMessages(convId: String, currentUserId: String): Flow<List<ChatMessage>>
     suspend fun getChatInfoMessages(convId: String, currentUserId: String, limit: Long): List<ChatMessage>
     suspend fun getOlderMessages(convId: String, currentUserId: String, beforeTimestamp: Long, limit: Long): List<ChatMessage>
+    suspend fun getNewerMessages(convId: String, currentUserId: String, afterTimestamp: Long, limit: Long): List<ChatMessage>
     suspend fun getMessageWindowById(
         convId: String,
         currentUserId: String,

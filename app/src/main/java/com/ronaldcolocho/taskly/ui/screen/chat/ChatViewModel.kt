@@ -29,6 +29,7 @@ import com.ronaldcolocho.taskly.domain.usecase.chat.GetConversationUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetRecentConversationsUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetMessageWindowByIdUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetOlderMessagesUseCase
+import com.ronaldcolocho.taskly.domain.usecase.chat.GetNewerMessagesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetRecentMessagesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.EnsureMessageSearchIndexesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.PinMessageUseCase
@@ -90,7 +91,8 @@ internal data class ChatEphemeralState(
 
 data class MessageNavigationRequest(
     val messageId: String,
-    val requestId: Long
+    val requestId: Long,
+    val keepSavedFocus: Boolean = false
 )
 
 data class MessageSearchUiState(
@@ -125,6 +127,7 @@ class ChatViewModel @Inject constructor(
     private val getRecentConversationsUseCase: GetRecentConversationsUseCase,
     private val getRecentMessagesUseCase: GetRecentMessagesUseCase,
     private val getOlderMessagesUseCase: GetOlderMessagesUseCase,
+    private val getNewerMessagesUseCase: GetNewerMessagesUseCase,
     private val getMessageWindowByIdUseCase: GetMessageWindowByIdUseCase,
     private val searchMessagesUseCase: SearchMessagesUseCase,
     private val ensureMessageSearchIndexesUseCase: EnsureMessageSearchIndexesUseCase,
@@ -160,6 +163,7 @@ class ChatViewModel @Inject constructor(
     private val _editing = MutableStateFlow<ChatMessage?>(null)
     private val _sendError = MutableStateFlow<String?>(null)
     private val _messageNavigation = MutableStateFlow<MessageNavigationRequest?>(null)
+    private val _savedFocusMessageId = MutableStateFlow<String?>(null)
     private val _messageSearch = MutableStateFlow(MessageSearchUiState())
     private val _receipts = MutableStateFlow<Map<String, ConversationReceipt>>(emptyMap())
     private val _unreadBoundaryMessageId = MutableStateFlow<String?>(null)
@@ -169,6 +173,7 @@ class ChatViewModel @Inject constructor(
     private val _peerPresence = MutableStateFlow<Presence?>(null)
     private val _otherParticipant = MutableStateFlow<UserProfile?>(null)
     private val _isFetchingOlder = MutableStateFlow(false)
+    private var isFetchingNewer = false
     private val _drafts = MutableStateFlow<List<AttachmentDraft>>(emptyList())
     private val _conversations = MutableStateFlow<List<ChatConversation>>(emptyList())
     private val _myProfile = MutableStateFlow<UserProfile?>(null)
@@ -187,6 +192,7 @@ class ChatViewModel @Inject constructor(
     val conversations: StateFlow<List<ChatConversation>> = _conversations.asStateFlow()
     val playlistAddState: StateFlow<PlaylistAddState> = _playlistAddState.asStateFlow()
     val messageNavigation: StateFlow<MessageNavigationRequest?> = _messageNavigation.asStateFlow()
+    val savedFocusMessageId: StateFlow<String?> = _savedFocusMessageId.asStateFlow()
     val messageSearch: StateFlow<MessageSearchUiState> = _messageSearch.asStateFlow()
     val voiceNoteSendState: StateFlow<VoiceNoteSendState> = _voiceNoteSendState.asStateFlow()
     val automaticDownloadsEnabled: StateFlow<Boolean> = settingsRepository.settings
@@ -207,9 +213,10 @@ class ChatViewModel @Inject constructor(
     init {
         loadData()
         savedStateHandle.get<String>("messageId")?.takeIf(String::isNotBlank)?.let { messageId ->
+            val keepSavedFocus = savedStateHandle.get<Boolean>("focusSaved") == true
             viewModelScope.launch {
                 delay(100)
-                navigateToMessage(messageId)
+                navigateToMessage(messageId, keepSavedFocus)
             }
         }
     }
@@ -520,7 +527,29 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun navigateToMessage(messageId: String) {
+    /** Loads the adjacent newer page only after the user reaches the newer edge of a jump window. */
+    fun loadNewerHistoryWhenVisible(visibleMessageIds: Set<String>) {
+        val id = uid ?: return
+        val newestHistory = _historyMessages.value.maxByOrNull(ChatMessage::createdAt) ?: return
+        if (newestHistory.id !in visibleMessageIds || isFetchingNewer) return
+        viewModelScope.launch {
+            isFetchingNewer = true
+            val newer = runCatching {
+                getNewerMessagesUseCase(convId, id, newestHistory.createdAt, 30L)
+            }.getOrDefault(emptyList())
+            if (newer.isNotEmpty()) {
+                _historyMessages.update { history ->
+                    (history + newer)
+                        .associateBy { it.id }
+                        .values
+                        .sortedByDescending { it.createdAt }
+                }
+            }
+            isFetchingNewer = false
+        }
+    }
+
+    fun navigateToMessage(messageId: String, keepSavedFocus: Boolean = false) {
         val currentUserId = uid ?: return
         if (messageId.isBlank()) return
         viewModelScope.launch {
@@ -547,11 +576,17 @@ class ChatViewModel @Inject constructor(
                         .sortedByDescending { it.createdAt }
                 }
             }
+            if (keepSavedFocus) _savedFocusMessageId.value = messageId
             _messageNavigation.value = MessageNavigationRequest(
                 messageId = messageId,
-                requestId = System.nanoTime()
+                requestId = System.nanoTime(),
+                keepSavedFocus = keepSavedFocus
             )
         }
+    }
+
+    fun clearSavedFocus(messageId: String) {
+        if (_savedFocusMessageId.value == messageId) _savedFocusMessageId.value = null
     }
 
     fun consumeMessageNavigation(requestId: Long) {
@@ -661,12 +696,44 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
 
-            val final = newMessage.copy(attachments = attachments)
+            // Images and audio are sent individually; other attachment types keep their grouping.
+            val attachmentGroups = mutableListOf<List<ChatAttachment>>()
+            val pendingNonMediaGroup = mutableListOf<ChatAttachment>()
+            attachments.forEach { attachment ->
+                if (attachment.kind == AttachmentKind.IMAGE || attachment.kind == AttachmentKind.AUDIO) {
+                    if (pendingNonMediaGroup.isNotEmpty()) {
+                        attachmentGroups += pendingNonMediaGroup.toList()
+                        pendingNonMediaGroup.clear()
+                    }
+                    attachmentGroups += listOf(attachment)
+                } else {
+                    pendingNonMediaGroup += attachment
+                }
+            }
+            if (pendingNonMediaGroup.isNotEmpty()) {
+                attachmentGroups += pendingNonMediaGroup.toList()
+            }
+
+            val finalMessages = attachmentGroups.mapIndexed { index, group ->
+                newMessage.copy(
+                    id = if (index == 0) newMessage.id else generateFirestoreId(),
+                    text = if (index == 0) clean else "",
+                    createdAt = newMessage.createdAt + index,
+                    replyTo = if (index == 0) reply else null,
+                    mentions = if (index == 0) mentions else emptyList(),
+                    attachments = group
+                )
+            }
             _localPendingMessages.update { list ->
-                list.map { if (it.id == final.id) final else it }
+                list.flatMap { pending ->
+                    if (pending.id == newMessage.id) finalMessages else listOf(pending)
+                }
             }
             _drafts.value = emptyList()
-            executeSend(final)
+            // Preserve the selected order on the server as well.
+            for (message in finalMessages) {
+                sendPendingMessage(message)
+            }
         }
     }
 
@@ -718,20 +785,24 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun executeSend(message: ChatMessage) {
-        val id = uid ?: return
         viewModelScope.launch {
-            sendMessageUseCase(convId, id, message)
-                .onSuccess {
-                    _localPendingMessages.value = _localPendingMessages.value.filter { it.id != message.id }
-                }
-                .onFailure { e ->
-                    val failed = message.copy(status = MessageStatus.FAILED)
-                    _localPendingMessages.value = _localPendingMessages.value.map {
-                        if (it.id == failed.id) failed else it
-                    }
-                    _sendError.value = e.message ?: "No se pudo enviar el mensaje"
-                }
+            sendPendingMessage(message)
         }
+    }
+
+    private suspend fun sendPendingMessage(message: ChatMessage) {
+        val id = uid ?: return
+        sendMessageUseCase(convId, id, message)
+            .onSuccess {
+                _localPendingMessages.value = _localPendingMessages.value.filter { it.id != message.id }
+            }
+            .onFailure { e ->
+                val failed = message.copy(status = MessageStatus.FAILED)
+                _localPendingMessages.value = _localPendingMessages.value.map {
+                    if (it.id == failed.id) failed else it
+                }
+                _sendError.value = e.message ?: "No se pudo enviar el mensaje"
+            }
     }
 
     fun retryMessage(message: ChatMessage) {

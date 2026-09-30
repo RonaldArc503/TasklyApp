@@ -19,32 +19,41 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ronaldcolocho.taskly.ui.navigation.AppNavigation
+import com.ronaldcolocho.taskly.data.alarm.ReminderAlarmManager
 import com.ronaldcolocho.taskly.ui.theme.TasklyTheme
 import com.ronaldcolocho.taskly.ui.screen.settings.SettingsViewModel
 import com.ronaldcolocho.taskly.util.SharedUrlParser
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val settingsViewModel: SettingsViewModel by viewModels()
     private val sharedUrlViewModel: SharedUrlViewModel by viewModels()
+    private var playlistToOpen by mutableStateOf<String?>(null)
+    @Inject lateinit var reminderAlarmManager: ReminderAlarmManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         receiveSharedUrl(intent)
+        playlistToOpen = playlistFromAudioIntent(intent)
         enableEdgeToEdge()
         setContent {
             val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
             val sharedUrl by sharedUrlViewModel.sharedUrl.collectAsStateWithLifecycle()
             TasklyTheme(darkTheme = settings.darkTheme) {
-                StartupPermissionRequester()
+                StartupPermissionRequester(onPermissionsChanged = reminderAlarmManager::rescheduleStoredAlarms)
                 AppNavigation(
                     sharedUrl = sharedUrl,
-                    onSharedUrlHandled = sharedUrlViewModel::markHandled
+                    onSharedUrlHandled = sharedUrlViewModel::markHandled,
+                    openPlaylistId = playlistToOpen,
+                    onPlaylistOpened = { playlistToOpen = null }
                 )
             }
         }
@@ -54,6 +63,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveSharedUrl(intent)
+        playlistToOpen = playlistFromAudioIntent(intent)
     }
 
     private fun receiveSharedUrl(intent: Intent?) {
@@ -62,28 +72,41 @@ class MainActivity : ComponentActivity() {
             sharedUrlViewModel::receive
         )
     }
+
+    private fun playlistFromAudioIntent(intent: Intent?): String? {
+        if (intent?.action != ACTION_OPEN_CURRENT_AUDIO) return null
+        return getSharedPreferences("audio_prefs", Context.MODE_PRIVATE)
+            .getString("current_playlist_id", null)
+    }
+
+    companion object {
+        const val ACTION_OPEN_CURRENT_AUDIO = "com.ronaldcolocho.taskly.OPEN_CURRENT_AUDIO"
+    }
 }
 
 @Composable
-private fun StartupPermissionRequester() {
+private fun StartupPermissionRequester(onPermissionsChanged: () -> Unit) {
     val context = LocalContext.current
     val preferences = context.getSharedPreferences("startup_permissions", Context.MODE_PRIVATE)
     val overlayLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { }
+    ) { onPermissionsChanged() }
     val fullScreenIntentLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
+        onPermissionsChanged()
         requestOverlayPermissionIfNeeded(context, overlayLauncher)
     }
     val exactAlarmLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
+        onPermissionsChanged()
         requestFullScreenIntentOrOverlay(context, fullScreenIntentLauncher, overlayLauncher)
     }
     val notificationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
+        onPermissionsChanged()
         requestExactAlarmThenFullScreenIntent(
             context,
             exactAlarmLauncher,
@@ -93,6 +116,7 @@ private fun StartupPermissionRequester() {
     }
 
     LaunchedEffect(Unit) {
+        onPermissionsChanged()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(
                 context,

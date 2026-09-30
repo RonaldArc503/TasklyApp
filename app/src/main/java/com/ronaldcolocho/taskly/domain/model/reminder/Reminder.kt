@@ -60,6 +60,27 @@ fun nextReminderOccurrence(
     }.toInstant().toEpochMilli()
 }
 
+/** Returns the next calendar occurrence strictly after [after], retaining the selected hour. */
+fun nextReminderOccurrenceAfter(
+    dueDate: Long,
+    repeatType: ReminderRepeatType,
+    after: Long = System.currentTimeMillis()
+): Long {
+    if (dueDate <= 0L || repeatType == ReminderRepeatType.NONE) return dueDate
+    val zone = ZoneId.systemDefault()
+    var candidate = Instant.ofEpochMilli(dueDate).atZone(zone)
+    val boundary = Instant.ofEpochMilli(after).atZone(zone)
+    while (!candidate.isAfter(boundary)) {
+        candidate = when (repeatType) {
+            ReminderRepeatType.DAILY -> candidate.plusDays(1)
+            ReminderRepeatType.WEEKLY -> candidate.plusWeeks(1)
+            ReminderRepeatType.MONTHLY -> candidate.plusMonths(1)
+            ReminderRepeatType.NONE -> candidate
+        }
+    }
+    return candidate.toInstant().toEpochMilli()
+}
+
 enum class Urgency {
     OVERDUE, RED, ORANGE, GREEN, NONE
 }

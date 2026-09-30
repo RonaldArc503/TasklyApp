@@ -15,7 +15,7 @@ class GetCompletedRemindersUseCase @Inject constructor(private val repo: Reminde
 }
 
 class CreateReminderUseCase @Inject constructor(private val repo: ReminderRepository) {
-    suspend operator fun invoke(uid: String, title: String, dueDate: Long, hasTime: Boolean, repeatType: ReminderRepeatType = ReminderRepeatType.NONE) {
+    suspend operator fun invoke(uid: String, title: String, dueDate: Long, hasTime: Boolean, repeatType: ReminderRepeatType = ReminderRepeatType.NONE): Reminder {
         val id = "rem-${System.currentTimeMillis().toString(36)}-${java.util.UUID.randomUUID().toString().take(6)}"
         val now = System.currentTimeMillis()
         val reminder = Reminder(
@@ -29,6 +29,7 @@ class CreateReminderUseCase @Inject constructor(private val repo: ReminderReposi
             updatedAt = now
         )
         repo.addReminder(uid, reminder)
+        return reminder
     }
 }
 

@@ -63,7 +63,10 @@ fun rememberMediaDownloadManager(): MediaDownloadManager {
 }
 
 @Composable
-fun AudioPlayerBar(controller: AudioPlayerController) {
+fun AudioPlayerBar(
+    controller: AudioPlayerController,
+    onOpenPlayer: (() -> Unit)? = null
+) {
     val state by controller.state.collectAsStateWithLifecycle()
     val track = state.currentTrack ?: return
     val pct = if (state.durationMs > 0) (state.currentTimeMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f
@@ -84,7 +87,8 @@ fun AudioPlayerBar(controller: AudioPlayerController) {
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(Indigo600.copy(alpha = 0.15f)),
+                        .background(Indigo600.copy(alpha = 0.15f))
+                        .clickable { onOpenPlayer?.invoke() ?: controller.toggleCurrent() },
                     contentAlignment = Alignment.Center
                 ) {
                     if (state.playing) {
@@ -104,7 +108,7 @@ fun AudioPlayerBar(controller: AudioPlayerController) {
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .clickable { controller.toggleCurrent() }
+                        .clickable { onOpenPlayer?.invoke() ?: controller.toggleCurrent() }
                 ) {
                     Text(
                         text = track.name,

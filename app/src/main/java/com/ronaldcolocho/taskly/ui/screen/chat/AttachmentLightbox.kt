@@ -2,6 +2,8 @@ package com.ronaldcolocho.taskly.ui.screen.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -13,9 +15,15 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -43,6 +51,7 @@ fun AttachmentLightbox(
     onClose: () -> Unit
 ) {
     if (items.isEmpty()) return
+    var zoomedItemId by remember { mutableStateOf<String?>(null) }
     val pagerState = rememberPagerState(
         initialPage = initialIndex.coerceIn(0, items.size - 1),
         pageCount = { items.size }
@@ -77,12 +86,21 @@ fun AttachmentLightbox(
         ) {
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                // When zoomed, drag moves the photo instead of changing pages.
+                userScrollEnabled = zoomedItemId == null
             ) { page ->
                 LightboxPage(
                     item = items[page],
                     mediaManager = mediaManager,
-                    onClose = onClose
+                    onClose = onClose,
+                    onZoomChanged = { itemId, isZoomed ->
+                        zoomedItemId = when {
+                            isZoomed -> itemId
+                            zoomedItemId == itemId -> null
+                            else -> zoomedItemId
+                        }
+                    }
                 )
             }
 
@@ -135,8 +153,28 @@ fun AttachmentLightbox(
 private fun LightboxPage(
     item: LightboxItem,
     mediaManager: MediaDownloadManager,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onZoomChanged: (itemId: String, isZoomed: Boolean) -> Unit
 ) {
+    var scale by remember(item.attachment.publicId) { mutableFloatStateOf(1f) }
+    var offsetX by remember(item.attachment.publicId) { mutableFloatStateOf(0f) }
+    var offsetY by remember(item.attachment.publicId) { mutableFloatStateOf(0f) }
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val nextScale = (scale * zoomChange).coerceIn(1f, 5f)
+        scale = nextScale
+        if (nextScale == 1f) {
+            offsetX = 0f
+            offsetY = 0f
+        } else {
+            offsetX += panChange.x
+            offsetY += panChange.y
+        }
+    }
+
+    LaunchedEffect(scale) {
+        onZoomChanged(item.attachment.publicId, scale > 1f)
+    }
+
     val ratio = item.attachment.width?.takeIf { it > 0 }?.let { w ->
         item.attachment.height?.takeIf { it > 0 }?.let { h -> w.toFloat() / h.toFloat() }
     }
@@ -170,19 +208,32 @@ private fun LightboxPage(
             fitH = availH
         }
 
-        ChatImage(
-            att = item.attachment,
-            mediaManager = mediaManager,
+        Box(
             modifier = Modifier
                 .width(fitW)
                 .height(fitH)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = {}
-                ),
-            contentScale = ContentScale.Fit,
-            shape = RoundedCornerShape(0.dp)
-        )
+                .clipToBounds()
+        ) {
+            ChatImage(
+                att = item.attachment,
+                mediaManager = mediaManager,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offsetX
+                        translationY = offsetY
+                    }
+                    .transformable(transformState)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    ),
+                contentScale = ContentScale.Fit,
+                shape = RoundedCornerShape(0.dp)
+            )
+        }
     }
 }

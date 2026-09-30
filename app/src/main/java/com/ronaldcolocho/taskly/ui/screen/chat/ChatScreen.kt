@@ -1,7 +1,9 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
@@ -12,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -51,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
@@ -73,6 +77,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.Date
 import java.io.File
+import java.util.UUID
 
 private val Indigo600 = Color(0xFF4F46E5)
 private val Indigo100 = Color(0xFF312E81)
@@ -99,6 +104,7 @@ fun ChatScreen(
     val automaticDownloadsEnabled by viewModel.automaticDownloadsEnabled.collectAsStateWithLifecycle()
     val playlistAddState by viewModel.playlistAddState.collectAsStateWithLifecycle()
     val messageNavigation by viewModel.messageNavigation.collectAsStateWithLifecycle()
+    val savedFocusMessageId by viewModel.savedFocusMessageId.collectAsStateWithLifecycle()
     val messageSearch by viewModel.messageSearch.collectAsStateWithLifecycle()
     val voiceSendState by viewModel.voiceNoteSendState.collectAsStateWithLifecycle()
     val audioController = rememberAudioPlayerController()
@@ -119,6 +125,8 @@ fun ChatScreen(
     val voiceRecorder = remember(context) { VoiceNoteRecorder(context) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableIntStateOf(0) }
+    var showAttachmentSheet by rememberSaveable { mutableStateOf(false) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     fun startVoiceRecording() {
         voiceRecorder.start().onSuccess {
@@ -150,10 +158,33 @@ fun ChatScreen(
         }
     }
 
-    val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()
+    val mediaPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(30)
     ) { uris ->
         if (uris.isNotEmpty()) viewModel.addDrafts(uris)
+    }
+    val cameraLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.TakePicture()
+    ) { captured ->
+        pendingCameraUri?.let { uri ->
+            if (captured) viewModel.addDrafts(listOf(uri))
+        }
+        pendingCameraUri = null
+    }
+    val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) pendingCameraUri?.let(cameraLauncher::launch)
+        else viewModel.reportVoiceError("Se necesita permiso de camara para tomar una foto.")
+    }
+
+    fun openCamera() {
+        pendingCameraUri = createChatCameraUri(context)
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            cameraLauncher.launch(pendingCameraUri!!)
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     val scope = rememberCoroutineScope()
@@ -189,25 +220,35 @@ fun ChatScreen(
                 val index = state.messages.indexOfFirst { it.id == request.messageId }
                 if (index >= 0) {
                     listState.animateScrollToItem(index)
-                    highlightedId = request.messageId
+                    // Place the target near the viewport center after its measured item is available.
+                    kotlinx.coroutines.yield()
+                    listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.let { item ->
+                        val viewportCenter = (listState.layoutInfo.viewportStartOffset + listState.layoutInfo.viewportEndOffset) / 2
+                        listState.animateScrollBy((item.offset + item.size / 2 - viewportCenter).toFloat())
+                    }
+                    if (!request.keepSavedFocus) highlightedId = request.messageId
                     viewModel.consumeMessageNavigation(request.requestId)
-                    kotlinx.coroutines.delay(2500)
-                    if (highlightedId == request.messageId) highlightedId = null
+                    if (!request.keepSavedFocus) {
+                        kotlinx.coroutines.delay(2500)
+                        if (highlightedId == request.messageId) highlightedId = null
+                    }
                 }
             }
             val messagesById = remember(state.messages) { state.messages.associateBy { it.id } }
             LaunchedEffect(listState, messagesById, automaticDownloadsEnabled) {
                 if (!automaticDownloadsEnabled) {
                     viewModel.updateAutomaticDownloads(emptyList())
-                    return@LaunchedEffect
                 }
                 snapshotFlow {
                     listState.layoutInfo.visibleItemsInfo
                         .mapNotNull { it.key as? String }
                         .toSet()
                 }.distinctUntilChanged().collect { visibleIds ->
-                    val attachments = visibleIds.flatMap { messagesById[it]?.attachments.orEmpty() }
-                    viewModel.updateAutomaticDownloads(attachments)
+                    if (automaticDownloadsEnabled) {
+                        val attachments = visibleIds.flatMap { messagesById[it]?.attachments.orEmpty() }
+                        viewModel.updateAutomaticDownloads(attachments)
+                    }
+                    viewModel.loadNewerHistoryWhenVisible(visibleIds)
                 }
             }
             LaunchedEffect(listState, messagesById) {
@@ -284,6 +325,24 @@ fun ChatScreen(
 
             lightboxItems?.let { items ->
                 AttachmentLightbox(items = items, initialIndex = lightboxIndex, mediaManager = mediaManager, onClose = { lightboxItems = null })
+            }
+
+            if (showAttachmentSheet) {
+                ChatAttachmentSheet(
+                    onDismiss = { showAttachmentSheet = false },
+                    onCamera = {
+                        showAttachmentSheet = false
+                        openCamera()
+                    },
+                    onGallery = {
+                        showAttachmentSheet = false
+                        mediaPickerLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                            )
+                        )
+                    }
+                )
             }
 
             selectedMessageForActions?.let { msg ->
@@ -568,9 +627,11 @@ fun ChatScreen(
                                     authorName = state.conversation.members[message.senderId]?.displayName,
                                     isPinned = message.id in pinnedIds,
                                     highlighted = highlightedId == message.id,
+                                    savedFocused = savedFocusMessageId == message.id,
                                     audioController = audioController,
                                     mediaManager = mediaManager,
                                     onLongPress = handleLongPress,
+                                    onTap = { tapped -> viewModel.clearSavedFocus(tapped.id) },
                                     onRetry = handleRetry,
                                     onReact = handleReact,
                                     onOpenFile = handleOpenFile,
@@ -723,7 +784,7 @@ fun ChatScreen(
                                 voiceRecorder.cancel()
                                 isRecordingVoice = false
                                 recordingSeconds = 0
-                            } else filePickerLauncher.launch("*/*")
+                            } else showAttachmentSheet = true
                         },
                         enabled = state.editing == null,
                         modifier = Modifier.size(40.dp)
@@ -851,6 +912,12 @@ fun ChatScreen(
             }
         }
     }
+}
+
+private fun createChatCameraUri(context: Context): Uri {
+    val directory = File(context.cacheDir, "chat_camera").apply { mkdirs() }
+    val image = File(directory, "chat_${UUID.randomUUID()}.jpg")
+    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", image)
 }
 
 @Composable

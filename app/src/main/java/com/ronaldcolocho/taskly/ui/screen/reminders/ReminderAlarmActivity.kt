@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ronaldcolocho.taskly.domain.model.reminder.reminderTimeLabel
 import com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType
-import com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence
 import com.ronaldcolocho.taskly.ui.theme.Indigo600
 import com.ronaldcolocho.taskly.ui.theme.Slate500
 import com.ronaldcolocho.taskly.ui.theme.TasklyTheme
@@ -97,9 +96,9 @@ class ReminderAlarmActivity : ComponentActivity() {
                 )
                 alarmManager.cancel(id)
             } else {
-                val next = nextReminderOccurrence(reminder.dueDate, reminder.repeatType)
-                repository.updateReminder(uid, id, mapOf("dueDate" to next, "snoozedUntil" to 0L))
-                alarmManager.scheduleAlarms(listOf(reminder.copy(dueDate = next, snoozedUntil = 0L)))
+                // The receiver already scheduled the next calendar occurrence when it fired.
+                // Completion acknowledges this occurrence only; it must never skip tomorrow's alert.
+                repository.updateReminder(uid, id, mapOf("completedAt" to System.currentTimeMillis()))
             }
             val notificationManager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
             notificationManager.cancel(id.hashCode())

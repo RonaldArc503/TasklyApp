@@ -64,7 +64,6 @@ class RemindersViewModel @Inject constructor(
         viewModelScope.launch {
             var lastAlarmSignature: List<Triple<String, Long, String>>? = null
             getRemindersUseCase(currentUserId)
-                .onStart { emit(emptyList()) }
                 .collect { list ->
                 activeReminders.value = list
                 val alarmSignature = list.map { Triple(it.id, it.snoozedUntil.takeIf { t -> t > 0L } ?: it.dueDate, "${it.title}:${it.hasTime}") }.sortedBy { it.first }
@@ -109,7 +108,10 @@ class RemindersViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                createReminderUseCase(currentUserId, title.trim(), dueDate, hasTime, repeatType)
+                // Do not wait for the Firestore observer in this screen: the local alarm must
+                // exist before the user can leave or close the app.
+                val reminder = createReminderUseCase(currentUserId, title.trim(), dueDate, hasTime, repeatType)
+                alarmManager.scheduleReminder(reminder)
             } catch (e: Exception) {
                 showError("No se pudo crear el recordatorio.")
             }
@@ -121,6 +123,9 @@ class RemindersViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 updateReminderUseCase(currentUserId, id, mapOf("dueDate" to newDate))
+                activeReminders.value.firstOrNull { it.id == id }?.let { reminder ->
+                    alarmManager.scheduleReminder(reminder.copy(dueDate = newDate, snoozedUntil = 0L))
+                }
             } catch (e: Exception) {
                 // Ignore or show error
             }
@@ -140,6 +145,17 @@ class RemindersViewModel @Inject constructor(
                     id,
                     mapOf("title" to title.trim(), "dueDate" to dueDate, "hasTime" to hasTime, "repeatType" to repeatType.name, "snoozedUntil" to 0L)
                 )
+                activeReminders.value.firstOrNull { it.id == id }?.let { reminder ->
+                    alarmManager.scheduleReminder(
+                        reminder.copy(
+                            title = title.trim(),
+                            dueDate = dueDate,
+                            hasTime = hasTime,
+                            repeatType = repeatType,
+                            snoozedUntil = 0L
+                        )
+                    )
+                }
             } catch (e: Exception) {
                 showError("No se pudo actualizar el recordatorio.")
             }
@@ -161,11 +177,12 @@ class RemindersViewModel @Inject constructor(
     fun completeReminder(reminder: Reminder) {
         if (currentUserId == null) return
         viewModelScope.launch {
-            alarmManager.cancel(reminder.id)
             val patch = if (reminder.repeatType == com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
+                alarmManager.cancel(reminder.id)
                 mapOf("isCompleted" to true, "completedAt" to System.currentTimeMillis(), "snoozedUntil" to 0L)
             } else {
-                mapOf("dueDate" to com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence(reminder.dueDate, reminder.repeatType), "snoozedUntil" to 0L)
+                // Recurring alerts are advanced when they fire, never when the user acknowledges them.
+                mapOf("completedAt" to System.currentTimeMillis())
             }
             runCatching { updateReminderUseCase(currentUserId, reminder.id, patch) }.onFailure { showError("No se pudo completar el recordatorio.") }
         }

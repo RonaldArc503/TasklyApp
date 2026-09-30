@@ -3,4 +3,5 @@
     <files-path name="taskly" path="Taskly/" />
     <external-files-path name="music" path="Music/" />
     <external-files-path name="downloads" path="Download/" />
+    <cache-path name="chat_camera" path="chat_camera/" />
 </paths>

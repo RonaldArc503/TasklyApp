@@ -83,9 +83,11 @@ fun MessageBubble(
     authorName: String?,
     isPinned: Boolean,
     highlighted: Boolean,
+    savedFocused: Boolean,
     audioController: AudioPlayerController,
     mediaManager: MediaDownloadManager,
     onLongPress: (ChatMessage) -> Unit,
+    onTap: (ChatMessage) -> Unit,
     onRetry: (ChatMessage) -> Unit,
     onReact: (ChatMessage, String) -> Unit,
     onImageClick: (ChatAttachment) -> Unit,
@@ -155,7 +157,10 @@ fun MessageBubble(
             modifier = Modifier
                 .widthIn(max = maxBubbleWidth)
                 .pointerInput(message.id) {
-                    detectTapGestures(onLongPress = { onLongPress(message) })
+                    detectTapGestures(
+                        onTap = { onTap(message) },
+                        onLongPress = { onLongPress(message) }
+                    )
                 },
             contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
         ) {
@@ -170,7 +175,13 @@ fun MessageBubble(
                         if (bubbleBorder != null) Modifier.border(1.dp, bubbleBorder, bubbleShape)
                         else Modifier
                     )
-                    .then(if (highlighted) Modifier.border(2.dp, Indigo600, bubbleShape) else Modifier)
+                    .then(
+                        when {
+                            savedFocused -> Modifier.border(2.dp, Color.White.copy(alpha = 0.92f), bubbleShape)
+                            highlighted -> Modifier.border(2.dp, Indigo600, bubbleShape)
+                            else -> Modifier
+                        }
+                    )
             ) {
                 if (hasImagesOnly) {
                     ImageOnlyBubble(message, bubbleShape, isPinned, onImageClick, { onLongPress(message) }, mediaManager)

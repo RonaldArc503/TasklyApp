@@ -1,6 +1,7 @@
 package com.ronaldcolocho.taskly.ui.screen.converter
 
 import android.annotation.SuppressLint
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -85,7 +86,9 @@ fun ConverterScreen(
         }
     }
 
-    BackHandler(enabled = uiState.iframeUrl.isNotEmpty()) {
+    val isDetailMode = uiState.iframeUrl.isNotEmpty() || uiState.converterProviderLabel == "Tu servicio"
+
+    BackHandler(enabled = isDetailMode) {
         viewModel.clearSelection()
     }
 
@@ -98,7 +101,7 @@ fun ConverterScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            if (uiState.iframeUrl.isEmpty()) {
+            if (uiState.iframeUrl.isEmpty() && uiState.converterProviderLabel != "Tu servicio") {
                 SearchMode(
                     uiState = uiState,
                     downloadHistory = downloadHistory,
@@ -119,11 +122,15 @@ fun ConverterScreen(
                 val context = LocalContext.current
                 IframeMode(
                     uiState = uiState,
-                    onDownloadRequested = { url, disposition, mime ->
-                        viewModel.onDownloadRequested(context, url, disposition, mime)
+                    onDownloadRequested = { url, disposition, mime, userAgent, cookies, referer ->
+                        viewModel.onDownloadRequested(context, url, disposition, mime, userAgent, cookies, referer)
                     },
+                    onStartPrimaryConversion = { viewModel.startPrimaryConversion(context) },
+                    onPrimaryQualitySelected = viewModel::selectPrimaryQuality,
+                    onUseFallbackConverter = viewModel::useFallbackConverter,
+                    onCompleteInBrowser = { viewModel.completeConversionInBrowser(context) },
                     onChangeVideo = viewModel::clearSelection,
-                    onNavigateBack = onNavigateBack
+                    onNavigateBack = viewModel::clearSelection
                 )
             }
         }
@@ -232,7 +239,7 @@ private fun SearchMode(
                             OutlinedTextField(
                                 value = uiState.query,
                                 onValueChange = onQueryChange,
-                                placeholder = { Text("Ej. Bad Bunny", color = Slate400) },
+                                placeholder = { Text("Ej. Secrets", color = Slate400) },
                                 modifier = Modifier.weight(1f),
                                 singleLine = true,
                                 shape = RoundedCornerShape(12.dp),
@@ -798,10 +805,22 @@ private fun DownloadedSongCard(
 @Composable
 private fun IframeMode(
     uiState: ConverterUiState,
-    onDownloadRequested: (url: String, contentDisposition: String?, mimeType: String?) -> Unit,
+    onDownloadRequested: (
+        url: String,
+        contentDisposition: String?,
+        mimeType: String?,
+        userAgent: String?,
+        cookies: String?,
+        referer: String?
+    ) -> Unit,
+    onStartPrimaryConversion: () -> Unit,
+    onPrimaryQualitySelected: (String) -> Unit,
+    onUseFallbackConverter: () -> Unit,
+    onCompleteInBrowser: () -> Unit,
     onChangeVideo: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
+    var qualityMenuExpanded by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -813,16 +832,19 @@ private fun IframeMode(
             }
             Column(modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
                 Text(
-                    text = uiState.selectedTitle.ifEmpty { "Conversor Vevioz" },
+                    text = uiState.selectedTitle.ifEmpty { "Conversor de música" },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = Slate600,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (uiState.selectedMediaLabel.isNotBlank()) {
+                val detail = listOf(uiState.selectedMediaLabel, uiState.converterProviderLabel)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · ")
+                if (detail.isNotBlank()) {
                     Text(
-                        text = uiState.selectedMediaLabel,
+                        text = detail,
                         style = MaterialTheme.typography.labelSmall,
                         color = Slate500,
                         maxLines = 1,
@@ -838,9 +860,93 @@ private fun IframeMode(
             }
         }
 
+        if (uiState.converterProviderLabel == "Tu servicio") {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text("Conversión segura", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Tu servicio procesa la conversión y guarda el resultado en la app.", color = Slate500, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Calidad de audio", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Box {
+                        OutlinedButton(
+                            onClick = { qualityMenuExpanded = true },
+                            enabled = !uiState.isPrimaryConversionRunning
+                        ) {
+                            Text(
+                                when (uiState.primaryQuality) {
+                                    "128" -> "Baja · 128 kbps"
+                                    "320" -> "Alta · 320 kbps"
+                                    else -> "Media · 192 kbps"
+                                }
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = qualityMenuExpanded,
+                            onDismissRequest = { qualityMenuExpanded = false }
+                        ) {
+                            listOf("128" to "Baja · 128 kbps", "192" to "Media · 192 kbps", "320" to "Alta · 320 kbps").forEach { (value, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        onPrimaryQualitySelected(value)
+                                        qualityMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    uiState.primaryConversionStatus?.let { status ->
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(status, color = Slate600, fontSize = 13.sp)
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = onStartPrimaryConversion,
+                        enabled = !uiState.isPrimaryConversionRunning,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Indigo600)
+                    ) {
+                        if (uiState.isPrimaryConversionRunning) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Convirtiendo...", fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Convertir y descargar MP3", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (uiState.iframeUrl.isNotBlank()) {
+                TextButton(onClick = onCompleteInBrowser) {
+                    Text("Completar en navegador", fontSize = 12.sp)
+                }
+            }
+            if (uiState.converterProviderLabel != "Fuente alternativa") {
+                TextButton(onClick = onUseFallbackConverter) {
+                    Text("Fuente alternativa", fontSize = 12.sp)
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
-        Surface(
+        if (uiState.iframeUrl.isNotBlank()) Surface(
             shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier.weight(1f).fillMaxWidth()
@@ -854,8 +960,15 @@ private fun IframeMode(
                         settings.setSupportMultipleWindows(true)
                         webViewClient = WebViewClient()
                         webChromeClient = WebChromeClient()
-                        setDownloadListener { url, _, contentDisposition, mimeType, _ ->
-                            onDownloadRequested(url, contentDisposition, mimeType)
+                        setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+                            onDownloadRequested(
+                                url,
+                                contentDisposition,
+                                mimeType,
+                                userAgent,
+                                CookieManager.getInstance().getCookie(url),
+                                this.url
+                            )
                         }
                         loadUrl(uiState.iframeUrl)
                     }

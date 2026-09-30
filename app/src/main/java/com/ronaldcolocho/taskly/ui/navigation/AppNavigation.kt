@@ -63,9 +63,14 @@ sealed class Route(val route: String, val navigationRoute: String = route) {
         fun createRoute(status: TaskStatus) = "tasks?tab=${status.name}"
     }
     object ChatList : Route("chat_list")
-    object ChatDetail : Route("chat/{convId}?messageId={messageId}") {
-        fun createRoute(convId: String, messageId: String? = null) =
-            "chat/$convId" + (messageId?.let { "?messageId=${android.net.Uri.encode(it)}" } ?: "")
+    object ChatDetail : Route("chat/{convId}?messageId={messageId}&focusSaved={focusSaved}") {
+        fun createRoute(convId: String, messageId: String? = null, focusSaved: Boolean = false): String {
+            val query = buildList {
+                messageId?.let { add("messageId=${android.net.Uri.encode(it)}") }
+                if (focusSaved) add("focusSaved=true")
+            }.joinToString("&")
+            return "chat/$convId" + query.takeIf(String::isNotBlank)?.let { "?$it" }.orEmpty()
+        }
     }
     object GlobalChatSearch : Route("chat_search")
     object ChatInfo : Route("chat_info/{convId}") {
@@ -80,12 +85,19 @@ sealed class Route(val route: String, val navigationRoute: String = route) {
     object MusicPlaylist : Route("music/playlist/{playlistId}") {
         fun createRoute(playlistId: String) = "music/playlist/$playlistId"
     }
+    /** Full-screen "Marea" player. Accepts an optional playlistName query param. */
+    object MusicPlayer : Route("music/player?playlistName={playlistName}") {
+        fun createRoute(playlistName: String = "") =
+            "music/player?playlistName=${android.net.Uri.encode(playlistName)}"
+    }
 }
 
 @Composable
 fun AppNavigation(
     sharedUrl: String? = null,
-    onSharedUrlHandled: (String) -> Unit = {}
+    onSharedUrlHandled: (String) -> Unit = {},
+    openPlaylistId: String? = null,
+    onPlaylistOpened: () -> Unit = {}
 ) {
     val authViewModel: AuthViewModel = hiltViewModel()
     val authState by authViewModel.authState.collectAsStateWithLifecycle()
@@ -100,7 +112,7 @@ fun AppNavigation(
             AuthScreen()
         }
         AuthState.LoggedIn -> {
-            MainScaffold(sharedUrl, onSharedUrlHandled)
+            MainScaffold(sharedUrl, onSharedUrlHandled, openPlaylistId, onPlaylistOpened)
         }
     }
 }
@@ -108,7 +120,9 @@ fun AppNavigation(
 @Composable
 private fun MainScaffold(
     sharedUrl: String?,
-    onSharedUrlHandled: (String) -> Unit
+    onSharedUrlHandled: (String) -> Unit,
+    openPlaylistId: String?,
+    onPlaylistOpened: () -> Unit
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -128,6 +142,12 @@ private fun MainScaffold(
         navController.getBackStackEntry(Route.Converter.route)
             .savedStateHandle[SHARED_URL_KEY] = sharedUrl
         onSharedUrlHandled(sharedUrl)
+    }
+
+    LaunchedEffect(openPlaylistId) {
+        openPlaylistId ?: return@LaunchedEffect
+        navController.navigate(Route.MusicPlaylist.createRoute(openPlaylistId))
+        onPlaylistOpened()
     }
 
     LaunchedEffect(Unit) {
@@ -205,10 +225,20 @@ private fun MainScaffold(
                 .consumeWindowInsets(innerPadding)
                 .imePadding()
         ) {
+            val isChatScreen = currentDestination?.route?.startsWith("chat") == true
             if (!isOnline) {
                 OfflineBanner()
             }
-            AudioPlayerBar(controller = audioController)
+            if (isChatScreen) {
+                AudioPlayerBar(
+                    controller = audioController,
+                    onOpenPlayer = {
+                        val currentTrack = audioController.state.value.currentTrack
+                        val title = currentTrack?.name ?: "Música"
+                        navController.navigate(Route.MusicPlayer.createRoute(title))
+                    }
+                )
+            }
             NavHost(
                 navController = navController,
                 startDestination = Route.Home.route,
@@ -248,7 +278,8 @@ private fun MainScaffold(
                     route = Route.ChatDetail.route,
                     arguments = listOf(
                         navArgument("convId") { type = NavType.StringType },
-                        navArgument("messageId") { type = NavType.StringType; nullable = true; defaultValue = null }
+                        navArgument("messageId") { type = NavType.StringType; nullable = true; defaultValue = null },
+                        navArgument("focusSaved") { type = NavType.BoolType; defaultValue = false }
                     ),
                     enterTransition = {
                         androidx.compose.animation.slideInHorizontally(
@@ -314,7 +345,7 @@ private fun MainScaffold(
                     com.ronaldcolocho.taskly.ui.screen.saved.SavedScreen(
                         onNavigateBack = { navController.popBackStack() },
                         onNavigateToChat = { convId, messageId ->
-                            navController.navigate(Route.ChatDetail.createRoute(convId, messageId))
+                            navController.navigate(Route.ChatDetail.createRoute(convId, messageId, focusSaved = messageId != null))
                         }
                     )
                 }
@@ -345,7 +376,8 @@ private fun MainScaffold(
                     com.ronaldcolocho.taskly.ui.screen.music.MusicScreen(
                         audioController = audioController,
                         onNavigateBack = { navController.popBackStack() },
-                        onOpenPlaylist = { id -> navController.navigate(Route.MusicPlaylist.createRoute(id)) }
+                        onOpenPlaylist = { id -> navController.navigate(Route.MusicPlaylist.createRoute(id)) },
+                        onOpenPlayer = { name -> navController.navigate(Route.MusicPlayer.createRoute(name)) }
                     )
                 }
                 composable(
@@ -354,7 +386,47 @@ private fun MainScaffold(
                 ) {
                     com.ronaldcolocho.taskly.ui.screen.music.PlaylistDetailScreen(
                         audioController = audioController,
-                        onNavigateBack = { navController.popBackStack() }
+                        onNavigateBack = { navController.popBackStack() },
+                        onOpenPlayer = { name -> navController.navigate(Route.MusicPlayer.createRoute(name)) }
+                    )
+                }
+                composable(
+                    route = Route.MusicPlayer.route,
+                    arguments = listOf(
+                        navArgument("playlistName") {
+                            type         = NavType.StringType
+                            nullable     = true
+                            defaultValue = null
+                        }
+                    ),
+                    enterTransition = {
+                        androidx.compose.animation.slideInVertically(
+                            initialOffsetY = { fullHeight -> fullHeight },
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 280,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            )
+                        )
+                    },
+                    exitTransition = {
+                        androidx.compose.animation.slideOutVertically(
+                            targetOffsetY = { fullHeight -> fullHeight },
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 250,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            )
+                        )
+                    }
+                ) { entry ->
+                    val playlistName = entry.arguments
+                        ?.getString("playlistName")
+                        ?.let { android.net.Uri.decode(it) }
+                        ?: "Mi lista"
+                    com.ronaldcolocho.taskly.ui.screen.music.MusicPlayerScreen(
+                        audioController = audioController,
+                        playlistName    = playlistName,
+                        darkTheme       = androidx.compose.foundation.isSystemInDarkTheme(),
+                        onNavigateBack  = { navController.popBackStack() }
                     )
                 }
             }

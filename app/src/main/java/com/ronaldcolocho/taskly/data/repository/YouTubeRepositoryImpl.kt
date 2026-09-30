@@ -30,7 +30,7 @@ class YouTubeRepositoryImpl @Inject constructor(
                     title = title,
                     channel = item.snippet.channelTitle ?: "",
                     thumbnail = item.snippet.thumbnails?.medium?.url ?: "",
-                    url = "https://www.youtube.com/watch?v=\$videoId"
+                    url = "https://www.youtube.com/watch?v=$videoId"
                 )
             } ?: emptyList()
             Result.success(videos)

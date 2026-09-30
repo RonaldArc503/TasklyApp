@@ -56,6 +56,14 @@ class GetOlderMessagesUseCase @Inject constructor(
     }
 }
 
+class GetNewerMessagesUseCase @Inject constructor(
+    private val repository: IChatRepository
+) {
+    suspend operator fun invoke(convId: String, currentUserId: String, afterTimestamp: Long, limit: Long): List<ChatMessage> {
+        return repository.getNewerMessages(convId, currentUserId, afterTimestamp, limit)
+    }
+}
+
 class GetMessageWindowByIdUseCase @Inject constructor(
     private val repository: IChatRepository
 ) {

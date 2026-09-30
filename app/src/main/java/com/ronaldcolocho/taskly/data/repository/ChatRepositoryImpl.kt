@@ -284,6 +284,27 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun getNewerMessages(convId: String, currentUserId: String, afterTimestamp: Long, limit: Long): List<ChatMessage> {
+        val query = firestore.collection("conversations")
+            .document(convId)
+            .collection("messages")
+            .orderBy("createdAt", Query.Direction.ASCENDING)
+            .whereGreaterThan("createdAt", afterTimestamp)
+            .limit(limit)
+
+        val snapshot = try {
+            query.get(Source.DEFAULT).await()
+        } catch (e: FirebaseFirestoreException) {
+            withTimeoutOrNull(3000) {
+                runCatching { query.get(Source.CACHE).await() }.getOrNull()
+            }
+        } ?: return emptyList()
+
+        return snapshot.documents.mapNotNull { doc ->
+            doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
+        }
+    }
+
     override suspend fun getMessageWindowById(
         convId: String,
         currentUserId: String,

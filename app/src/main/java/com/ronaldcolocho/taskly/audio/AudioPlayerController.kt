@@ -3,6 +3,8 @@ package com.ronaldcolocho.taskly.audio
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
+import com.google.firebase.auth.FirebaseAuth
 import android.util.Log
 import androidx.compose.runtime.Stable
 import androidx.core.content.ContextCompat
@@ -12,8 +14,13 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.ronaldcolocho.taskly.domain.model.DownloadedSong
 import com.ronaldcolocho.taskly.domain.model.MusicTrack
+import com.ronaldcolocho.taskly.domain.model.MediaKind
+import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
+import com.ronaldcolocho.taskly.domain.repository.IDownloadHistoryRepository
 import com.ronaldcolocho.taskly.domain.repository.IMusicRepository
+import com.ronaldcolocho.taskly.util.DownloadedSongResolver
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +39,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -39,20 +47,40 @@ import javax.inject.Singleton
 @Singleton
 class AudioPlayerController @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val musicRepository: IMusicRepository
+    private val musicRepository: IMusicRepository,
+    private val downloadHistoryRepository: IDownloadHistoryRepository,
+    private val auth: FirebaseAuth,
+    private val mediaCache: IMediaCacheRepository
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickerJob: Job? = null
     private var sleepTimerJob: Job? = null
     private val enqueuedTrackIds = mutableListOf<String>()
 
+    private var cachedDownloadedSongs: List<DownloadedSong> = emptyList()
+
+    init {
+        scope.launch {
+            downloadHistoryRepository.getDownloadedSongs().collect { songs ->
+                cachedDownloadedSongs = songs
+            }
+        }
+    }
+
     private var trackResolver: ((AudioTrack) -> File?)? = null
     private var ensureTrack: (suspend (AudioTrack) -> File?)? = null
 
     private val prefs = context.getSharedPreferences("audio_prefs", Context.MODE_PRIVATE)
+    private val sessionWrites = Channel<Pair<String, AudioSessionSnapshot>>(Channel.UNLIMITED)
+    private val sessionWriteScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var sessionUserId = auth.currentUser?.uid
+
+    private fun savedSession(userId: String?) = userId?.let {
+        AudioSessionCodec.decode(prefs.getString("music_session_$it", null))
+    }
     
     private val _state = MutableStateFlow(
-        AudioPlayerState(
+        savedSession(sessionUserId)?.toState() ?: AudioPlayerState(
             mode = AudioMode.valueOf(prefs.getString("audio_mode", AudioMode.INDIVIDUAL.name) ?: AudioMode.INDIVIDUAL.name),
             repeatMode = AudioRepeatMode.valueOf(
                 prefs.getString("audio_repeat_mode", AudioRepeatMode.OFF.name) ?: AudioRepeatMode.OFF.name
@@ -61,6 +89,38 @@ class AudioPlayerController @Inject constructor(
         )
     )
     val state: StateFlow<AudioPlayerState> = _state.asStateFlow()
+
+    private val _visualEffect = MutableStateFlow(
+        PlayerVisualEffect.fromId(prefs.getString("player_visual_effect", PlayerVisualEffect.MAREA.id))
+    )
+    val visualEffect: StateFlow<PlayerVisualEffect> = _visualEffect.asStateFlow()
+
+    fun setVisualEffect(effect: PlayerVisualEffect) {
+        _visualEffect.value = effect
+        prefs.edit().putString("player_visual_effect", effect.id).apply()
+    }
+
+    private val _paletteOffset = MutableStateFlow(0)
+    val paletteOffset: StateFlow<Int> = _paletteOffset.asStateFlow()
+
+    fun getPaletteOffsetForTrack(trackId: String): Int {
+        if (trackId.isBlank()) return 0
+        return prefs.getInt("palette_offset_$trackId", 0)
+    }
+
+    fun setPaletteOffsetForTrack(trackId: String, offset: Int) {
+        if (trackId.isNotBlank()) {
+            prefs.edit().putInt("palette_offset_$trackId", offset).apply()
+        }
+        _paletteOffset.value = offset
+    }
+
+    fun cyclePaletteForTrack(trackId: String, totalPalettes: Int = 60): Int {
+        val current = getPaletteOffsetForTrack(trackId)
+        val next = (current + 1) % totalPalettes
+        setPaletteOffsetForTrack(trackId, next)
+        return next
+    }
 
     /** Modo de reproducción: cambia con poca frecuencia (solo al cambiar de modo). */
     val modeState: StateFlow<AudioMode> = _state.map { it.mode }
@@ -83,6 +143,58 @@ class AudioPlayerController @Inject constructor(
     private var player: Player? = null
     private var connectionStarted = false
     private val pendingActions = mutableListOf<(Player) -> Unit>()
+    private val authListener = FirebaseAuth.AuthStateListener { firebase ->
+        val uid = firebase.currentUser?.uid
+        if (uid != sessionUserId) {
+            persistSession()
+            sessionUserId = uid
+            pendingActions.clear()
+            stopTicker()
+            cancelSleepTimer()
+            enqueuedTrackIds.clear()
+            player?.pause()
+            player?.clearMediaItems()
+            _state.value = savedSession(uid)?.toState() ?: AudioPlayerState()
+            if (_state.value.currentTrack != null) withPlayer(::restoreSession)
+        }
+    }
+
+    init {
+        sessionWriteScope.launch {
+            for ((uid, snapshot) in sessionWrites) {
+                val editor = prefs.edit()
+                if (snapshot.currentId == null) editor.remove("music_session_$uid")
+                else editor.putString("music_session_$uid", AudioSessionCodec.encode(snapshot))
+                editor.apply()
+            }
+        }
+        auth.addAuthStateListener(authListener)
+        scope.launch {
+            // Position checkpoints every five seconds, plus every queue/mode/pause change.
+            _state.map { state ->
+                val snapshot = AudioSessionSnapshot.from(state)
+                snapshot.copy(positionMs = snapshot.positionMs / 5_000) to state.playing
+            }.distinctUntilChanged().collect { persistSession() }
+        }
+        if (_state.value.currentTrack != null) ensurePlayerConnection()
+    }
+
+    private fun persistSession() {
+        val uid = sessionUserId ?: return
+        val snapshot = AudioSessionSnapshot.from(_state.value)
+        sessionWrites.trySend(uid to snapshot)
+    }
+
+    private fun restoreSession(p: Player) {
+        val snapshot = _state.value
+        val index = snapshot.tracks.indexOfFirst { it.id == snapshot.currentTrack?.id }
+        if (index < 0) return
+        p.playWhenReady = false
+        p.setMediaItems(snapshot.tracks.map { it.toMediaItem() }, index, snapshot.currentTimeMs)
+        p.repeatMode = snapshot.repeatMode.toPlayerRepeatMode()
+        p.shuffleModeEnabled = snapshot.shuffleModeEnabled
+        p.prepare()
+    }
 
     private fun ensurePlayerConnection() {
         if (connectionStarted) return
@@ -93,6 +205,25 @@ class AudioPlayerController @Inject constructor(
             try {
                 val p = controllerFuture.get()
                 player = p
+                if (p.mediaItemCount > 0) {
+                    val known = _state.value.tracks.associateBy { it.id }
+                    val liveTracks = (0 until p.mediaItemCount).map { index ->
+                        val item = p.getMediaItemAt(index)
+                        known[item.mediaId] ?: AudioTrack(item.mediaId,
+                            item.mediaMetadata.extras?.getString("originalUrl")
+                                ?: item.localConfiguration?.uri?.toString().orEmpty(),
+                            item.mediaMetadata.title?.toString().orEmpty(),
+                            item.mediaMetadata.extras?.getString("messageId").orEmpty(),
+                            thumbnailUrl = item.mediaMetadata.artworkUri?.toString().orEmpty(),
+                            playlistId = item.mediaMetadata.extras?.getString("playlistId"))
+                    }
+                    _state.update { it.copy(tracks = liveTracks, shuffleModeEnabled = p.shuffleModeEnabled,
+                        repeatMode = when (p.repeatMode) {
+                            Player.REPEAT_MODE_ALL -> AudioRepeatMode.ALL
+                            Player.REPEAT_MODE_ONE -> AudioRepeatMode.ONE
+                            else -> AudioRepeatMode.OFF
+                        }) }
+                } else restoreSession(p)
                 setupPlayerListener(p)
                 syncStateWithPlayer(p)
                 
@@ -146,6 +277,8 @@ class AudioPlayerController @Inject constructor(
                         playing = p.isPlaying
                     )
                 }
+                val activeId = newTrack?.id ?: _state.value.currentTrack?.id.orEmpty()
+                _paletteOffset.value = getPaletteOffsetForTrack(activeId)
                 if (trackId != null) {
                     enqueuedTrackIds.remove(trackId)
                 }
@@ -190,8 +323,24 @@ class AudioPlayerController @Inject constructor(
                         if (p.isPlaying) startTicker()
                     }
                     Player.STATE_ENDED -> {
-                        _state.update { it.copy(playing = false) }
-                        stopTicker()
+                        if (!p.playWhenReady) {
+                            _state.update { it.copy(playing = false) }
+                            stopTicker()
+                            return
+                        }
+                        if (_state.value.repeatMode == AudioRepeatMode.ALL && _state.value.tracks.isNotEmpty()) {
+                            val firstIdx = p.currentTimeline.takeUnless { it.isEmpty }
+                                ?.getFirstWindowIndex(p.shuffleModeEnabled)
+                                ?.takeIf { it != -1 } ?: 0
+                            p.seekToDefaultPosition(firstIdx)
+                            p.play()
+                        } else if (_state.value.repeatMode == AudioRepeatMode.ONE && _state.value.tracks.isNotEmpty()) {
+                            p.seekTo(0L)
+                            p.play()
+                        } else {
+                            _state.update { it.copy(playing = false) }
+                            stopTicker()
+                        }
                     }
                     Player.STATE_BUFFERING -> {
                         val dur = p.duration.takeIf { it > 0 }
@@ -204,6 +353,15 @@ class AudioPlayerController @Inject constructor(
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 _state.update { it.copy(shuffleModeEnabled = shuffleModeEnabled) }
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                val mode = when (repeatMode) {
+                    Player.REPEAT_MODE_ALL -> AudioRepeatMode.ALL
+                    Player.REPEAT_MODE_ONE -> AudioRepeatMode.ONE
+                    else -> AudioRepeatMode.OFF
+                }
+                _state.update { it.copy(repeatMode = mode) }
             }
         })
     }
@@ -220,10 +378,11 @@ class AudioPlayerController @Inject constructor(
                 currentTrack = track,
                 playing = isPlaying,
                 currentTimeMs = p.currentPosition.takeIf { pos -> pos >= 0 } ?: 0L,
-                durationMs = dur,
-                shuffleModeEnabled = p.shuffleModeEnabled
+                durationMs = dur
             )
         }
+        val activeId = track?.id ?: currentId.orEmpty()
+        _paletteOffset.value = getPaletteOffsetForTrack(activeId)
         if (isPlaying) startTicker()
     }
 
@@ -235,7 +394,15 @@ class AudioPlayerController @Inject constructor(
 
     private fun AudioTrack.toMediaItem(): MediaItem {
         val file = trackResolver?.invoke(this)
-        val localFile = file?.takeIf { it.exists() }
+            ?: mediaCache.fileFor(id, MediaKind.AUDIO)
+            ?: DownloadedSongResolver.resolveTrackFile(
+                context = context,
+                trackUrl = this.url,
+                trackName = this.name,
+                trackId = this.id,
+                downloadedSongs = cachedDownloadedSongs
+            )
+        val localFile = file?.takeIf { it.isFile && it.length() > 0 }
         val uri = if (localFile != null) {
             Log.d("AudioPlayer", "CACHE HIT: track=$id")
             Uri.fromFile(localFile)
@@ -250,6 +417,10 @@ class AudioPlayerController @Inject constructor(
                 MediaMetadata.Builder()
                     .setTitle(this.name)
                     .setArtist("Taskly")
+                    .setArtworkUri(thumbnailUrl.takeIf { it.isNotBlank() }?.let(Uri::parse))
+                    .setExtras(Bundle().apply {
+                        putString("messageId", msgId); putString("playlistId", playlistId); putString("originalUrl", url)
+                    })
                     .build()
             )
             .build()
@@ -268,16 +439,62 @@ class AudioPlayerController @Inject constructor(
         prefs.edit().putString("current_playlist_id", tracks.firstOrNull()?.playlistId).apply()
     }
 
-    /** Edits only the in-memory global queue; it never mutates playlist documents. */
+    /** Queue edits preserve the active item and position; saved playlists are untouched. */
     fun reorderQueue(tracks: List<AudioTrack>) {
+        if (tracks == _state.value.tracks) return
         enqueuedTrackIds.clear()
-        _state.update { it.copy(tracks = tracks) }
-        withPlayer { player ->
-            val currentId = _state.value.currentTrack?.id
-            player.setMediaItems(tracks.map { it.toMediaItem() })
-            tracks.indexOfFirst { it.id == currentId }.takeIf { it >= 0 }?.let { player.seekToDefaultPosition(it) }
-            player.prepare()
+        withPlayer { p ->
+            // An explicit queue order takes precedence over random traversal.
+            if (_state.value.shuffleModeEnabled) setShuffleMode(false)
+            val previous = _state.value
+            val edit = planAudioQueueEdit(previous.tracks, previous.currentTrack?.id,
+                p.currentPosition.coerceAtLeast(0), tracks)
+            val playWhenReady = p.playWhenReady
+            if (edit.tracks.isEmpty()) {
+                p.pause()
+                p.clearMediaItems()
+                _state.update { it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0,
+                    durationMs = 0, playing = false) }
+            } else {
+                _state.update { it.copy(tracks = edit.tracks, currentTrack = edit.tracks[edit.currentIndex],
+                    currentTimeMs = edit.positionMs) }
+                val liveIds = (0 until p.mediaItemCount).map { p.getMediaItemAt(it).mediaId }
+                if (liveIds.toSet() == edit.tracks.map { it.id }.toSet() && liveIds.size == edit.tracks.size) {
+                    // Moving items keeps the decoder and current position intact.
+                    edit.tracks.forEachIndexed { target, track ->
+                        val from = (0 until p.mediaItemCount).first { p.getMediaItemAt(it).mediaId == track.id }
+                        if (from != target) p.moveMediaItem(from, target)
+                    }
+                } else {
+                    p.setMediaItems(edit.tracks.map { it.toMediaItem() }, edit.currentIndex, edit.positionMs)
+                    p.prepare()
+                }
+                p.playWhenReady = playWhenReady
+            }
+            persistSession()
         }
+    }
+
+    fun moveQueueItem(trackId: String, targetIndex: Int) {
+        val tracks = _state.value.tracks.toMutableList()
+        val from = tracks.indexOfFirst { it.id == trackId }
+        if (from < 0) return
+        val track = tracks.removeAt(from)
+        tracks.add(targetIndex.coerceIn(0, tracks.size), track)
+        reorderQueue(tracks)
+    }
+
+    fun addToQueueEnd(track: AudioTrack): QueueResult {
+        val current = _state.value
+        if (current.currentTrack == null) {
+            updatePlaylist(listOf(track))
+            playWithQueue(track)
+            return QueueResult.PLAYING_NOW
+        }
+        if (current.currentTrack.id == track.id) return QueueResult.ALREADY_PLAYING
+        if (current.mode == AudioMode.INDIVIDUAL) updateMode(AudioMode.QUEUE)
+        reorderQueue(current.tracks.filterNot { it.id == track.id } + track)
+        return QueueResult.ADDED_TO_QUEUE
     }
 
     fun removeFromQueue(trackId: String) = reorderQueue(_state.value.tracks.filterNot { it.id == trackId })
@@ -313,6 +530,9 @@ class AudioPlayerController @Inject constructor(
         if (currentTrack.id == track.id) {
             return QueueResult.ALREADY_PLAYING
         }
+
+        // Explicit "next" entries must follow the displayed queue, even after shuffle.
+        if (currentState.shuffleModeEnabled) setShuffleMode(false)
 
         // 3. Ensure player is in continuous queue mode so it won't pause after current track
         if (currentState.mode == AudioMode.INDIVIDUAL) {
@@ -399,8 +619,18 @@ class AudioPlayerController @Inject constructor(
     }
 
     private fun applyPlaylistAndPlay(track: AudioTrack) {
-        val localAvailable = trackResolver?.invoke(track)?.exists() == true
-        if (!localAvailable && track.url.isBlank()) {
+        val resolvedLocal = trackResolver?.invoke(track)
+            ?: mediaCache.fileFor(track.id, MediaKind.AUDIO)
+            ?: DownloadedSongResolver.resolveTrackFile(
+                context = context,
+                trackUrl = track.url,
+                trackName = track.name,
+                trackId = track.id,
+                downloadedSongs = cachedDownloadedSongs
+            )
+        val localAvailable = resolvedLocal?.let { it.isFile && it.length() > 0 } == true
+        val remoteAvailable = track.url.startsWith("https://") || track.url.startsWith("http://") || track.url.startsWith("content://")
+        if (!localAvailable && !remoteAvailable) {
             _state.update { it.copy(playing = false, error = "Audio no disponible") }
             return
         }
@@ -422,6 +652,7 @@ class AudioPlayerController @Inject constructor(
             _state.update {
                 it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true, error = null)
             }
+            _paletteOffset.value = getPaletteOffsetForTrack(track.id)
             p.prepare()
             p.play()
         }
@@ -433,7 +664,8 @@ class AudioPlayerController @Inject constructor(
     }
 
     fun playWithQueue(track: AudioTrack) {
-        _state.update { it.copy(mode = AudioMode.QUEUE) }
+        val targetMode = if (_state.value.repeatMode == AudioRepeatMode.ALL) AudioMode.LOOP else AudioMode.QUEUE
+        _state.update { it.copy(mode = targetMode) }
         applyPlaylistAndPlay(track)
     }
 
@@ -481,7 +713,10 @@ class AudioPlayerController @Inject constructor(
         }
         prefs.edit().putString("audio_mode", targetMode.name).apply()
         _state.update { it.copy(repeatMode = repeatMode, mode = targetMode) }
-        withPlayer { it.repeatMode = repeatMode.toPlayerRepeatMode() }
+        withPlayer {
+            it.repeatMode = repeatMode.toPlayerRepeatMode()
+            it.shuffleModeEnabled = _state.value.shuffleModeEnabled
+        }
     }
 
     fun toggleShuffle() = setShuffleMode(!_state.value.shuffleModeEnabled)
@@ -489,11 +724,15 @@ class AudioPlayerController @Inject constructor(
     fun setShuffleMode(enabled: Boolean) {
         prefs.edit().putBoolean("audio_shuffle_mode", enabled).apply()
         if (enabled && _state.value.mode == AudioMode.INDIVIDUAL) {
-            _state.update { it.copy(mode = AudioMode.QUEUE) }
-            prefs.edit().putString("audio_mode", AudioMode.QUEUE.name).apply()
+            val targetMode = if (_state.value.repeatMode == AudioRepeatMode.ALL) AudioMode.LOOP else AudioMode.QUEUE
+            _state.update { it.copy(mode = targetMode) }
+            prefs.edit().putString("audio_mode", targetMode.name).apply()
         }
         _state.update { it.copy(shuffleModeEnabled = enabled) }
-        withPlayer { it.shuffleModeEnabled = enabled }
+        withPlayer {
+            it.shuffleModeEnabled = enabled
+            it.repeatMode = _state.value.repeatMode.toPlayerRepeatMode()
+        }
     }
 
     fun startSleepTimer(durationMs: Long) {
@@ -518,31 +757,56 @@ class AudioPlayerController @Inject constructor(
     fun next() {
         withPlayer { p ->
             _state.update { it.copy(currentTimeMs = 0L) }
+            val timeline = p.currentTimeline
+            if (!timeline.isEmpty) {
+                val repeatModeForSeek = if (_state.value.repeatMode == AudioRepeatMode.OFF) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ALL
+                val nextIdx = timeline.getNextWindowIndex(p.currentMediaItemIndex, repeatModeForSeek, p.shuffleModeEnabled)
+                if (nextIdx != -1) {
+                    p.seekToDefaultPosition(nextIdx)
+                    p.play()
+                    return@withPlayer
+                }
+            }
             if (p.hasNextMediaItem()) {
                 p.seekToNextMediaItem()
+                p.play()
             } else if (p.mediaItemCount > 0) {
                 val firstIdx = p.currentTimeline.takeUnless { it.isEmpty }
                     ?.getFirstWindowIndex(p.shuffleModeEnabled)
                     ?.takeIf { it != -1 } ?: 0
                 p.seekToDefaultPosition(firstIdx)
+                p.play()
             }
         }
     }
 
-    fun prev() {
+    fun prev(forceTrackChange: Boolean = false) {
         withPlayer { p ->
-            if (p.currentPosition > 3000L) {
+            if (!forceTrackChange && p.currentPosition > 3000L) {
                 p.seekTo(0L)
                 _state.update { it.copy(currentTimeMs = 0L) }
-            } else if (p.hasPreviousMediaItem()) {
-                _state.update { it.copy(currentTimeMs = 0L) }
+                return@withPlayer
+            }
+            _state.update { it.copy(currentTimeMs = 0L) }
+            val timeline = p.currentTimeline
+            if (!timeline.isEmpty) {
+                val repeatModeForSeek = if (_state.value.repeatMode == AudioRepeatMode.OFF) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ALL
+                val prevIdx = timeline.getPreviousWindowIndex(p.currentMediaItemIndex, repeatModeForSeek, p.shuffleModeEnabled)
+                if (prevIdx != -1) {
+                    p.seekToDefaultPosition(prevIdx)
+                    p.play()
+                    return@withPlayer
+                }
+            }
+            if (p.hasPreviousMediaItem()) {
                 p.seekToPreviousMediaItem()
+                p.play()
             } else if (p.mediaItemCount > 0) {
-                _state.update { it.copy(currentTimeMs = 0L) }
                 val lastIdx = p.currentTimeline.takeUnless { it.isEmpty }
                     ?.getLastWindowIndex(p.shuffleModeEnabled)
                     ?.takeIf { it != -1 } ?: (p.mediaItemCount - 1)
                 p.seekToDefaultPosition(lastIdx)
+                p.play()
             }
         }
     }
@@ -551,6 +815,7 @@ class AudioPlayerController @Inject constructor(
         withPlayer { p ->
             p.seekTo(ms)
             _state.update { it.copy(currentTimeMs = ms) }
+            persistSession()
         }
     }
 
@@ -562,7 +827,7 @@ class AudioPlayerController @Inject constructor(
             p.clearMediaItems()
         }
         _state.update {
-            it.copy(currentTrack = null, currentTimeMs = 0, durationMs = 0, playing = false)
+            it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0, durationMs = 0, playing = false)
         }
         stopTicker()
     }
@@ -607,6 +872,9 @@ class AudioPlayerController @Inject constructor(
     }
 
     fun release() {
+        persistSession()
+        sessionWrites.close()
+        auth.removeAuthStateListener(authListener)
         cancelSleepTimer()
         withPlayer { p ->
             p.release()

@@ -32,41 +32,45 @@ class ReminderAlarmManager @Inject constructor(
 
     fun scheduleReminder(reminder: Reminder) {
         cancelAlarmIntents(reminder.id)
-        if (reminder.isCompleted || !reminder.hasTime) return
-        val triggerAt = reminder.snoozedUntil.takeIf { it > 0L } ?: reminder.dueDate
+        if (reminder.isCompleted || reminder.dueDate <= 0L) return
+        val triggerAt = com.ronaldcolocho.taskly.domain.model.reminder.reminderTriggerTime(
+            reminder.dueDate,
+            reminder.hasTime,
+            reminder.snoozedUntil
+        )
         if (triggerAt <= System.currentTimeMillis()) return
         scheduleStore.upsert(reminder.copy(dueDate = triggerAt, snoozedUntil = 0L))
         schedule(triggerAt, reminder, ReminderReceiver.TYPE_DUE)
-        listOf(10L to ReminderReceiver.TYPE_PRE_10, 5L to ReminderReceiver.TYPE_PRE_5).forEach { (minutes, type) ->
-            val preAlertAt = triggerAt - minutes * 60_000L
-            if (preAlertAt > System.currentTimeMillis()) schedule(preAlertAt, reminder, type)
+        if (reminder.hasTime) {
+            listOf(10L to ReminderReceiver.TYPE_PRE_10, 5L to ReminderReceiver.TYPE_PRE_5).forEach { (minutes, type) ->
+                val preAlertAt = triggerAt - minutes * 60_000L
+                if (preAlertAt > System.currentTimeMillis()) schedule(preAlertAt, reminder, type)
+            }
         }
     }
 
     fun rescheduleStoredAlarms() {
         val now = System.currentTimeMillis()
         scheduleStore.read().forEach { reminder ->
-            if (reminder.dueDate > now) {
+            val triggerAt = com.ronaldcolocho.taskly.domain.model.reminder.reminderTriggerTime(
+                reminder.dueDate,
+                reminder.hasTime,
+                reminder.snoozedUntil
+            )
+            if (triggerAt > now) {
                 scheduleReminder(reminder)
             } else {
-                // A powered-off phone cannot deliver an alarm. Surface one pending notice and
-                // advance recurring schedules to their next real future occurrence.
+                // A powered-off phone cannot deliver an alarm. Surface one pending notice.
                 postRecovery(reminder)
-                if (reminder.repeatType != ReminderRepeatType.NONE) {
-                    scheduleReminder(reminder.copy(dueDate = nextReminderOccurrenceAfter(reminder.dueDate, reminder.repeatType, now)))
-                } else {
-                    cancelAlarmIntents(reminder.id)
-                    scheduleStore.remove(reminder.id)
-                }
             }
         }
     }
 
-    /** Called by the due receiver before rendering so recurrence never depends on completion. */
+    /** Advances recurrence to the next occurrence adhering to its anchor day. */
     fun advanceRecurringReminder(id: String, occurrenceAt: Long): Reminder? {
         val current = scheduleStore.read().firstOrNull { it.id == id } ?: return null
         if (current.repeatType == ReminderRepeatType.NONE) return current
-        val next = nextReminderOccurrenceAfter(occurrenceAt, current.repeatType)
+        val next = nextReminderOccurrenceAfter(occurrenceAt, current.repeatType, current.effectiveAnchorDay)
         val advanced = current.copy(dueDate = next, snoozedUntil = 0L)
         scheduleReminder(advanced)
         return advanced

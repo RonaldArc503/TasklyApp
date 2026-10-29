@@ -37,8 +37,36 @@ class DownloadCompleteReceiver : BroadcastReceiver() {
             if (c.moveToFirst()) {
                 val statusIndex = c.getColumnIndex(DownloadManager.COLUMN_STATUS)
                 if (statusIndex >= 0 && c.getInt(statusIndex) == DownloadManager.STATUS_SUCCESSFUL) {
-                    val file = File(pending.targetPath)
+                    var file = File(pending.targetPath)
+                    if (!file.exists() || file.length() <= 0L) {
+                        val uriIndex = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
+                        if (uriIndex >= 0) {
+                            val uriStr = c.getString(uriIndex)
+                            if (!uriStr.isNullOrBlank()) {
+                                val path = android.net.Uri.parse(uriStr).path
+                                if (path != null) {
+                                    val f = File(path)
+                                    if (f.exists() && f.length() > 0) file = f
+                                }
+                            }
+                        }
+                    }
+
                     if (file.exists() && file.length() > 0) {
+                        // Keep a permanent copy in internal app storage
+                        val internalDir = File(context.filesDir, "Music").apply { if (!exists()) mkdirs() }
+                        val internalFile = File(internalDir, file.name)
+                        try {
+                            file.copyTo(internalFile, overwrite = true)
+                        } catch (e: Exception) {
+                            android.util.Log.e("DownloadCompleteReceiver", "Failed to backup file to internal storage", e)
+                        }
+                        val persistentPath = if (internalFile.exists() && internalFile.length() > 0) {
+                            internalFile.absolutePath
+                        } else {
+                            file.absolutePath
+                        }
+
                         val durationSec = extractDurationSeconds(file)
                         val song = DownloadedSong(
                             id = UUID.randomUUID().toString(),
@@ -46,7 +74,7 @@ class DownloadCompleteReceiver : BroadcastReceiver() {
                             artist = pending.artist,
                             thumbnailUrl = pending.thumbnailUrl,
                             durationSeconds = durationSec,
-                            localPath = file.absolutePath,
+                            localPath = persistentPath,
                             mimeType = pending.mimeType,
                             sizeBytes = file.length(),
                             downloadedAt = System.currentTimeMillis()

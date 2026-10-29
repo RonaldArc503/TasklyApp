@@ -64,6 +64,17 @@ class GetNewerMessagesUseCase @Inject constructor(
     }
 }
 
+class GetThreadMessagesUseCase @Inject constructor(
+    private val repository: IChatRepository
+) {
+    suspend operator fun invoke(
+        convId: String,
+        currentUserId: String,
+        threadRootId: String,
+        limit: Long
+    ): List<ChatMessage> = repository.getThreadMessages(convId, currentUserId, threadRootId, limit)
+}
+
 class GetMessageWindowByIdUseCase @Inject constructor(
     private val repository: IChatRepository
 ) {

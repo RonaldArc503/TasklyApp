@@ -1,5 +1,6 @@
 package com.ronaldcolocho.taskly.ui.navigation
 
+import android.app.Activity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,10 +24,15 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
@@ -55,6 +61,7 @@ import com.ronaldcolocho.taskly.ui.screen.home.PresenceViewModel
 import com.ronaldcolocho.taskly.ui.screen.profile.ProfileScreen
 import com.ronaldcolocho.taskly.ui.screen.tasks.TasksScreen
 import com.ronaldcolocho.taskly.ui.state.AuthState
+import com.ronaldcolocho.taskly.ui.theme.ChatColorScheme
 
 sealed class Route(val route: String, val navigationRoute: String = route) {
     object Auth : Route("auth")
@@ -72,6 +79,10 @@ sealed class Route(val route: String, val navigationRoute: String = route) {
             return "chat/$convId" + query.takeIf(String::isNotBlank)?.let { "?$it" }.orEmpty()
         }
     }
+    object ChatThread : Route("chat_thread/{convId}/{threadRootId}") {
+        fun createRoute(convId: String, threadRootId: String) =
+            "chat_thread/${android.net.Uri.encode(convId)}/${android.net.Uri.encode(threadRootId)}"
+    }
     object GlobalChatSearch : Route("chat_search")
     object ChatInfo : Route("chat_info/{convId}") {
         fun createRoute(convId: String) = "chat_info/$convId"
@@ -81,6 +92,7 @@ sealed class Route(val route: String, val navigationRoute: String = route) {
     object Profile : Route("profile")
     object Settings : Route("settings")
     object Converter : Route("converter")
+    object ClipboardShelf : Route("clipboard_shelf")
     object Music : Route("music")
     object MusicPlaylist : Route("music/playlist/{playlistId}") {
         fun createRoute(playlistId: String) = "music/playlist/$playlistId"
@@ -195,6 +207,20 @@ private fun MainScaffold(
         }
     }
 
+    val isChatRoute = currentDestination?.route?.startsWith("chat") == true
+    val activeColorScheme = if (isChatRoute) ChatColorScheme else MaterialTheme.colorScheme
+    val view = LocalView.current
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        window.statusBarColor = activeColorScheme.background.toArgb()
+        window.navigationBarColor = activeColorScheme.background.toArgb()
+        val darkIcons = activeColorScheme.background.luminance() > 0.5f
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = darkIcons
+            isAppearanceLightNavigationBars = darkIcons
+        }
+    }
+    MaterialTheme(colorScheme = activeColorScheme) {
     Scaffold(
         bottomBar = {
             if (isBottomBarVisible) {
@@ -225,7 +251,7 @@ private fun MainScaffold(
                 .consumeWindowInsets(innerPadding)
                 .imePadding()
         ) {
-            val isChatScreen = currentDestination?.route?.startsWith("chat") == true
+            val isChatScreen = isChatRoute
             if (!isOnline) {
                 OfflineBanner()
             }
@@ -302,7 +328,23 @@ private fun MainScaffold(
                 ) {
                     ChatScreen(
                         onNavigateBack = { navController.popBackStack() },
-                        onNavigateToInfo = { convId -> navController.navigate(Route.ChatInfo.createRoute(convId)) }
+                        onNavigateToInfo = { convId -> navController.navigate(Route.ChatInfo.createRoute(convId)) },
+                        onNavigateToThread = { convId, rootId ->
+                            navController.navigate(Route.ChatThread.createRoute(convId, rootId))
+                        }
+                    )
+                }
+                composable(
+                    route = Route.ChatThread.route,
+                    arguments = listOf(
+                        navArgument("convId") { type = NavType.StringType },
+                        navArgument("threadRootId") { type = NavType.StringType }
+                    )
+                ) { entry ->
+                    ChatScreen(
+                        onNavigateBack = { navController.popBackStack() },
+                        onNavigateToInfo = { convId -> navController.navigate(Route.ChatInfo.createRoute(convId)) },
+                        threadRootMessageId = entry.arguments?.getString("threadRootId")
                     )
                 }
                 composable(
@@ -364,7 +406,13 @@ private fun MainScaffold(
                         onNavigateToSaved = { navController.navigate(Route.Saved.route) },
                         onNavigateToConverter = { navController.navigate(Route.Converter.route) },
                         onNavigateToSettings = { navController.navigate(Route.Settings.route) },
-                        onNavigateToMusic = { navController.navigate(Route.Music.route) }
+                        onNavigateToMusic = { navController.navigate(Route.Music.route) },
+                        onNavigateToClipboard = { navController.navigate(Route.ClipboardShelf.route) }
+                    )
+                }
+                composable(Route.ClipboardShelf.route) {
+                    com.ronaldcolocho.taskly.ui.screen.clipboard.ClipboardShelfScreen(
+                        onNavigateBack = { navController.popBackStack() }
                     )
                 }
                 composable(Route.Settings.route) {
@@ -377,6 +425,7 @@ private fun MainScaffold(
                         audioController = audioController,
                         onNavigateBack = { navController.popBackStack() },
                         onOpenPlaylist = { id -> navController.navigate(Route.MusicPlaylist.createRoute(id)) },
+                        onOpenConverter = { navController.navigate(Route.Converter.route) },
                         onOpenPlayer = { name -> navController.navigate(Route.MusicPlayer.createRoute(name)) }
                     )
                 }
@@ -431,6 +480,7 @@ private fun MainScaffold(
                 }
             }
         }
+    }
     }
 }
 

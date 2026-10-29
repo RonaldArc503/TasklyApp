@@ -40,7 +40,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,7 +56,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.UserProfile
 import com.ronaldcolocho.taskly.ui.state.ProfileUiState
-import kotlinx.coroutines.launch
 
 private val AvatarColors = listOf(
     Color(0xFF2563EB),
@@ -75,11 +73,11 @@ fun ProfileScreen(
     onNavigateToSaved: () -> Unit,
     onNavigateToConverter: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToMusic: () -> Unit
+    onNavigateToMusic: () -> Unit,
+    onNavigateToClipboard: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let(viewModel::changeProfilePhoto)
     }
@@ -104,7 +102,7 @@ fun ProfileScreen(
                     onNavigateToSaved = onNavigateToSaved,
                     onNavigateToConverter = onNavigateToConverter,
                     onNavigateToMusic = onNavigateToMusic,
-                    onDemo = { scope.launch { snackbarHostState.showSnackbar("Proximamente") } },
+                    onNavigateToClipboard = onNavigateToClipboard,
                     onLogout = { viewModel.logout(onSuccess = onLogout) }
                 )
             }
@@ -138,7 +136,7 @@ private fun ProfileContent(
     onNavigateToSaved: () -> Unit,
     onNavigateToConverter: () -> Unit,
     onNavigateToMusic: () -> Unit,
-    onDemo: () -> Unit,
+    onNavigateToClipboard: () -> Unit,
     onLogout: () -> Unit
 ) {
     val displayName = user.displayName.trim().ifBlank {
@@ -196,7 +194,7 @@ private fun ProfileContent(
         item { Spacer(Modifier.height(8.dp)) }
         item {
             Text(
-                "Funcionalidades demo",
+                "Mis herramientas",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -208,7 +206,7 @@ private fun ProfileContent(
             FeatureRow(Icons.Default.PlayCircleOutline, "Conversor YouTube", "Descargar en MP3 o MP4", onNavigateToConverter)
         }
         item {
-            FeatureRow(Icons.Default.ContentPaste, "Copia y Pega", "Proximamente", onDemo)
+            FeatureRow(Icons.Default.ContentPaste, "Copia y pega", "Textos, códigos y enlaces", onNavigateToClipboard)
         }
         item {
             FeatureRow(Icons.Default.LibraryMusic, "Mis Musicas", "Tus canciones y listas", onNavigateToMusic)

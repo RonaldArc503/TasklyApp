@@ -12,6 +12,7 @@ import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.audio.AudioPlayerState
 import com.ronaldcolocho.taskly.audio.AudioTrack
 import com.ronaldcolocho.taskly.domain.model.AttachmentKind
+import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
 import com.ronaldcolocho.taskly.domain.model.DownloadedSong
 import com.ronaldcolocho.taskly.domain.model.MediaKind
@@ -26,9 +27,11 @@ import com.ronaldcolocho.taskly.domain.usecase.profile.GetProfileUseCase
 import com.ronaldcolocho.taskly.domain.usecase.youtube.SearchYouTubeVideosUseCase
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import com.ronaldcolocho.taskly.util.AttachmentActions
+import com.ronaldcolocho.taskly.util.DownloadedSongResolver
 import com.ronaldcolocho.taskly.util.DownloadTracker
 import com.ronaldcolocho.taskly.util.PendingDownloadMetadata
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -78,6 +81,7 @@ data class ConverterUiState(
 
 @HiltViewModel
 class ConverterViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val searchYouTubeVideosUseCase: SearchYouTubeVideosUseCase,
     private val downloadHistoryRepository: IDownloadHistoryRepository,
     private val uploadAttachmentUseCase: UploadAttachmentUseCase,
@@ -216,17 +220,42 @@ class ConverterViewModel @Inject constructor(
         }
     }
 
-    fun clearSelection() {
+    fun clearSelection(clearQuery: Boolean = true) {
+        if (clearQuery) {
+            searchJob?.cancel()
+            _uiState.update {
+                it.copy(
+                    iframeUrl = "",
+                    manualUrl = "",
+                    selectedTitle = "",
+                    selectedMediaLabel = "",
+                    converterProviderLabel = "",
+                    manualError = null,
+                    selectedVideo = null,
+                    query = "",
+                    results = emptyList(),
+                    hasSearched = false
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    iframeUrl = "",
+                    manualUrl = "",
+                    selectedTitle = "",
+                    selectedMediaLabel = "",
+                    converterProviderLabel = "",
+                    manualError = null,
+                    selectedVideo = null
+                )
+            }
+        }
+    }
+
+    fun clearQuery() {
+        searchJob?.cancel()
         _uiState.update {
-            it.copy(
-                iframeUrl = "",
-                manualUrl = "",
-                selectedTitle = "",
-                selectedMediaLabel = "",
-                converterProviderLabel = "",
-                manualError = null,
-                selectedVideo = null
-            )
+            it.copy(query = "", results = emptyList(), hasSearched = false)
         }
     }
 
@@ -467,10 +496,17 @@ class ConverterViewModel @Inject constructor(
     }
 
     fun playSong(song: DownloadedSong) {
-        val file = File(song.localPath)
-        if (!file.exists()) {
+        val file = DownloadedSongResolver.resolveSongFile(context, song)
+        if (file == null || !file.exists()) {
             _uiState.update { it.copy(downloadFeedback = "El archivo no se encuentra en el dispositivo.") }
             return
+        }
+
+        // Heal localPath if it was restored from a fallback
+        if (file.absolutePath != song.localPath) {
+            viewModelScope.launch {
+                downloadHistoryRepository.addDownloadedSong(song.copy(localPath = file.absolutePath))
+            }
         }
 
         val audioTrack = AudioTrack(
@@ -499,11 +535,18 @@ class ConverterViewModel @Inject constructor(
             return
         }
 
-        val file = File(song.localPath)
-        if (!file.exists() || file.length() == 0L) {
+        val file = DownloadedSongResolver.resolveSongFile(context, song)
+        if (file == null || !file.exists() || file.length() == 0L) {
             _saveStatusMap.update { it + (song.id to SaveToMessagesStatus.ERROR) }
             _uiState.update { it.copy(downloadFeedback = "El archivo no se encuentra en el almacenamiento local.") }
             return
+        }
+
+        // Heal localPath if it was restored from a fallback
+        if (file.absolutePath != song.localPath) {
+            viewModelScope.launch {
+                downloadHistoryRepository.addDownloadedSong(song.copy(localPath = file.absolutePath))
+            }
         }
 
         _saveStatusMap.update { it + (song.id to SaveToMessagesStatus.UPLOADING) }
@@ -542,6 +585,17 @@ class ConverterViewModel @Inject constructor(
                     )
 
                     val messageId = generateFirestoreId()
+                    mediaDownloadManager.registerDownloadedAudio(
+                        CachedAudioReference(
+                            mediaId = attachment.publicId,
+                            url = attachment.url,
+                            name = song.title,
+                            sourceMessageId = messageId,
+                            durationSeconds = song.durationSeconds,
+                            downloadedAt = song.downloadedAt
+                        )
+                    )
+
                     val message = ChatMessage(
                         id = messageId,
                         senderId = currentUserId,

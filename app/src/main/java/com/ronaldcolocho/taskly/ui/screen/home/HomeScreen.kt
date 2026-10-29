@@ -206,8 +206,8 @@ private fun HomeContent(
                 HomeSectionHeader(
                     title = "Mensajes recientes",
                     count = null,
-                    actionLabel = if (state.recentConversations.isNotEmpty()) "Ver todos" else null,
-                    onAction = { /* no direct chat-list nav from here; kept intentionally blank */ }
+                    actionLabel = null,
+                    onAction = {}
                 )
             }
         }
@@ -231,6 +231,7 @@ private fun HomeContent(
                 ) {
                     HomeConversationItem(
                         chat = chat,
+                        currentUserId = state.currentUserId,
                         onClick = { onNavigateToChat(chat.id) }
                     )
                 }
@@ -587,11 +588,16 @@ private fun HomeTaskItem(task: Task, onClick: () -> Unit) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun HomeConversationItem(chat: ChatConversation, onClick: () -> Unit) {
+private fun HomeConversationItem(chat: ChatConversation, currentUserId: String, onClick: () -> Unit) {
     val unread = chat.unreadCount > 0
-    val displayName = chat.name
-        ?: chat.members.values.firstOrNull()?.displayName
-        ?: "Chat"
+    val isSelf = !chat.isGroup && chat.participantIds.isNotEmpty() &&
+            chat.participantIds.all { it == currentUserId }
+    val otherId = chat.participantIds.firstOrNull { it != currentUserId } ?: currentUserId
+    val displayName = when {
+        chat.isGroup -> chat.name?.takeIf { it.isNotBlank() } ?: "Grupo"
+        isSelf -> "Mensajes guardados"
+        else -> chat.members[otherId]?.displayName ?: "Usuario"
+    }
 
     val timeStr = remember(chat.lastMessageAt) {
         if (chat.lastMessageAt > 0) {

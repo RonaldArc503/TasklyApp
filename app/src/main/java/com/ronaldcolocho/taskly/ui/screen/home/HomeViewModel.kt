@@ -67,10 +67,13 @@ class HomeViewModel @Inject constructor(
             val unreadChatsCount = conversations.count { it.unreadCount > 0 }
 
             HomeUiState.Success(
+                currentUserId = uid,
                 user = profile,
                 pendingTasksCount = pendingTasks.size,
                 recentPendingTasks = recentPendingTasks,
-                recentConversations = conversations.take(5),
+                recentConversations = listOfNotNull(
+                    conversations.filter { it.lastMessageAt > 0L }.maxByOrNull { it.lastMessageAt }
+                ),
                 unreadConversationsCount = unreadChatsCount,
                 upcomingReminders = upcomingReminders,
                 isRefreshing = false

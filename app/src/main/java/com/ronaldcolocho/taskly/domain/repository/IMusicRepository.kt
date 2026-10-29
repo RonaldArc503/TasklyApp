@@ -5,6 +5,8 @@ import com.ronaldcolocho.taskly.domain.model.MusicTrack
 import kotlinx.coroutines.flow.Flow
 
 interface IMusicRepository {
+    fun observeFavorites(userId: String): Flow<List<MusicTrack>>
+    suspend fun setFavorite(userId: String, track: MusicTrack, favorite: Boolean): Result<Unit>
     fun observeMostPlayed(): Flow<List<MusicTrack>>
     suspend fun recordPlayback(track: MusicTrack)
     fun observePlaylists(userId: String): Flow<List<MusicPlaylist>>

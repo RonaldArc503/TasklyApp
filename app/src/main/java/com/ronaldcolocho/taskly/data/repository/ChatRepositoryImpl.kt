@@ -130,7 +130,10 @@ class ChatRepositoryImpl @Inject constructor(
                 launch(kotlinx.coroutines.Dispatchers.Default) {
                     val conversations = mapConversations(snapshot.documents)
                     emitted = true
-                    trySend(if (trimToLimit) conversations.take(limit.toInt()) else conversations)
+                    trySend(
+                        if (trimToLimit) conversations.sortedByDescending { it.lastMessageAt }.take(limit.toInt())
+                        else conversations
+                    )
                 }
             }
         }
@@ -303,6 +306,31 @@ class ChatRepositoryImpl @Inject constructor(
         return snapshot.documents.mapNotNull { doc ->
             doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
         }
+    }
+
+    override suspend fun getThreadMessages(
+        convId: String,
+        currentUserId: String,
+        threadRootId: String,
+        limit: Long
+    ): List<ChatMessage> {
+        if (threadRootId.isBlank()) return emptyList()
+        val messages = firestore.collection("conversations").document(convId).collection("messages")
+
+        suspend fun fetch(field: String) = runCatching {
+            messages.whereEqualTo(field, threadRootId).limit(limit).get(Source.DEFAULT).await()
+        }.getOrElse {
+            runCatching { messages.whereEqualTo(field, threadRootId).limit(limit).get(Source.CACHE).await() }
+                .getOrNull()
+        }?.documents.orEmpty()
+
+        // replyTo.id preserves threads created before threadRootId was introduced.
+        return (fetch("threadRootId") + fetch("replyTo.id"))
+            .distinctBy { it.id }
+            .mapNotNull { doc ->
+                doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
+            }
+            .sortedByDescending(ChatMessage::createdAt)
     }
 
     override suspend fun getMessageWindowById(
@@ -781,6 +809,9 @@ class ChatRepositoryImpl @Inject constructor(
             val participantIds = snapshot.get("participantIds") as? List<String> ?: emptyList()
             participantsForPostSend = participantIds
             if (transaction.get(messageRef).exists()) return@runTransaction
+            val rootRef = message.threadRootId?.takeIf(String::isNotBlank)
+                ?.let { convRef.collection("messages").document(it) }
+            val rootSnapshot = rootRef?.let(transaction::get)
             if (snapshot.exists()) {
                 val unread = snapshot.get("unread") as? Map<String, Any> ?: emptyMap()
 
@@ -810,6 +841,9 @@ class ChatRepositoryImpl @Inject constructor(
                     )
                 )
             }
+            if (rootRef != null && rootSnapshot?.exists() == true) {
+                transaction.update(rootRef, "replyCount", FieldValue.increment(1L))
+            }
 
             val messageMap = mutableMapOf<String, Any>(
                 "id" to message.id,
@@ -823,6 +857,8 @@ class ChatRepositoryImpl @Inject constructor(
             if (message.edited) messageMap["edited"] = true
             message.editedAt?.let { messageMap["editedAt"] = it }
             message.replyTo?.let { messageMap["replyTo"] = it.toDto() }
+            message.threadRootId?.let { messageMap["threadRootId"] = it }
+            if (message.replyCount > 0) messageMap["replyCount"] = message.replyCount
             if (message.reactions.isNotEmpty()) messageMap["reactions"] = message.reactions
             if (message.attachments.isNotEmpty()) messageMap["attachments"] = message.attachments.map { it.toDto() }
             if (message.mentions.isNotEmpty()) messageMap["mentions"] = message.mentions
@@ -1067,6 +1103,13 @@ class ChatRepositoryImpl @Inject constructor(
         val convRef = firestore.collection("conversations").document(convId)
         val participants = convRef.get(Source.DEFAULT).await().get("participantIds") as? List<String> ?: emptyList()
         val deleteBatch = firestore.batch().delete(msgRef)
+        target.getString("threadRootId")?.takeIf(String::isNotBlank)?.let { rootId ->
+            val rootRef = convRef.collection("messages").document(rootId)
+            val root = runCatching { rootRef.get(Source.DEFAULT).await() }.getOrNull()
+            if (root?.exists() == true && (root?.getLong("replyCount") ?: 0L) > 0L) {
+                deleteBatch.update(rootRef, "replyCount", FieldValue.increment(-1L))
+            }
+        }
         participants.forEach { participantId ->
             deleteBatch.delete(
                 firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)

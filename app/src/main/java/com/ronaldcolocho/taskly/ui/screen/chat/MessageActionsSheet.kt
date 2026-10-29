@@ -31,13 +31,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
 import com.ronaldcolocho.taskly.domain.model.MusicPlaylist
+import com.ronaldcolocho.taskly.ui.theme.ChatAccent
 
 val REACT_EMOJIS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
-private val Violet = Color(0xFF7C3AED)
 private val Teal = Color(0xFF14B8A6)
 private val Amber = Color(0xFFD97706)
-private val Sky = Color(0xFF0284C7)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,6 +46,7 @@ fun MessageActionsSheet(
     isPinned: Boolean,
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
+    showReply: Boolean = true,
     onReply: () -> Unit,
     onForward: () -> Unit,
     onSave: () -> Unit,
@@ -112,22 +112,39 @@ fun MessageActionsSheet(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-            if (message.text.isNotBlank()) {
-                Text(
-                    text = "“${message.text.trim()}”",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                )
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(
+                        text = "Mensaje seleccionado",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ChatAccent
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = message.text.trim().ifBlank {
+                            val names = message.attachments.map { it.name.ifBlank { "Adjunto" } }
+                            if (names.size > 1) "${names.size} archivos · ${names.first()}"
+                            else names.firstOrNull() ?: "Mensaje"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
-            ActionRow(
-                icon = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = Violet) },
-                text = "Responder",
-                onClick = { onReply(); onDismiss() }
-            )
+            if (showReply) {
+                ActionRow(
+                    icon = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = ChatAccent) },
+                    text = "Responder en hilo",
+                    onClick = { onReply(); onDismiss() }
+                )
+            }
 
             ActionRow(
                 icon = { Icon(Icons.Filled.Forward, contentDescription = null, tint = Teal) },
@@ -165,7 +182,7 @@ fun MessageActionsSheet(
 
             if (hasValidAudio) {
                 ActionRow(
-                    icon = { Icon(Icons.Filled.LibraryMusic, contentDescription = null, tint = Violet) },
+                    icon = { Icon(Icons.Filled.LibraryMusic, contentDescription = null, tint = ChatAccent) },
                     text = "Agregar a una lista",
                     enabled = !isAddingToPlaylist,
                     onClick = { showingPlaylists = !showingPlaylists }
@@ -211,7 +228,7 @@ fun MessageActionsSheet(
 
             if (isMine && !isOnlyMedia) {
                 ActionRow(
-                    icon = { Icon(Icons.Filled.Edit, contentDescription = null, tint = Sky) },
+                    icon = { Icon(Icons.Filled.Edit, contentDescription = null, tint = ChatAccent) },
                     text = "Editar mensaje",
                     onClick = { onEdit(); onDismiss() }
                 )

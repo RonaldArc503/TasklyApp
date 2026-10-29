@@ -48,6 +48,7 @@ class MediaDownloadManager @Inject constructor(
     private val queuedIds = ConcurrentHashMap.newKeySet<String>()
     private val automaticQueuedIds = ConcurrentHashMap.newKeySet<String>()
     private val activeIds = ConcurrentHashMap.newKeySet<String>()
+    private val pendingAudioReferences = ConcurrentHashMap<String, CachedAudioReference>()
 
     private val _states = MutableStateFlow<Map<String, MediaDownloadState>>(emptyMap())
     val states: StateFlow<Map<String, MediaDownloadState>> = _states.asStateFlow()
@@ -97,6 +98,19 @@ class MediaDownloadManager @Inject constructor(
     /** Manual downloads use the same queue but are consumed before automatic requests. */
     fun ensureDownloaded(mediaId: String, url: String, kind: MediaKind) {
         enqueue(DownloadRequest(mediaId, url, kind, automatic = false))
+    }
+
+    /** Music downloads survive closing their screen and retain recovery metadata. */
+    fun downloadAudio(reference: CachedAudioReference) {
+        scope.launch {
+            if (cache.refreshFile(reference.mediaId, MediaKind.AUDIO) != null) {
+                cache.registerDownloadedAudio(reference)
+                _states.update { it + (reference.mediaId to MediaDownloadState.Downloaded) }
+            } else {
+                pendingAudioReferences[reference.mediaId] = reference
+                ensureDownloaded(reference.mediaId, reference.url, MediaKind.AUDIO)
+            }
+        }
     }
 
     /**
@@ -154,6 +168,11 @@ class MediaDownloadManager @Inject constructor(
 
             try {
                 cache.download(request.mediaId, request.url, request.kind).collect { state ->
+                    if (state is MediaDownloadState.Downloaded) {
+                        pendingAudioReferences.remove(request.mediaId)?.let(cache::registerDownloadedAudio)
+                    } else if (state is MediaDownloadState.Error) {
+                        pendingAudioReferences.remove(request.mediaId)
+                    }
                     _states.update { it + (request.mediaId to state) }
                 }
             } finally {

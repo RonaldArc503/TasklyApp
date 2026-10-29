@@ -38,6 +38,25 @@ class MusicRepositoryImpl @Inject constructor(
     private val legacyMigrationMutex = Mutex()
     private val migratedLegacyPlaylists = mutableSetOf<String>()
 
+    override fun observeFavorites(userId: String): Flow<List<MusicTrack>> = callbackFlow {
+        val listener = firestore.collection("users").document(userId).collection("musicFavorites")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) close(error)
+                else trySend(snapshot?.documents.orEmpty().map { it.toMusicTrack() }
+                    .sortedByDescending { it.addedAt })
+            }
+        awaitClose { listener.remove() }
+    }
+
+    override suspend fun setFavorite(userId: String, track: MusicTrack, favorite: Boolean): Result<Unit> = runCatching {
+        require(userId.isNotBlank() && track.id.isNotBlank()) { "Canción no válida." }
+        val document = firestore.collection("users").document(userId).collection("musicFavorites")
+            .document(trackDocumentId(track.id))
+        if (favorite) document.set(track.toMap(System.currentTimeMillis(), track.position)).await()
+        else document.delete().await()
+        Unit
+    }
+
     override fun observeMostPlayed(): Flow<List<MusicTrack>> = history.map { tracks ->
         tracks.sortedWith(compareByDescending<MusicTrack> { it.playCount }.thenByDescending { it.lastPlayedAt })
             .take(MAX_HISTORY_TRACKS)

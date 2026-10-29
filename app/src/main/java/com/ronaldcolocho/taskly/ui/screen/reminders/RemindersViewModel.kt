@@ -122,9 +122,12 @@ class RemindersViewModel @Inject constructor(
         if (currentUserId == null) return
         viewModelScope.launch {
             try {
-                updateReminderUseCase(currentUserId, id, mapOf("dueDate" to newDate))
+                val anchor = if (newDate > 0L) {
+                    java.time.Instant.ofEpochMilli(newDate).atZone(java.time.ZoneId.systemDefault()).dayOfMonth
+                } else 0
+                updateReminderUseCase(currentUserId, id, mapOf("dueDate" to newDate, "anchorDay" to anchor, "snoozedUntil" to 0L))
                 activeReminders.value.firstOrNull { it.id == id }?.let { reminder ->
-                    alarmManager.scheduleReminder(reminder.copy(dueDate = newDate, snoozedUntil = 0L))
+                    alarmManager.scheduleReminder(reminder.copy(dueDate = newDate, anchorDay = anchor, snoozedUntil = 0L))
                 }
             } catch (e: Exception) {
                 // Ignore or show error
@@ -140,10 +143,20 @@ class RemindersViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
+                val anchor = if (dueDate > 0L) {
+                    java.time.Instant.ofEpochMilli(dueDate).atZone(java.time.ZoneId.systemDefault()).dayOfMonth
+                } else 0
                 updateReminderUseCase(
                     currentUserId,
                     id,
-                    mapOf("title" to title.trim(), "dueDate" to dueDate, "hasTime" to hasTime, "repeatType" to repeatType.name, "snoozedUntil" to 0L)
+                    mapOf(
+                        "title" to title.trim(),
+                        "dueDate" to dueDate,
+                        "hasTime" to hasTime,
+                        "repeatType" to repeatType.name,
+                        "snoozedUntil" to 0L,
+                        "anchorDay" to anchor
+                    )
                 )
                 activeReminders.value.firstOrNull { it.id == id }?.let { reminder ->
                     alarmManager.scheduleReminder(
@@ -152,7 +165,8 @@ class RemindersViewModel @Inject constructor(
                             dueDate = dueDate,
                             hasTime = hasTime,
                             repeatType = repeatType,
-                            snoozedUntil = 0L
+                            snoozedUntil = 0L,
+                            anchorDay = anchor
                         )
                     )
                 }
@@ -177,14 +191,56 @@ class RemindersViewModel @Inject constructor(
     fun completeReminder(reminder: Reminder) {
         if (currentUserId == null) return
         viewModelScope.launch {
-            val patch = if (reminder.repeatType == com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
+            val now = System.currentTimeMillis()
+            if (reminder.repeatType == com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
                 alarmManager.cancel(reminder.id)
-                mapOf("isCompleted" to true, "completedAt" to System.currentTimeMillis(), "snoozedUntil" to 0L)
+                val patch = mapOf(
+                    "isCompleted" to true,
+                    "completedAt" to now,
+                    "snoozedUntil" to 0L
+                )
+                runCatching { updateReminderUseCase(currentUserId, reminder.id, patch) }
+                    .onFailure { showError("No se pudo completar el recordatorio.") }
             } else {
-                // Recurring alerts are advanced when they fire, never when the user acknowledges them.
-                mapOf("completedAt" to System.currentTimeMillis())
+                // 1. Archive current period instance into completed history
+                val archiveId = "rem-hist-${now.toString(36)}-${java.util.UUID.randomUUID().toString().take(6)}"
+                val periodLabel = com.ronaldcolocho.taskly.domain.model.reminder.reminderTimeLabel(reminder.dueDate, false)
+                val archiveRecord = reminder.copy(
+                    id = archiveId,
+                    title = "${reminder.title} ($periodLabel)",
+                    isCompleted = true,
+                    completedAt = now,
+                    repeatType = com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE,
+                    snoozedUntil = 0L
+                )
+                runCatching {
+                    createReminderUseCase.repo.addReminder(currentUserId, archiveRecord)
+                }
+
+                // 2. Advance active recurring reminder to next cycle and clear receipts
+                val nextDue = com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence(
+                    dueDate = reminder.dueDate,
+                    repeatType = reminder.repeatType,
+                    anchorDay = reminder.effectiveAnchorDay,
+                    completedAt = now
+                )
+                val patch = mapOf(
+                    "dueDate" to nextDue,
+                    "completedAt" to now,
+                    "receipts" to emptyList<Map<String, Any>>(),
+                    "snoozedUntil" to 0L
+                )
+                runCatching { updateReminderUseCase(currentUserId, reminder.id, patch) }
+                    .onSuccess {
+                        val advanced = reminder.copy(
+                            dueDate = nextDue,
+                            receipts = emptyList(),
+                            snoozedUntil = 0L
+                        )
+                        alarmManager.scheduleReminder(advanced)
+                    }
+                    .onFailure { showError("No se pudo completar el recordatorio.") }
             }
-            runCatching { updateReminderUseCase(currentUserId, reminder.id, patch) }.onFailure { showError("No se pudo completar el recordatorio.") }
         }
     }
 
@@ -196,9 +252,17 @@ class RemindersViewModel @Inject constructor(
         }
     }
 
-    fun snoozeReminder(id: String, until: Long) {
+    fun snoozeReminder(id: String, minutes: Long) {
         if (currentUserId == null) return
-        viewModelScope.launch { runCatching { updateReminderUseCase(currentUserId, id, mapOf("snoozedUntil" to until)) } }
+        val until = System.currentTimeMillis() + minutes * 60_000L
+        viewModelScope.launch {
+            runCatching {
+                updateReminderUseCase(currentUserId, id, mapOf("snoozedUntil" to until))
+                activeReminders.value.firstOrNull { it.id == id }?.let { reminder ->
+                    alarmManager.scheduleReminder(reminder.copy(snoozedUntil = until))
+                }
+            }
+        }
     }
 
     fun uploadReceipt(reminderId: String, file: File, kind: String) {

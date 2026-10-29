@@ -23,7 +23,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -40,6 +39,8 @@ import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.ui.screen.chat.AttachmentLightbox
 import com.ronaldcolocho.taskly.ui.screen.chat.LightboxItem
 import com.ronaldcolocho.taskly.ui.screen.chat.AudioCard
+import com.ronaldcolocho.taskly.ui.theme.ChatAccent
+import com.ronaldcolocho.taskly.ui.theme.ChatSurfaceRaised
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 
@@ -161,12 +162,12 @@ fun ChatInfoContent(
                     modifier = Modifier
                         .size(100.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF4F46E5)),
+                        .background(ChatAccent),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = title.take(2).uppercase(),
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onPrimary,
                         style = MaterialTheme.typography.headlineLarge
                     )
                 }
@@ -241,7 +242,7 @@ fun MediaTab(media: List<Pair<ChatAttachment, String>>, isLoadingMore: Boolean, 
                     .aspectRatio(1f)
                     .padding(1.dp)
                     .clickable { onImageClick(att, index) }
-                    .background(Color.LightGray)
+                    .background(ChatSurfaceRaised)
             )
         }
         if (hasMore || isLoadingMore) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { LoadMoreButton(isLoadingMore, onLoadMore) }

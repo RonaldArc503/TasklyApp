@@ -27,6 +27,93 @@ class ReminderReceiver : BroadcastReceiver() {
     @Inject lateinit var reminderRepository: ReminderRepository
 
     override fun onReceive(context: Context, intent: Intent) {
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // 1. Direct interactive action from notification button: Complete
+        if (intent.action == ACTION_COMPLETE) {
+            val id = intent.getStringExtra("REMINDER_ID") ?: return
+            notificationManager.cancel(id.hashCode())
+            val pendingResult = goAsync()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return@launch
+                    val reminder = reminderRepository.getReminder(uid, id) ?: return@launch
+                    if (reminder.repeatType == com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
+                        alarmManager.cancel(id)
+                        reminderRepository.updateReminder(
+                            uid,
+                            id,
+                            mapOf("isCompleted" to true, "completedAt" to System.currentTimeMillis(), "snoozedUntil" to 0L)
+                        )
+                    } else {
+                        val now = System.currentTimeMillis()
+                        val archiveId = "rem-hist-${now.toString(36)}-${java.util.UUID.randomUUID().toString().take(6)}"
+                        val periodLabel = com.ronaldcolocho.taskly.domain.model.reminder.reminderTimeLabel(reminder.dueDate, false)
+                        val archiveRecord = reminder.copy(
+                            id = archiveId,
+                            title = "${reminder.title} ($periodLabel)",
+                            isCompleted = true,
+                            completedAt = now,
+                            repeatType = com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE,
+                            snoozedUntil = 0L
+                        )
+                        runCatching { reminderRepository.addReminder(uid, archiveRecord) }
+                        val nextDue = com.ronaldcolocho.taskly.domain.model.reminder.nextReminderOccurrence(
+                            reminder.dueDate,
+                            reminder.repeatType,
+                            reminder.effectiveAnchorDay,
+                            now
+                        )
+                        reminderRepository.updateReminder(
+                            uid,
+                            id,
+                            mapOf(
+                                "dueDate" to nextDue,
+                                "completedAt" to now,
+                                "receipts" to emptyList<Map<String, Any>>(),
+                                "snoozedUntil" to 0L
+                            )
+                        )
+                        alarmManager.scheduleReminder(
+                            reminder.copy(
+                                dueDate = nextDue,
+                                receipts = emptyList(),
+                                snoozedUntil = 0L
+                            )
+                        )
+                    }
+                } finally {
+                    pendingResult.finish()
+                }
+            }
+            return
+        }
+
+        // 2. Direct interactive action from notification button: Snooze
+        if (intent.action == ACTION_SNOOZE) {
+            val id = intent.getStringExtra("REMINDER_ID") ?: return
+            val snoozeMinutes = intent.getLongExtra("SNOOZE_MINUTES", 15L)
+            val snoozeUntil = System.currentTimeMillis() + snoozeMinutes * 60_000L
+            notificationManager.cancel(id.hashCode())
+            val pendingResult = goAsync()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val uid = FirebaseAuth.getInstance().currentUser?.uid
+                    if (uid != null) {
+                        reminderRepository.updateReminder(uid, id, mapOf("snoozedUntil" to snoozeUntil))
+                        val reminder = reminderRepository.getReminder(uid, id)
+                        if (reminder != null) {
+                            alarmManager.scheduleReminder(reminder.copy(snoozedUntil = snoozeUntil))
+                        }
+                    }
+                } finally {
+                    pendingResult.finish()
+                }
+            }
+            return
+        }
+
         val id = intent.getStringExtra("REMINDER_ID") ?: return
         val title = intent.getStringExtra("REMINDER_TITLE") ?: "Tienes un pago pendiente"
         val dueDate = intent.getLongExtra("REMINDER_DUE_DATE", 0L)
@@ -34,8 +121,6 @@ class ReminderReceiver : BroadcastReceiver() {
         val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: TYPE_DUE
         // Approximate fallback alarms may arrive after the main time. Never send a late pre-alert.
         if (alertType != TYPE_DUE && alertType != TYPE_RECOVERY && System.currentTimeMillis() >= dueDate) return
-        val notificationManager =
-            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val channelId = if (alertType == TYPE_DUE) "reminders_alarm_channel" else "reminders_prealert_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -47,6 +132,14 @@ class ReminderReceiver : BroadcastReceiver() {
                 description = if (alertType == TYPE_DUE) "Avisos de pagos y recordatorios importantes" else "Avisos antes de la alarma principal"
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 enableVibration(true)
+                if (alertType == TYPE_DUE) {
+                    val audioAttributes = android.media.AudioAttributes.Builder()
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                        .build()
+                    val alarmSound = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+                    setSound(alarmSound, audioAttributes)
+                }
             }
             notificationManager.createNotificationChannel(channel)
         }
@@ -85,6 +178,33 @@ class ReminderReceiver : BroadcastReceiver() {
             .setOngoing(isDue)
             .setContentIntent(fullScreenIntent)
 
+        if (isDue) {
+            val completeIntent = Intent(context, ReminderReceiver::class.java).apply {
+                action = ACTION_COMPLETE
+                putExtra("REMINDER_ID", id)
+            }
+            val completePendingIntent = PendingIntent.getBroadcast(
+                context,
+                (id + "_complete").hashCode(),
+                completeIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val snoozeIntent = Intent(context, ReminderReceiver::class.java).apply {
+                action = ACTION_SNOOZE
+                putExtra("REMINDER_ID", id)
+                putExtra("SNOOZE_MINUTES", 15L)
+            }
+            val snoozePendingIntent = PendingIntent.getBroadcast(
+                context,
+                (id + "_snooze").hashCode(),
+                snoozeIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            notificationBuilder
+                .addAction(R.drawable.ic_launcher_foreground, "Completar", completePendingIntent)
+                .addAction(R.drawable.ic_launcher_foreground, "Posponer 15m", snoozePendingIntent)
+        }
+
         // A full-screen intent is optional presentation. When Android has denied it,
         // keep publishing the normal high-priority notification instead of attaching
         // a full-screen request that the system will reject.
@@ -101,23 +221,6 @@ class ReminderReceiver : BroadcastReceiver() {
             )
         } catch (error: SecurityException) {
             android.util.Log.e("ReminderAlarm", "Notification permission denied", error)
-        }
-
-        if (isDue) {
-            // Advance before showing UI: recurring reminders remain reliable even if ignored.
-            val next = alarmManager.advanceRecurringReminder(id, dueDate)
-            if (next != null && next.repeatType != com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE) {
-                val pendingResult = goAsync()
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        FirebaseAuth.getInstance().currentUser?.uid?.let { uid ->
-                            reminderRepository.updateReminder(uid, id, mapOf("dueDate" to next.dueDate, "snoozedUntil" to 0L))
-                        }
-                    } finally {
-                        pendingResult.finish()
-                    }
-                }
-            }
         }
 
         // A normal notification is always posted above. Overlay is only an extra presentation path.
@@ -164,6 +267,8 @@ class ReminderReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        const val ACTION_COMPLETE = "com.ronaldcolocho.taskly.ACTION_COMPLETE_REMINDER"
+        const val ACTION_SNOOZE = "com.ronaldcolocho.taskly.ACTION_SNOOZE_REMINDER"
         const val EXTRA_ALERT_TYPE = "REMINDER_ALERT_TYPE"
         const val TYPE_PRE_10 = "PRE_10"
         const val TYPE_PRE_5 = "PRE_5"

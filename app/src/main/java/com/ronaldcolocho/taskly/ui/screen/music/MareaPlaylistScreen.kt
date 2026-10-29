@@ -22,6 +22,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -78,6 +83,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -149,13 +155,16 @@ fun MareaPlaylistScreen(
     audioController: AudioPlayerController,
     onNavigateBack: () -> Unit,
     onOpenPlayer: (String) -> Unit = {},
-    viewModel: PlaylistDetailViewModel
+    viewModel: PlaylistDetailViewModel,
+    libraryViewModel: MusicLibraryViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 ) {
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val downloadedTracks by viewModel.downloadedTracks.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val playerState by audioController.state.collectAsStateWithLifecycle()
+    val library by libraryViewModel.library.collectAsStateWithLifecycle()
+    val libraryError by libraryViewModel.error.collectAsStateWithLifecycle()
     val playlist = playlists.firstOrNull { it.id == viewModel.selectedPlaylistId }
 
     val isPlayingFromThisPlaylist = playerState.currentTrack?.let { current ->
@@ -207,8 +216,9 @@ fun MareaPlaylistScreen(
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
     var feedbackColor by remember { mutableStateOf(mint) }
 
-    // In-memory Favorites tracking
-    var favoriteTrackIds by remember { mutableStateOf(setOf<String>()) }
+    val favoriteTrackIds = remember(library.items) {
+        library.items.filter { it.favorite }.mapTo(hashSetOf()) { it.track.id }
+    }
 
     // Sorting state
     var selectedSort by remember { mutableStateOf(MareaSortOption.ORIGINAL) }
@@ -344,12 +354,9 @@ fun MareaPlaylistScreen(
                         }
                     },
                     onShuffle = {
-                        val shuffled = tracks.shuffled().let { s ->
-                            if (tracks.size > 1 && s == tracks) tracks.drop(1) + tracks.first() else s
-                        }
-                        if (shuffled.isNotEmpty()) {
-                            viewModel.reorderTracks(shuffled)
-                            playTracks(audioController, shuffled, shuffled.first(), viewModel.selectedPlaylistId)
+                        if (tracks.isNotEmpty()) {
+                            audioController.setShuffleMode(true)
+                            playTracks(audioController, tracks, tracks.random(), viewModel.selectedPlaylistId)
                         }
                     },
                     onRepeat = audioController::cycleRepeatMode
@@ -443,15 +450,7 @@ fun MareaPlaylistScreen(
                             onOpenPlayer(playlist?.name ?: "Mi lista")
                         },
                         onSwipeFavorite = {
-                            if (isFavorite) {
-                                favoriteTrackIds = favoriteTrackIds - track.id
-                                feedbackMessage = "Quitada de favoritos"
-                                feedbackColor = peach
-                            } else {
-                                favoriteTrackIds = favoriteTrackIds + track.id
-                                feedbackMessage = "Guardada en favoritos"
-                                feedbackColor = mint
-                            }
+                            libraryViewModel.setFavorite(track, !isFavorite)
                         },
                         onSwipeQueue = {
                             val audioTrack = AudioTrack(
@@ -493,6 +492,11 @@ fun MareaPlaylistScreen(
                                 }
                             }
                         },
+                        onQueueEnd = {
+                            audioController.addToQueueEnd(track.toAudioTrack(viewModel.selectedPlaylistId))
+                            feedbackMessage = "Agregada al final: ${track.name}"
+                            feedbackColor = mint
+                        },
                         onRemove = { viewModel.removeTrack(track) }
                     )
                 }
@@ -515,18 +519,20 @@ fun MareaPlaylistScreen(
                     .padding(horizontal = 14.dp, vertical = 14.dp)
             ) {
                 MareaFloatingMiniPlayer(
-                    track       = currentTrack,
-                    isPlaying   = playerState.playing,
-                    progress    = progress,
-                    surface     = surface,
-                    onSurface   = onSurface,
-                    secondary   = secondary,
-                    lilac       = lilac,
-                    peach       = peach,
-                    onAccent    = onAccent,
-                    darkTheme   = darkTheme,
-                    onPlayPause = { audioController.toggleCurrent() },
-                    onClick     = { onOpenPlayer(playlist?.name ?: "Mi lista") }
+                    track        = currentTrack,
+                    isPlaying    = playerState.playing,
+                    progress     = progress,
+                    surface      = surface,
+                    onSurface    = onSurface,
+                    secondary    = secondary,
+                    lilac        = lilac,
+                    peach        = peach,
+                    onAccent     = onAccent,
+                    darkTheme    = darkTheme,
+                    onPlayPause  = { audioController.toggleCurrent() },
+                    onClick      = { onOpenPlayer(playlist?.name ?: "Mi lista") },
+                    onSwipeLeft  = { audioController.prev(forceTrackChange = true) },
+                    onSwipeRight = { audioController.next() }
                 )
             }
         }
@@ -577,10 +583,14 @@ fun MareaPlaylistScreen(
         }
     }
 
+    LaunchedEffect(libraryError) {
+        libraryError?.let { feedbackMessage = it; feedbackColor = peach; libraryViewModel.clearError() }
+    }
+
     // Dialogs
     if (showAdd) {
         DownloadedAudioDialog(
-            tracks      = downloadedTracks,
+            tracks      = (library.items.filter { it.availableOffline }.map { it.track } + downloadedTracks).distinctBy { it.id },
             existingIds = tracks.mapTo(mutableSetOf()) { it.id },
             onAdd       = viewModel::addTrack,
             onPreview   = { track -> previewTrack(audioController, track) }
@@ -1118,6 +1128,7 @@ private fun MareaTrackRowItem(
     onClick           : () -> Unit,
     onSwipeFavorite   : () -> Unit,
     onSwipeQueue      : () -> Unit,
+    onQueueEnd        : () -> Unit,
     onRemove          : () -> Unit
 ) {
     val offsetX = remember { Animatable(0f) }
@@ -1360,11 +1371,21 @@ private fun MareaTrackRowItem(
                     onDismissRequest  = { showMenu = false }
                 ) {
                     DropdownMenuItem(
+                        text = { Text(if (isFavorite) "Quitar de favoritas" else "Guardar en favoritas") },
+                        onClick = { onSwipeFavorite(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.Favorite, null, tint = peach) }
+                    )
+                    DropdownMenuItem(
                         text       = { Text("Reproducir a continuación") },
                         onClick    = { onSwipeQueue(); showMenu = false },
                         leadingIcon = {
                             Icon(Icons.Default.LibraryMusic, null, tint = lilac)
                         }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Agregar al final") },
+                        onClick = { onQueueEnd(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.LibraryMusic, null, tint = lilac) }
                     )
                     DropdownMenuItem(
                         text       = { Text("Quitar de la lista") },
@@ -1476,36 +1497,155 @@ private fun MareaMiniWaveform(
 
 @Composable
 internal fun MareaFloatingMiniPlayer(
-    track       : AudioTrack,
-    isPlaying   : Boolean,
-    progress    : Float,
-    surface     : Color,
-    onSurface   : Color,
-    secondary   : Color,
-    lilac       : Color,
-    peach       : Color,
-    onAccent    : Color,
-    darkTheme   : Boolean,
-    onPlayPause : () -> Unit,
-    onClick     : () -> Unit
+    track        : AudioTrack,
+    isPlaying    : Boolean,
+    progress     : Float,
+    surface      : Color,
+    onSurface    : Color,
+    secondary    : Color,
+    lilac        : Color,
+    peach        : Color,
+    onAccent     : Color,
+    darkTheme    : Boolean,
+    onPlayPause  : () -> Unit,
+    onClick      : () -> Unit,
+    onSwipeLeft  : () -> Unit = {},
+    onSwipeRight : () -> Unit = {}
 ) {
     val containerBg = if (darkTheme) Color(0xFF223E59) else Color(0xFFEAF0F6)
     val containerBorder = if (darkTheme) Color.White.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.08f)
 
+    val currentOnSwipeLeft by rememberUpdatedState(onSwipeLeft)
+    val currentOnSwipeRight by rememberUpdatedState(onSwipeRight)
+    val currentOnClick by rememberUpdatedState(onClick)
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val dragOffsetX = remember { Animatable(0f) }
+    val density = LocalDensity.current
+    val thresholdPx = with(density) { 50.dp.toPx() }
+    val maxDragPx = with(density) { 100.dp.toPx() }
+
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(
-                elevation = 16.dp,
-                shape = RoundedCornerShape(26.dp),
-                ambientColor = Color.Black.copy(alpha = 0.40f),
-                spotColor = Color.Black.copy(alpha = 0.50f)
-            )
-            .border(1.dp, containerBorder, RoundedCornerShape(26.dp))
-            .clip(RoundedCornerShape(26.dp))
-            .background(containerBg)
-            .clickable(onClick = onClick)
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center
     ) {
+        // Indicador estático detrás de la píldora que se revela al deslizar
+        val dragVal = dragOffsetX.value
+        if (abs(dragVal) > 12f) {
+            val isNext = dragVal > 0f
+            val hintAlpha = ((abs(dragVal) - 12f) / (thresholdPx - 12f)).coerceIn(0f, 1f)
+            val reached = abs(dragVal) >= thresholdPx
+
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(horizontal = 18.dp),
+                contentAlignment = if (isNext) Alignment.CenterStart else Alignment.CenterEnd
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier
+                        .alpha(hintAlpha)
+                        .graphicsLayer {
+                            val scale = if (reached) 1.1f else 1f
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                ) {
+                    if (isNext) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = null,
+                            tint = lilac,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Siguiente",
+                            style = androidx.compose.ui.text.TextStyle(
+                                fontFamily = BricolageGrotesque,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            ),
+                            color = lilac
+                        )
+                    } else {
+                        Text(
+                            text = "Anterior",
+                            style = androidx.compose.ui.text.TextStyle(
+                                fontFamily = BricolageGrotesque,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            ),
+                            color = peach
+                        )
+                        Icon(
+                            imageVector = Icons.Default.SkipPrevious,
+                            contentDescription = null,
+                            tint = peach,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Píldora deslizante principal
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    translationX = dragOffsetX.value
+                    val dragRatio = (abs(dragOffsetX.value) / maxDragPx).coerceIn(0f, 1f)
+                    alpha = 1f - dragRatio * 0.15f
+                }
+                .shadow(
+                    elevation = 16.dp,
+                    shape = RoundedCornerShape(26.dp),
+                    ambientColor = Color.Black.copy(alpha = 0.40f),
+                    spotColor = Color.Black.copy(alpha = 0.50f)
+                )
+                .border(1.dp, containerBorder, RoundedCornerShape(26.dp))
+                .clip(RoundedCornerShape(26.dp))
+                .background(containerBg)
+                .pointerInput(Unit) {
+                    var totalX = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalX = 0f },
+                        onHorizontalDrag = { change, amount ->
+                            change.consume()
+                            totalX += amount
+                            scope.launch {
+                                dragOffsetX.snapTo(totalX.coerceIn(-maxDragPx, maxDragPx))
+                            }
+                        },
+                        onDragEnd = {
+                            val currentTotal = totalX
+                            if (currentTotal < -thresholdPx) {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                currentOnSwipeLeft()
+                            } else if (currentTotal > thresholdPx) {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                currentOnSwipeRight()
+                            }
+                            scope.launch {
+                                dragOffsetX.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
+                            }
+                        },
+                        onDragCancel = {
+                            scope.launch {
+                                dragOffsetX.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
+                            }
+                        }
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { currentOnClick() }
+                    )
+                }
+        ) {
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1596,6 +1736,7 @@ internal fun MareaFloatingMiniPlayer(
                 .height(3.dp)
                 .background(peach)
         )
+    }
     }
 }
 
@@ -1742,20 +1883,13 @@ internal fun MareaIconButton(
 }
 
 internal fun MareaTrackColor(id: String, index: Int): Color {
-    val h = (id.hashCode() + index * 97) and 0x7fffffff
-    val softMutedColors = listOf(
-        Color(0xFF5E8096), // Soft slate blue
-        Color(0xFF6B9486), // Soft sage green
-        Color(0xFFA87A6C), // Soft muted terracotta
-        Color(0xFF8F7B99), // Soft lavender mauve
-        Color(0xFF648574), // Soft muted eucalyptus
-        Color(0xFFA89172), // Soft warm wheat / amber
-        Color(0xFF75859E), // Soft dusty denim
-        Color(0xFF9E7280), // Soft dusty rose
-        Color(0xFF5E8A8F), // Soft muted teal
-        Color(0xFF8A8270)  // Soft warm stone
-    )
-    return softMutedColors[h % softMutedColors.size]
+    val dummyTrack = com.ronaldcolocho.taskly.audio.AudioTrack(id = id, url = "", name = id, msgId = "")
+    val palette = getTrackPalette(dummyTrack)
+    return when (index % 3) {
+        0 -> palette.primary
+        1 -> palette.secondary
+        else -> palette.tertiary
+    }
 }
 
 private fun lerp(start: Float, stop: Float, fraction: Float): Float =

@@ -29,21 +29,44 @@ data class Reminder(
     , val completedAt: Long = 0L
     , val repeatType: ReminderRepeatType = ReminderRepeatType.NONE
     , val snoozedUntil: Long = 0L
+    , val anchorDay: Int = 0
 ) {
     val urgency: Urgency
         get() = urgencyFor(dueDate, hasTime)
+
+    val effectiveAnchorDay: Int
+        get() = if (anchorDay > 0) anchorDay else if (dueDate > 0L) {
+            Instant.ofEpochMilli(dueDate).atZone(ZoneId.systemDefault()).dayOfMonth
+        } else 0
 }
 
 enum class ReminderRepeatType { NONE, DAILY, WEEKLY, MONTHLY }
 
+fun reminderTriggerTime(dueDate: Long, hasTime: Boolean, snoozedUntil: Long = 0L): Long {
+    if (snoozedUntil > 0L) return snoozedUntil
+    if (dueDate <= 0L) return 0L
+    if (hasTime) return dueDate
+    val zone = ZoneId.systemDefault()
+    return Instant.ofEpochMilli(dueDate)
+        .atZone(zone)
+        .withHour(9)
+        .withMinute(0)
+        .withSecond(0)
+        .withNano(0)
+        .toInstant()
+        .toEpochMilli()
+}
+
 fun nextReminderOccurrence(
     dueDate: Long,
     repeatType: ReminderRepeatType,
+    anchorDay: Int = 0,
     completedAt: Long = System.currentTimeMillis()
 ): Long {
     if (dueDate <= 0L || repeatType == ReminderRepeatType.NONE) return dueDate
     val zone = ZoneId.systemDefault()
     val scheduled = Instant.ofEpochMilli(dueDate).atZone(zone)
+    val day = if (anchorDay > 0) anchorDay else scheduled.dayOfMonth
     // A manual "Completar ahora" starts the next cycle today, not after a future due date.
     // Keep the chosen time of day for reminders that have one.
     val completed = Instant.ofEpochMilli(completedAt).atZone(zone)
@@ -55,26 +78,36 @@ fun nextReminderOccurrence(
     return when (repeatType) {
         ReminderRepeatType.DAILY -> next.plusDays(1)
         ReminderRepeatType.WEEKLY -> next.plusWeeks(1)
-        ReminderRepeatType.MONTHLY -> next.plusMonths(1)
+        ReminderRepeatType.MONTHLY -> {
+            val targetMonth = next.plusMonths(1)
+            val maxDay = targetMonth.toLocalDate().lengthOfMonth()
+            targetMonth.withDayOfMonth(Math.min(day, maxDay))
+        }
         ReminderRepeatType.NONE -> next
     }.toInstant().toEpochMilli()
 }
 
-/** Returns the next calendar occurrence strictly after [after], retaining the selected hour. */
+/** Returns the next calendar occurrence strictly after [after], retaining the selected hour and anchor day. */
 fun nextReminderOccurrenceAfter(
     dueDate: Long,
     repeatType: ReminderRepeatType,
+    anchorDay: Int = 0,
     after: Long = System.currentTimeMillis()
 ): Long {
     if (dueDate <= 0L || repeatType == ReminderRepeatType.NONE) return dueDate
     val zone = ZoneId.systemDefault()
     var candidate = Instant.ofEpochMilli(dueDate).atZone(zone)
     val boundary = Instant.ofEpochMilli(after).atZone(zone)
+    val day = if (anchorDay > 0) anchorDay else candidate.dayOfMonth
     while (!candidate.isAfter(boundary)) {
         candidate = when (repeatType) {
             ReminderRepeatType.DAILY -> candidate.plusDays(1)
             ReminderRepeatType.WEEKLY -> candidate.plusWeeks(1)
-            ReminderRepeatType.MONTHLY -> candidate.plusMonths(1)
+            ReminderRepeatType.MONTHLY -> {
+                val targetMonth = candidate.plusMonths(1)
+                val maxDay = targetMonth.toLocalDate().lengthOfMonth()
+                targetMonth.withDayOfMonth(Math.min(day, maxDay))
+            }
             ReminderRepeatType.NONE -> candidate
         }
     }

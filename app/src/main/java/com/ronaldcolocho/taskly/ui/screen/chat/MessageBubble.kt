@@ -1,12 +1,15 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,8 +31,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import coil.compose.AsyncImage
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -55,21 +60,32 @@ import com.ronaldcolocho.taskly.domain.util.findMentionRanges
 import com.ronaldcolocho.taskly.domain.util.formatBytes
 import com.ronaldcolocho.taskly.domain.util.formatTime
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
-import com.ronaldcolocho.taskly.ui.theme.Emerald500
-import com.ronaldcolocho.taskly.ui.theme.Indigo600
+import com.ronaldcolocho.taskly.ui.theme.ChatAccent
+import com.ronaldcolocho.taskly.ui.theme.ChatAccentContainer
+import com.ronaldcolocho.taskly.ui.theme.ChatDivider
+import com.ronaldcolocho.taskly.ui.theme.ChatGreen
+import com.ronaldcolocho.taskly.ui.theme.ChatMuted
+import com.ronaldcolocho.taskly.ui.theme.ChatOutgoing
+import com.ronaldcolocho.taskly.ui.theme.ChatOutgoingBorder
+import com.ronaldcolocho.taskly.ui.theme.ChatSurfaceRaised
+import com.ronaldcolocho.taskly.ui.theme.ChatText
 import com.ronaldcolocho.taskly.ui.util.authorTextColor
+import com.ronaldcolocho.taskly.ui.util.avatarColor
+import com.ronaldcolocho.taskly.ui.util.initialsOf
 import java.io.File
 
 import com.ronaldcolocho.taskly.domain.model.MemberDirectory
 
-private val Slate100 = Color(0xFF1E293B)
-private val Slate200 = Color(0xFF334155)
-private val Slate400 = Color(0xFF94A3B8)
-private val Slate500 = Color(0xFF94A3B8)
-private val Slate800 = Color(0xFFF1F5F9)
-private val Indigo200 = Color(0xFFC7D2FE)
-private val Indigo700 = Color(0xFF818CF8)
-private val Indigo900 = Color(0xFF312E81)
+private val Slate100 = ChatSurfaceRaised
+private val Slate200 = ChatDivider
+private val Slate400 = ChatMuted
+private val Slate500 = ChatMuted
+private val Slate800 = ChatText
+private val Indigo200 = Color(0xFFB9EBFA)
+private val Indigo700 = ChatAccent
+private val Indigo900 = ChatAccentContainer
+private val Indigo600 = ChatAccent
+private val Emerald500 = ChatGreen
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -84,17 +100,64 @@ fun MessageBubble(
     isPinned: Boolean,
     highlighted: Boolean,
     savedFocused: Boolean,
+    menuSelected: Boolean,
     audioController: AudioPlayerController,
     mediaManager: MediaDownloadManager,
     onLongPress: (ChatMessage) -> Unit,
-    onTap: (ChatMessage) -> Unit,
     onRetry: (ChatMessage) -> Unit,
     onReact: (ChatMessage, String) -> Unit,
     onImageClick: (ChatAttachment) -> Unit,
     onOpenFile: (ChatAttachment, File) -> Unit,
     onReplyClick: (String) -> Unit,
-    onLinkClick: (String) -> Unit
+    onLinkClick: (String) -> Unit,
+    threadMode: Boolean = false,
+    replyCount: Int = 0,
+    lastReplySenderId: String? = null,
+    onOpenThread: (String) -> Unit = {}
 ) {
+    val blockInteraction = remember(message.id) { MutableInteractionSource() }
+    val blockPressed by blockInteraction.collectIsPressedAsState()
+    val blockShape = RoundedCornerShape(10.dp)
+    val blockColor by animateColorAsState(
+        targetValue = when {
+            menuSelected -> ChatAccent.copy(alpha = 0.14f)
+            savedFocused -> Color.White.copy(alpha = 0.08f)
+            highlighted -> ChatAccent.copy(alpha = 0.09f)
+            blockPressed -> ChatAccent.copy(alpha = 0.07f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(120),
+        label = "messageBlockSelection"
+    )
+    // Include the side gutters and vertical spacing in this message's touch target.
+    val blockModifier = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 48.dp)
+        .clip(blockShape)
+        .background(blockColor)
+        .then(
+            if (menuSelected) Modifier.border(1.dp, ChatAccent.copy(alpha = 0.42f), blockShape)
+            else Modifier
+        )
+        .semantics { selected = menuSelected }
+        .combinedClickable(
+            interactionSource = blockInteraction,
+            indication = null,
+            onClick = { if (threadMode) onLongPress(message) },
+            onLongClickLabel = "Opciones del mensaje",
+            onLongClick = { onLongPress(message) }
+        )
+        .padding(horizontal = 12.dp, vertical = 4.dp)
+
+    if (threadMode) {
+        ThreadMessageBlock(
+            message, currentUserId, members, isPinned, audioController, mediaManager,
+            onLongPress, onRetry, onReact, onImageClick, onOpenFile, onLinkClick,
+            replyCount, lastReplySenderId, onOpenThread,
+            modifier = blockModifier
+        )
+        return
+    }
     val hasAudioOnly = message.attachments.isNotEmpty() &&
             message.attachments.all { it.kind == AttachmentKind.AUDIO } &&
             message.text.isBlank() &&
@@ -112,7 +175,7 @@ fun MessageBubble(
     }
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = blockModifier,
         horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
     ) {
         if (showAuthor && !isMe) {
@@ -139,33 +202,28 @@ fun MessageBubble(
             }
         }
 
-        val isDark = androidx.compose.foundation.isSystemInDarkTheme()
         val bubbleBg = when {
-            isMe && hasAudioOnly -> if (isDark) Color(0xFF3730A3) else Color(0xFF4338CA)
-            isMe -> Indigo600
-            hasAudioOnly -> if (isDark) Color(0xFF334155).copy(alpha = 0.5f) else Color(0xFFF1F5F9)
+            isMe -> ChatOutgoing
+            hasAudioOnly -> ChatSurfaceRaised
             else -> MaterialTheme.colorScheme.surface
         }
         val bubbleBorder = when {
-            isMe && hasAudioOnly -> if (isDark) Color(0xFF4338CA) else Color(0xFF4F46E5)
-            isMe -> null
-            hasAudioOnly -> if (isDark) Color(0xFF475569) else Color(0xFFE2E8F0)
+            isMe -> ChatOutgoingBorder
+            hasAudioOnly -> ChatDivider
             else -> Slate200
         }
 
         Box(
             modifier = Modifier
-                .widthIn(max = maxBubbleWidth)
-                .pointerInput(message.id) {
-                    detectTapGestures(
-                        onTap = { onTap(message) },
-                        onLongPress = { onLongPress(message) }
-                    )
-                },
+                .widthIn(max = maxBubbleWidth),
             contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Box(
                 modifier = Modifier
+                    .combinedClickable(
+                        onClick = { onLongPress(message) },
+                        onLongClick = { onLongPress(message) }
+                    )
                     .shadow(if (isMe) 2.dp else 1.dp, bubbleShape)
                     .background(
                         color = bubbleBg,
@@ -179,6 +237,7 @@ fun MessageBubble(
                         when {
                             savedFocused -> Modifier.border(2.dp, Color.White.copy(alpha = 0.92f), bubbleShape)
                             highlighted -> Modifier.border(2.dp, Indigo600, bubbleShape)
+                            menuSelected -> Modifier.border(2.dp, if (isMe) Color.White.copy(alpha = 0.78f) else Indigo600, bubbleShape)
                             else -> Modifier
                         }
                     )
@@ -224,6 +283,122 @@ fun MessageBubble(
         }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ThreadMessageBlock(
+    message: ChatMessage,
+    currentUserId: String,
+    members: MemberDirectory,
+    isPinned: Boolean,
+    audioController: AudioPlayerController,
+    mediaManager: MediaDownloadManager,
+    onLongPress: (ChatMessage) -> Unit,
+    onRetry: (ChatMessage) -> Unit,
+    onReact: (ChatMessage, String) -> Unit,
+    onImageClick: (ChatAttachment) -> Unit,
+    onOpenFile: (ChatAttachment, File) -> Unit,
+    onLinkClick: (String) -> Unit,
+    replyCount: Int,
+    lastReplySenderId: String?,
+    onOpenThread: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val author = members.map[message.senderId]
+    val name = author?.displayName?.takeIf(String::isNotBlank)
+        ?: if (message.senderId == currentUserId) "Tú" else "Contacto"
+    Row(
+        modifier = modifier
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp))
+                .background(avatarColor(message.senderId)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!author?.photoURL.isNullOrBlank()) {
+                AsyncImage(
+                    model = author?.photoURL,
+                    contentDescription = "Foto de $name",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Text(initialsOf(name), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(formatTime(message.createdAt), color = Slate500, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(4.dp))
+            if (message.attachments.isNotEmpty() && message.text.isBlank() &&
+                message.attachments.all { it.kind == AttachmentKind.IMAGE }
+            ) {
+                ImageOnlyBubble(message, RoundedCornerShape(12.dp), isPinned, onImageClick,
+                    { onLongPress(message) }, mediaManager)
+            } else {
+                ContentBubble(
+                    message = message,
+                    isMe = false,
+                    currentUserId = currentUserId,
+                    members = members,
+                    isPinned = isPinned,
+                    audioController = audioController,
+                    mediaManager = mediaManager,
+                    onImageClick = onImageClick,
+                    onOpenFile = onOpenFile,
+                    onLongPress = { onLongPress(message) },
+                    onReplyClick = {},
+                    onLinkClick = onLinkClick,
+                    showReplyQuote = false,
+                    showTime = false
+                )
+            }
+            ReactionsRow(message, false, currentUserId, { emoji -> onReact(message, emoji) })
+            if (replyCount > 0) {
+                Row(
+                    modifier = Modifier.clickable { onOpenThread(message.id) }.padding(top = 8.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    lastReplySenderId?.let { sender ->
+                        val member = members.map[sender]
+                        Box(
+                            modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))
+                                .background(avatarColor(sender)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (!member?.photoURL.isNullOrBlank()) {
+                                AsyncImage(member?.photoURL, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            } else {
+                                Text(initialsOf(member?.displayName ?: "?"), color = Color.White, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                    Text(
+                        "$replyCount ${if (replyCount == 1) "respuesta" else "respuestas"}",
+                        color = Indigo700,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            if (message.status == MessageStatus.FAILED && message.senderId == currentUserId) {
+                Text(
+                    "Toca para reintentar",
+                    modifier = Modifier.padding(top = 4.dp).clickable { onRetry(message) },
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ContentBubble(
     message: ChatMessage,
@@ -237,18 +412,21 @@ private fun ContentBubble(
     onOpenFile: (ChatAttachment, File) -> Unit,
     onLongPress: () -> Unit,
     onReplyClick: (String) -> Unit,
-    onLinkClick: (String) -> Unit
+    onLinkClick: (String) -> Unit,
+    showReplyQuote: Boolean = true,
+    showTime: Boolean = true
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val textColor = if (isMe) Color.White else if (isDark) Color(0xFFF1F5F9) else Color(0xFF1E293B)
-    val subColor = if (isMe) Indigo200 else if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+    val textColor = if (isMe) Color.White else ChatText
+    val subColor = if (isMe) Indigo200 else ChatMuted
     val isAudioOnly = message.attachments.isNotEmpty() &&
             message.attachments.all { it.kind == AttachmentKind.AUDIO } &&
             message.text.isBlank() &&
             message.replyTo == null &&
             message.forwardedFrom == null
 
-    val containerPadding = if (isAudioOnly) {
+    val containerPadding = if (!showTime) {
+        PaddingValues(0.dp)
+    } else if (isAudioOnly) {
         PaddingValues(start = 4.dp, top = 8.dp, end = 4.dp, bottom = 4.dp)
     } else {
         PaddingValues(horizontal = 14.dp, vertical = 8.dp)
@@ -258,7 +436,7 @@ private fun ContentBubble(
         modifier = Modifier.padding(containerPadding),
         verticalArrangement = if (isAudioOnly) Arrangement.Center else Arrangement.Top
     ) {
-        message.replyTo?.let { reply ->
+        message.replyTo?.takeIf { showReplyQuote }?.let { reply ->
             ReplyQuote(
                 reply = reply,
                 isMe = isMe,
@@ -306,7 +484,7 @@ private fun ContentBubble(
             )
         }
 
-        MessageTimeRow(
+        if (showTime) MessageTimeRow(
             message = message,
             isMe = isMe,
             isPinned = isPinned,
@@ -326,11 +504,10 @@ private fun ReplyQuote(
     textColor: Color,
     onReplyClick: (String) -> Unit
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(if (isMe) Color.White.copy(alpha = 0.25f) else if (isDark) Color(0xFF334155).copy(alpha = 0.7f) else Color(0xFFF1F5F9))
+            .background(if (isMe) Color.White.copy(alpha = 0.14f) else ChatSurfaceRaised)
             .clickable { onReplyClick(reply.id) }
             .padding(8.dp)
     ) {

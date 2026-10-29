@@ -61,6 +61,8 @@ data class ChatMessageDto(
     val edited: Boolean = false,
     val editedAt: Long? = null,
     val replyTo: ReplyInfoDto? = null,
+    val threadRootId: String? = null,
+    val replyCount: Int = 0,
     val reactions: Map<String, String>? = null,
     val attachments: List<ChatAttachmentDto>? = null,
     val mentions: List<String>? = null,

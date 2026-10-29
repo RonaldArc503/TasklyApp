@@ -1,5 +1,6 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -149,6 +150,7 @@ fun AttachmentLightbox(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LightboxPage(
     item: LightboxItem,
@@ -225,7 +227,11 @@ private fun LightboxPage(
                         translationX = offsetX
                         translationY = offsetY
                     }
-                    .transformable(transformState)
+                    .transformable(
+                        state = transformState,
+                        // Let the pager handle swipes until the photo is zoomed in.
+                        canPan = { scale > 1f }
+                    )
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,

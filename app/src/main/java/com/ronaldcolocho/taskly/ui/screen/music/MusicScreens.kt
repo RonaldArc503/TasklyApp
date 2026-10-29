@@ -53,6 +53,8 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Tune
+import com.ronaldcolocho.taskly.audio.PlayerVisualEffect
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -116,6 +118,14 @@ import com.ronaldcolocho.taskly.audio.AudioRepeatMode
 import com.ronaldcolocho.taskly.audio.AudioTrack
 import com.ronaldcolocho.taskly.domain.model.MusicPlaylist
 import com.ronaldcolocho.taskly.domain.model.MusicTrack
+import com.ronaldcolocho.taskly.domain.model.MusicLibraryFilter
+import com.ronaldcolocho.taskly.domain.model.MusicLibraryOrder
+import com.ronaldcolocho.taskly.domain.model.filterMusicLibrary
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.runtime.DisposableEffect
 import com.ronaldcolocho.taskly.ui.theme.BricolageGrotesque
 import com.ronaldcolocho.taskly.ui.theme.MareaBackgroundDark
 import com.ronaldcolocho.taskly.ui.theme.MareaBackgroundLight
@@ -135,21 +145,42 @@ fun MusicScreen(
     onNavigateBack: () -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenPlayer: (String) -> Unit = {},
-    viewModel: MusicViewModel = hiltViewModel()
+    viewModel: MusicViewModel = hiltViewModel(),
+    libraryViewModel: MusicLibraryViewModel = hiltViewModel(),
+    onOpenConverter: () -> Unit = {}
 ) {
     val tracks by viewModel.mostPlayed.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val playerState by audioController.state.collectAsStateWithLifecycle()
+    val library by libraryViewModel.library.collectAsStateWithLifecycle()
+    val libraryError by libraryViewModel.error.collectAsStateWithLifecycle()
+    val downloadStates by libraryViewModel.downloadStates.collectAsStateWithLifecycle()
+    var libraryFilter by rememberSaveable { mutableStateOf(MusicLibraryFilter.ALL) }
+    var libraryOrder by rememberSaveable { mutableStateOf(MusicLibraryOrder.RECENT) }
+    var libraryExpanded by rememberSaveable { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, libraryViewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) libraryViewModel.refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var showCreate by remember { mutableStateOf(false) }
-    var playlistQuery by remember { mutableStateOf("") }
+    var showVisualEffectsSheet by remember { mutableStateOf(false) }
+    val visualEffect by audioController.visualEffect.collectAsStateWithLifecycle()
+    var playlistQuery by rememberSaveable { mutableStateOf("") }
     var playlistOrder by remember { mutableStateOf("Recientes") }
     var searchExpanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val searchFocusRequester = remember { FocusRequester() }
 
     val orderOptions = listOf("Recientes", "Antiguas", "A-Z", "Z-A")
+    val visibleSongs = remember(library.items, playlistQuery, libraryFilter, libraryOrder) {
+        filterMusicLibrary(library.items, playlistQuery, libraryFilter, libraryOrder)
+    }
 
     val visiblePlaylists = remember(playlists, playlistQuery, playlistOrder) {
         playlists
@@ -280,7 +311,8 @@ fun MusicScreen(
                     onSurface = onSurface,
                     secondary = secondary,
                     mint = mint,
-                    onAccent = onAccent
+                    onAccent = onAccent,
+                    onSettingsClick = { showVisualEffectsSheet = true }
                 )
             }
 
@@ -325,6 +357,29 @@ fun MusicScreen(
                     }
                 }
             }
+
+            if (libraryError != null) item(key = "library_error") {
+                Row(Modifier.padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(libraryError.orEmpty(), modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { libraryViewModel.clearError(); libraryViewModel.refresh() }) { Text("Reintentar") }
+                }
+            }
+            musicLibraryItems(
+                state = library, visible = visibleSongs, filter = libraryFilter, order = libraryOrder,
+                expanded = libraryExpanded || playlistQuery.isNotBlank(), downloadStates = downloadStates,
+                onFilter = { libraryFilter = it; libraryExpanded = false }, onOrder = { libraryOrder = it },
+                onExpand = { libraryExpanded = !libraryExpanded }, onRefresh = libraryViewModel::refresh,
+                onPlay = { selected ->
+                    val playable = visibleSongs.filter { it.availableOffline || it.canDownload }.map { it.track }
+                    playTracks(audioController, playable, selected.track)
+                    onOpenPlayer(libraryFilter.label)
+                },
+                onFavorite = { libraryViewModel.setFavorite(it.track, !it.favorite) },
+                onDownload = { libraryViewModel.download(it.track) },
+                onNext = { audioController.addToQueueNext(it.track.toAudioTrack()) },
+                onEnd = { audioController.addToQueueEnd(it.track.toAudioTrack()) },
+                onRecover = onOpenConverter
+            )
 
             // ── "Las más escuchadas" section header ──────────────
             item {
@@ -653,6 +708,18 @@ fun MusicScreen(
             }
         )
     }
+
+    if (showVisualEffectsSheet) {
+        PlayerVisualEffectsSheet(
+            currentEffect = visualEffect,
+            onSelectEffect = { effect ->
+                audioController.setVisualEffect(effect)
+                showVisualEffectsSheet = false
+            },
+            onDismiss = { showVisualEffectsSheet = false },
+            accentColor = mint
+        )
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -671,7 +738,8 @@ private fun MusicTopBar(
     onSurface: Color,
     secondary: Color,
     mint: Color,
-    onAccent: Color
+    onAccent: Color,
+    onSettingsClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -727,7 +795,7 @@ private fun MusicTopBar(
                         onValueChange = onSearchQueryChange,
                         placeholder = {
                             Text(
-                                "Buscar listas...",
+                                "Buscar canciones y listas...",
                                 style = androidx.compose.ui.text.TextStyle(
                                     fontFamily = BricolageGrotesque,
                                     fontSize = 14.sp
@@ -804,6 +872,20 @@ private fun MusicTopBar(
                 if (searchExpanded) Icons.Default.Close else Icons.Default.Search,
                 contentDescription = null,
                 tint = if (searchExpanded) onSurface else mint,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        MareaIconButton(
+            onClick = onSettingsClick,
+            contentDescription = "Efectos visuales del reproductor",
+            surface = surface,
+            size = 44.dp
+        ) {
+            Icon(
+                imageVector = Icons.Default.Tune,
+                contentDescription = null,
+                tint = mint,
                 modifier = Modifier.size(20.dp)
             )
         }

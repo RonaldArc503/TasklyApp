@@ -14,7 +14,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -67,36 +66,48 @@ import com.ronaldcolocho.taskly.domain.util.extractMentions
 import com.ronaldcolocho.taskly.domain.util.formatDayLabel
 import com.ronaldcolocho.taskly.domain.util.formatLastSeen
 import com.ronaldcolocho.taskly.domain.util.sameDay
+import com.ronaldcolocho.taskly.domain.util.messagesInChatScope
 import com.ronaldcolocho.taskly.ui.state.ChatUiState
 import com.ronaldcolocho.taskly.ui.util.avatarColor
 import com.ronaldcolocho.taskly.ui.util.chatBackground
 import com.ronaldcolocho.taskly.ui.util.initialsOf
+import com.ronaldcolocho.taskly.ui.theme.ChatAccent
+import com.ronaldcolocho.taskly.ui.theme.ChatAccentContainer
+import com.ronaldcolocho.taskly.ui.theme.ChatDivider
+import com.ronaldcolocho.taskly.ui.theme.ChatError
+import com.ronaldcolocho.taskly.ui.theme.ChatGreen
+import com.ronaldcolocho.taskly.ui.theme.ChatMuted
+import com.ronaldcolocho.taskly.ui.theme.ChatSurfaceRaised
+import com.ronaldcolocho.taskly.ui.theme.ChatText
 import com.ronaldcolocho.taskly.util.AttachmentActions
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.Date
 import java.io.File
 import java.util.UUID
 
-private val Indigo600 = Color(0xFF4F46E5)
-private val Indigo100 = Color(0xFF312E81)
-private val Slate50 = Color(0xFF0F172A)
-private val Slate200 = Color(0xFF334155)
-private val Slate400 = Color(0xFF94A3B8)
-private val Slate500 = Color(0xFF94A3B8)
-private val Slate800 = Color(0xFFF1F5F9)
-private val Emerald500 = Color(0xFF10B981)
+private val Indigo600 = ChatAccent
+private val Indigo100 = ChatAccentContainer
+private val Slate200 = ChatDivider
+private val Slate400 = ChatMuted
+private val Slate500 = ChatMuted
+private val Slate800 = ChatText
+private val Emerald500 = ChatGreen
 private val Amber400 = Color(0xFFFBBF24)
-private val Red50 = Color(0xFF450A0A)
-private val Red600 = Color(0xFFDC2626)
+private val Red50 = Color(0xFF3B2023)
+private val Red600 = ChatError
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
-    onNavigateToInfo: (String) -> Unit = {}
+    onNavigateToInfo: (String) -> Unit = {},
+    onNavigateToThread: (String, String) -> Unit = { _, _ -> },
+    threadRootMessageId: String? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val drafts by viewModel.drafts.collectAsStateWithLifecycle()
@@ -144,6 +155,12 @@ fun ChatScreen(
 
     DisposableEffect(voiceRecorder) {
         onDispose { voiceRecorder.cancel() }
+    }
+    DisposableEffect(viewModel) {
+        onDispose {
+            viewModel.clearTyping()
+            if (threadRootMessageId != null) viewModel.exitThread()
+        }
     }
     LaunchedEffect(isRecordingVoice) {
         while (isRecordingVoice) {
@@ -215,26 +232,8 @@ fun ChatScreen(
             LaunchedEffect(state.messages) {
                 viewModel.indexAvailableChatAudio(state.messages)
             }
-            LaunchedEffect(messageNavigation?.requestId, state.messages) {
-                val request = messageNavigation ?: return@LaunchedEffect
-                val index = state.messages.indexOfFirst { it.id == request.messageId }
-                if (index >= 0) {
-                    listState.animateScrollToItem(index)
-                    // Place the target near the viewport center after its measured item is available.
-                    kotlinx.coroutines.yield()
-                    listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.let { item ->
-                        val viewportCenter = (listState.layoutInfo.viewportStartOffset + listState.layoutInfo.viewportEndOffset) / 2
-                        listState.animateScrollBy((item.offset + item.size / 2 - viewportCenter).toFloat())
-                    }
-                    if (!request.keepSavedFocus) highlightedId = request.messageId
-                    viewModel.consumeMessageNavigation(request.requestId)
-                    if (!request.keepSavedFocus) {
-                        kotlinx.coroutines.delay(2500)
-                        if (highlightedId == request.messageId) highlightedId = null
-                    }
-                }
-            }
             val messagesById = remember(state.messages) { state.messages.associateBy { it.id } }
+            val isMessageJumpPending by rememberUpdatedState(messageNavigation != null)
             LaunchedEffect(listState, messagesById, automaticDownloadsEnabled) {
                 if (!automaticDownloadsEnabled) {
                     viewModel.updateAutomaticDownloads(emptyList())
@@ -248,7 +247,7 @@ fun ChatScreen(
                         val attachments = visibleIds.flatMap { messagesById[it]?.attachments.orEmpty() }
                         viewModel.updateAutomaticDownloads(attachments)
                     }
-                    viewModel.loadNewerHistoryWhenVisible(visibleIds)
+                    if (!isMessageJumpPending) viewModel.loadNewerHistoryWhenVisible(visibleIds)
                 }
             }
             LaunchedEffect(listState, messagesById) {
@@ -266,6 +265,59 @@ fun ChatScreen(
                 ?: state.conversation.members[peerId]?.photoURL
             val isSelf = !isGroup && (state.conversation.participantIds.size == 1 ||
                     (state.conversation.participantIds.size == 2 && state.conversation.participantIds.all { it == state.currentUserId }))
+            val threadRoot = remember(state.messages, threadRootMessageId) {
+                threadRootMessageId?.let { rootId -> state.messages.firstOrNull { it.id == rootId } }
+            }
+            val displayedMessages = remember(state.messages, threadRootMessageId, threadRoot) {
+                messagesInChatScope(state.messages, threadRootMessageId)
+            }
+            val latestDisplayedMessages by rememberUpdatedState(displayedMessages)
+            val latestMessages by rememberUpdatedState(state.messages)
+            LaunchedEffect(messageNavigation?.requestId) {
+                val request = messageNavigation ?: return@LaunchedEffect
+                // Wait for a fetched history window without restarting on receipts or other updates.
+                snapshotFlow { latestMessages.any { it.id == request.messageId } }.first { it }
+                val index = latestDisplayedMessages.indexOfFirst { it.id == request.messageId }
+                if (index < 0) {
+                    viewModel.consumeMessageNavigation(request.requestId)
+                    return@LaunchedEffect
+                }
+                listState.scrollToItem(index)
+                val item = snapshotFlow {
+                    listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == request.messageId }
+                }.filterNotNull().first()
+                val layout = listState.layoutInfo
+                val viewportSize = layout.viewportEndOffset - layout.viewportStartOffset -
+                    layout.beforeContentPadding - layout.afterContentPadding
+                // A negative offset centers the item in either layout direction, without a long animation.
+                listState.scrollToItem(item.index, -((viewportSize - item.size) / 2).coerceAtLeast(0))
+                if (!request.keepSavedFocus) highlightedId = request.messageId
+                viewModel.consumeMessageNavigation(request.requestId)
+            }
+            LaunchedEffect(highlightedId) {
+                val messageId = highlightedId ?: return@LaunchedEffect
+                kotlinx.coroutines.delay(2500)
+                if (highlightedId == messageId) highlightedId = null
+            }
+            LaunchedEffect(showMessageSearch, messageSearch.query) {
+                highlightedId = null
+            }
+            val visibleReplyCounts = remember(state.messages) {
+                state.messages.mapNotNull { it.threadRootId?.let { rootId -> rootId to it.id } }
+                    .groupBy({ it.first }, { it.second })
+                    .mapValues { it.value.distinct().size }
+            }
+            val lastVisibleReplies = remember(state.messages) {
+                state.messages.filter { it.threadRootId != null }
+                    .groupBy { it.threadRootId }
+                    .mapValues { (_, replies) -> replies.maxByOrNull(ChatMessage::createdAt) }
+            }
+            val threadReplyCount = threadRoot?.let { root ->
+                maxOf(root.replyCount, visibleReplyCounts[root.id] ?: 0)
+            } ?: 0
+            LaunchedEffect(threadRoot?.id) {
+                threadRoot?.let(viewModel::enterThread)
+            }
 
             val pinnedList = state.conversation.pinnedMessages
             val pinnedIds = remember(pinnedList) { pinnedList.map { it.id }.toSet() }
@@ -283,13 +335,15 @@ fun ChatScreen(
             }
 
             LaunchedEffect(isAtTop) {
-                if (isAtTop && !state.isFetchingOlder) viewModel.loadMore()
+                if (threadRootMessageId == null && isAtTop && !state.isFetchingOlder && !isMessageJumpPending) {
+                    viewModel.loadMore()
+                }
             }
 
-            val firstMessageId = state.messages.firstOrNull()?.id
+            val firstMessageId = displayedMessages.firstOrNull()?.id
             LaunchedEffect(firstMessageId) {
-                if (firstMessageId != null) {
-                    val msg = state.messages.first()
+                if (firstMessageId != null && !showMessageSearch && messageNavigation == null) {
+                    val msg = displayedMessages.first()
                     if (isAtBottom || msg.senderId == state.currentUserId) {
                         try {
                             listState.animateScrollToItem(0)
@@ -356,7 +410,8 @@ fun ChatScreen(
                         viewModel.clearPlaylistAddState()
                     },
                     onReact = { emoji -> viewModel.reactToMessage(msg, emoji) },
-                    onReply = { viewModel.setReplyTo(msg) },
+                    showReply = threadRootMessageId == null,
+                    onReply = { onNavigateToThread(state.conversation.id, msg.id) },
                     onForward = { forwardMessage = msg },
                     onSave = { viewModel.saveMessage(msg) },
                     onPin = { viewModel.togglePin(msg) },
@@ -445,7 +500,12 @@ fun ChatScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 // HEADER (colecciona typing/presencia por separado: solo el header recompone)
-                ChatHeader(
+                if (threadRootMessageId != null) {
+                    ThreadHeader(
+                        subtitle = if (isGroup) state.conversation.name ?: "Grupo" else "Mensaje directo",
+                        onNavigateBack = onNavigateBack
+                    )
+                } else ChatHeader(
                     conversation = state.conversation,
                     currentUserId = state.currentUserId,
                     isGroup = isGroup,
@@ -459,7 +519,7 @@ fun ChatScreen(
                     onSearch = { showMessageSearch = true },
                     isMessageSearchActive = showMessageSearch,
                     messageSearch = messageSearch,
-                    onMessageSearchQueryChange = viewModel::onMessageSearchQueryChange,
+                    onMessageSearchQueryChange = { viewModel.onMessageSearchQueryChange(it, threadRootMessageId) },
                     onPreviousSearchResult = { viewModel.moveMessageSearchResult(-1) },
                     onNextSearchResult = { viewModel.moveMessageSearchResult(1) },
                     onCloseMessageSearch = {
@@ -470,7 +530,7 @@ fun ChatScreen(
                 )
 
                 // PINNED BAR
-                if (pinnedList.isNotEmpty()) {
+                if (threadRootMessageId == null && pinnedList.isNotEmpty()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -505,13 +565,13 @@ fun ChatScreen(
                                 text = "Mensaje fijado · $senderName",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF818CF8),
+                                color = ChatAccent,
                                 maxLines = 1
                             )
                             Text(
                                 text = pinnedList[safePinnedIndex].text.ifBlank { "Adjunto" },
                                 fontSize = 12.sp,
-                                color = Color(0xFFC7D2FE).copy(alpha = 0.85f),
+                                color = ChatText.copy(alpha = 0.85f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -534,7 +594,7 @@ fun ChatScreen(
                     }
                 }
 
-                state.unreadBoundaryMessageId?.let {
+                state.unreadBoundaryMessageId?.takeIf { threadRootMessageId == null }?.let {
                     Surface(
                         modifier = Modifier.fillMaxWidth().clickable(onClick = viewModel::jumpToUnreadBoundary),
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
@@ -553,8 +613,8 @@ fun ChatScreen(
                 BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().chatBackground()) {
                     val maxBubbleWidth = (maxWidth - 24.dp) * 0.8f
                     // Pre-computar lista de imágenes para el lightbox una sola vez (no en cada burbuja)
-                    val allLightboxItems = remember(state.messages) {
-                        state.messages.flatMap { m ->
+                    val allLightboxItems = remember(displayedMessages) {
+                        displayedMessages.flatMap { m ->
                             m.attachments.filter { it.kind == AttachmentKind.IMAGE }
                                 .map { LightboxItem(it, m.text) }
                         }.reversed()
@@ -568,7 +628,10 @@ fun ChatScreen(
                         }
                     }
                     
-                    val handleLongPress: (ChatMessage) -> Unit = remember { { msg -> selectedMessageForActions = msg } }
+                    val handleLongPress: (ChatMessage) -> Unit = remember(viewModel) { { msg ->
+                        viewModel.clearSavedFocus(msg.id)
+                        selectedMessageForActions = msg
+                    } }
                     val handleRetry: (ChatMessage) -> Unit = remember(viewModel) { { msg -> viewModel.retryMessage(msg) } }
                     val handleReact: (ChatMessage, String) -> Unit = remember(viewModel) { { msg, emoji -> viewModel.reactToMessage(msg, emoji) } }
                     val handleOpenFile: (ChatAttachment, File) -> Unit = remember(context) { { att, file -> AttachmentActions.openLocalFile(context, file, att.mimeType) } }
@@ -579,42 +642,46 @@ fun ChatScreen(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
                         reverseLayout = true,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 16.dp)
+                        verticalArrangement = Arrangement.Top,
+                        contentPadding = PaddingValues(vertical = 16.dp)
                     ) {
-                        if (state.isFetchingOlder) {
-                            item(key = "loading") {
-                                Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                                }
-                            }
-                        }
-
-                        if (state.messages.isEmpty()) {
+                        if (displayedMessages.isEmpty()) {
                             item(key = "empty") {
                                 Column(
                                     modifier = Modifier.fillParentMaxSize(),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center
                                 ) {
-                                    Text("Esta es tu conversación con $peerName.", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Slate500)
-                                    Text("Escribe el primer mensaje.", fontSize = 12.sp, color = Slate400)
+                                    if (threadRootMessageId != null) {
+                                        if (state.sendError == null) {
+                                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                            Text("Cargando hilo…", fontSize = 12.sp, color = Slate400)
+                                        } else {
+                                            Text("No se pudo abrir este hilo.", fontSize = 14.sp, color = Slate500)
+                                            TextButton(onClick = { viewModel.navigateToMessage(threadRootMessageId) }) {
+                                                Text("Reintentar")
+                                            }
+                                        }
+                                    } else {
+                                        Text("Esta es tu conversación con $peerName.", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Slate500)
+                                        Text("Escribe el primer mensaje.", fontSize = 12.sp, color = Slate400)
+                                    }
                                 }
                             }
                         } else {
                             itemsIndexed(
-                                state.messages,
+                                displayedMessages,
                                 key = { _, it -> it.id },
                                 contentType = { index, _ ->
-                                    val next = state.messages.getOrNull(index + 1)
-                                    if (next == null || !sameDay(state.messages[index].createdAt, next.createdAt)) {
+                                    val next = displayedMessages.getOrNull(index + 1)
+                                    if (next == null || !sameDay(displayedMessages[index].createdAt, next.createdAt)) {
                                         "day"
                                     } else {
                                         "message"
                                     }
                                 }
                             ) { index, message ->
-                                val next = state.messages.getOrNull(index + 1)
+                                val next = displayedMessages.getOrNull(index + 1)
                                 val showDay = next == null || !sameDay(message.createdAt, next.createdAt)
 
                                 MessageBubble(
@@ -626,21 +693,37 @@ fun ChatScreen(
                                     showAuthor = isGroup && message.senderId != state.currentUserId,
                                     authorName = state.conversation.members[message.senderId]?.displayName,
                                     isPinned = message.id in pinnedIds,
-                                    highlighted = highlightedId == message.id,
+                                    highlighted = highlightedId == message.id || (showMessageSearch &&
+                                        messageSearch.results.getOrNull(messageSearch.currentIndex)?.id == message.id),
                                     savedFocused = savedFocusMessageId == message.id,
+                                    menuSelected = selectedMessageForActions?.id == message.id,
                                     audioController = audioController,
                                     mediaManager = mediaManager,
                                     onLongPress = handleLongPress,
-                                    onTap = { tapped -> viewModel.clearSavedFocus(tapped.id) },
                                     onRetry = handleRetry,
                                     onReact = handleReact,
                                     onOpenFile = handleOpenFile,
                                     onImageClick = handleImageClick,
                                     onReplyClick = handleReplyClick,
-                                    onLinkClick = handleLinkClick
+                                    onLinkClick = handleLinkClick,
+                                    threadMode = threadRootMessageId != null || maxOf(message.replyCount, visibleReplyCounts[message.id] ?: 0) > 0,
+                                    replyCount = if (threadRootMessageId == null) maxOf(message.replyCount, visibleReplyCounts[message.id] ?: 0) else 0,
+                                    lastReplySenderId = lastVisibleReplies[message.id]?.senderId,
+                                    onOpenThread = { onNavigateToThread(state.conversation.id, it) }
                                 )
 
-                                if (message.id == state.unreadBoundaryMessageId) {
+                                if (threadRootMessageId != null && message.id == threadRootMessageId) {
+                                    HorizontalDivider(modifier = Modifier.padding(top = 8.dp), color = Slate200)
+                                    Text(
+                                        "$threadReplyCount ${if (threadReplyCount == 1) "respuesta" else "respuestas"}",
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
+                                        color = Slate500,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                if (threadRootMessageId == null && message.id == state.unreadBoundaryMessageId) {
                                     Box(
                                         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                                         contentAlignment = Alignment.Center
@@ -657,7 +740,7 @@ fun ChatScreen(
                                     }
                                 }
 
-                                if (showDay) {
+                                if (threadRootMessageId == null && showDay) {
                                     Box(
                                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                         contentAlignment = Alignment.Center
@@ -676,7 +759,16 @@ fun ChatScreen(
                             }
                         }
 
-                        item(key = "typing") {
+                        // Append the older-history indicator so message indices never shift while loading.
+                        if (state.isFetchingOlder) {
+                            item(key = "loading") {
+                                Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                }
+                            }
+                        }
+
+                        if (threadRootMessageId == null) item(key = "typing") {
                             TypingIndicatorItem(
                                 ephemeralState = viewModel.ephemeralState,
                                 isGroup = isGroup,
@@ -704,11 +796,11 @@ fun ChatScreen(
                 }
 
                 // REPLY / EDIT BAR
-                state.replyTo?.let { reply ->
+                if (threadRootMessageId == null) state.replyTo?.let { reply ->
                     PinnedActionBar(
                         color = Indigo100.copy(alpha = 0.7f),
-                        labelColor = Color(0xFFA5B4FC),
-                        icon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = Color(0xFFA5B4FC), modifier = Modifier.size(14.dp)) },
+                        labelColor = ChatAccent,
+                        icon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = ChatAccent, modifier = Modifier.size(14.dp)) },
                         title = "Respondiendo a ${if (isGroup) (state.conversation.name ?: "Grupo") else peerName}",
                         preview = reply.text,
                         onClose = { viewModel.clearReplyTo() }
@@ -761,16 +853,15 @@ fun ChatScreen(
                 }
 
                 // INPUT
-                val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-                val inputBg = if (isDark) Color(0xFF1E293B) else Slate50
-                val inputBorder = if (isDark) Color(0xFF334155) else Slate200
-                val inputTextColor = if (isDark) Color(0xFFF1F5F9) else Slate800
-                val inputPlaceholderColor = if (isDark) Color(0xFF94A3B8) else Slate400
+                val inputBg = ChatSurfaceRaised
+                val inputBorder = ChatDivider
+                val inputTextColor = ChatText
+                val inputPlaceholderColor = ChatMuted
                 val hasComposedContent = inputValue.text.isNotBlank() || drafts.isNotEmpty()
                 val canSend = hasComposedContent || isRecordingVoice
                 val isEditing = state.editing != null
 
-                Row(
+                if (threadRootMessageId == null || threadRoot != null) Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surface)
@@ -825,7 +916,7 @@ fun ChatScreen(
                             decorationBox = { innerTextField ->
                                 if (inputValue.text.isEmpty()) {
                                     Text(
-                                        text = if (state.editing != null) "Editar mensaje…" else "Escribe un mensaje…",
+                                        text = if (state.editing != null) "Editar mensaje…" else if (threadRootMessageId != null) "Agregar una respuesta…" else "Escribe un mensaje…",
                                         color = inputPlaceholderColor,
                                         fontSize = 15.sp
                                     )
@@ -875,8 +966,7 @@ fun ChatScreen(
                             .clip(CircleShape)
                             .background(
                                 if (canSend) Indigo600
-                                else if (isDark) Color(0xFF334155)
-                                else Color(0xFFE2E8F0)
+                                else ChatSurfaceRaised
                             )
                     ) {
                         Icon(
@@ -892,7 +982,7 @@ fun ChatScreen(
                                 hasComposedContent -> "Enviar mensaje"
                                 else -> "Grabar nota de voz"
                             },
-                            tint = if (canSend) Color.White else Slate500,
+                            tint = if (canSend) MaterialTheme.colorScheme.onPrimary else Slate500,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -1043,6 +1133,30 @@ private fun animateTypingDot(delayMs: Int): State<Float> {
         ),
         label = "dotAlpha$delayMs"
     )
+}
+
+@Composable
+private fun ThreadHeader(subtitle: String, onNavigateBack: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 1.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onNavigateBack, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver al chat")
+            }
+            Column(modifier = Modifier.padding(start = 4.dp)) {
+                Text("Hilo", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(subtitle, color = Slate500, fontSize = 12.sp)
+            }
+        }
+    }
 }
 
 @Composable
@@ -1200,16 +1314,28 @@ private fun MessageSearchHeader(
             modifier = Modifier.weight(1f).focusRequester(searchFocusRequester),
             singleLine = true,
             placeholder = { Text("Buscar mensajes") },
+            supportingText = if (state.query.trim().length >= 2) {
+                {
+                    Text(
+                        when {
+                            state.isSearching -> "Buscando…"
+                            state.error != null -> "No se pudo completar la búsqueda"
+                            state.results.isEmpty() -> "Sin coincidencias"
+                            else -> "${state.currentIndex + 1} de ${state.results.size}"
+                        }
+                    )
+                }
+            } else null,
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
         )
         if (state.query.isNotBlank()) {
             if (state.isSearching) {
                 CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(20.dp), strokeWidth = 2.dp)
             }
-            IconButton(onClick = onPrevious, enabled = state.results.isNotEmpty()) {
+            IconButton(onClick = onPrevious, enabled = !state.isSearching && state.results.size > 1) {
                 Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Resultado anterior")
             }
-            IconButton(onClick = onNext, enabled = state.results.isNotEmpty()) {
+            IconButton(onClick = onNext, enabled = !state.isSearching && state.results.size > 1) {
                 Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Resultado siguiente")
             }
         }

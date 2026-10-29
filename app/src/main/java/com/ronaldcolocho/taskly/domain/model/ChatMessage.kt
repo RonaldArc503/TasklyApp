@@ -56,6 +56,8 @@ data class ChatMessage(
     val edited: Boolean = false,
     val editedAt: Long? = null,
     val replyTo: ReplyInfo? = null,
+    val threadRootId: String? = null,
+    val replyCount: Int = 0,
     val reactions: Map<String, String> = emptyMap(),
     val attachments: List<ChatAttachment> = emptyList(),
     val mentions: List<String> = emptyList(),

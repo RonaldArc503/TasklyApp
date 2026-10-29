@@ -9,10 +9,11 @@ import java.io.File
 interface IMediaCacheRepository {
     fun isDownloaded(mediaId: String): Boolean
     fun fileFor(mediaId: String, kind: MediaKind): File?
+    suspend fun refreshFile(mediaId: String, kind: MediaKind): File?
     suspend fun cacheLocalFile(mediaId: String, sourceFile: File, kind: MediaKind): File?
     fun registerDownloadedAudio(reference: CachedAudioReference)
     fun registerDownloadedAudios(references: Collection<CachedAudioReference>)
-    suspend fun downloadedAudioReferences(): List<CachedAudioReference>
+    suspend fun downloadedAudioReferences(includeMissing: Boolean = false): List<CachedAudioReference>
 
     /**
      * Descarga una sola vez por [mediaId] (single-flight): los llamadores

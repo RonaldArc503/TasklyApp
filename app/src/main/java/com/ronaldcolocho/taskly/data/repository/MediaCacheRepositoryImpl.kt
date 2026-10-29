@@ -98,6 +98,14 @@ class MediaCacheRepositoryImpl @Inject constructor(
         return result
     }
 
+    override suspend fun refreshFile(mediaId: String, kind: MediaKind): File? = withContext(Dispatchers.IO) {
+        val file = File(categoryDir(kind), fileName(mediaId, kind))
+        val actual = file.takeIf { it.isFile && it.length() > 0 }
+        resolvedFiles[mediaId] = actual ?: notFoundSentinel
+        if (actual == null) downloadedIds.remove(mediaId) else downloadedIds.add(mediaId)
+        actual
+    }
+
     override suspend fun cacheLocalFile(mediaId: String, sourceFile: File, kind: MediaKind): File? =
         withContext(Dispatchers.IO) {
             if (!sourceFile.exists() || sourceFile.length() <= 0) return@withContext null
@@ -174,10 +182,10 @@ class MediaCacheRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun downloadedAudioReferences(): List<CachedAudioReference> = withContext(Dispatchers.IO) {
+    override suspend fun downloadedAudioReferences(includeMissing: Boolean): List<CachedAudioReference> = withContext(Dispatchers.IO) {
         readAudioCatalog().filter { reference ->
             val file = File(categoryDir(MediaKind.AUDIO), fileName(reference.mediaId, MediaKind.AUDIO))
-            file.exists() && file.length() > 0
+            includeMissing || (file.exists() && file.length() > 0)
         }.sortedByDescending { it.downloadedAt }
     }
 

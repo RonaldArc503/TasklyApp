@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MusicNote
@@ -60,6 +61,7 @@ import com.ronaldcolocho.taskly.ui.theme.Slate400
 import com.ronaldcolocho.taskly.ui.theme.Slate500
 import com.ronaldcolocho.taskly.ui.theme.Slate600
 import com.ronaldcolocho.taskly.ui.theme.Slate800
+import com.ronaldcolocho.taskly.util.DownloadedSongResolver
 import java.io.File
 
 @Composable
@@ -210,7 +212,10 @@ private fun SearchMode(
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onNavigateBack) {
+            IconButton(onClick = {
+                onQueryChange("")
+                onNavigateBack()
+            }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
             }
             Column(modifier = Modifier.padding(start = 8.dp)) {
@@ -245,6 +250,13 @@ private fun SearchMode(
                                 shape = RoundedCornerShape(12.dp),
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                 keyboardActions = KeyboardActions(onSearch = { onSubmitSearch() }),
+                                trailingIcon = {
+                                    if (uiState.query.isNotEmpty()) {
+                                        IconButton(onClick = { onQueryChange("") }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Limpiar búsqueda", tint = Slate400)
+                                        }
+                                    }
+                                },
                                 colors = OutlinedTextFieldDefaults.colors(
                                     unfocusedBorderColor = Slate200,
                                     focusedBorderColor = Indigo600
@@ -530,7 +542,10 @@ private fun DownloadedSongCard(
     onSaveClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
-    val fileExists = remember(song.localPath) { File(song.localPath).exists() }
+    val context = LocalContext.current
+    val fileExists = remember(song.localPath, song.id) {
+        DownloadedSongResolver.resolveSongFile(context, song) != null
+    }
 
     Surface(
         shape = RoundedCornerShape(16.dp),

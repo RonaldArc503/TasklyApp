@@ -30,6 +30,7 @@ import com.ronaldcolocho.taskly.domain.usecase.chat.GetRecentConversationsUseCas
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetMessageWindowByIdUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetOlderMessagesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetNewerMessagesUseCase
+import com.ronaldcolocho.taskly.domain.usecase.chat.GetThreadMessagesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.GetRecentMessagesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.EnsureMessageSearchIndexesUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.PinMessageUseCase
@@ -51,6 +52,7 @@ import com.ronaldcolocho.taskly.domain.repository.ISettingsRepository
 import com.ronaldcolocho.taskly.domain.repository.IMusicRepository
 import com.ronaldcolocho.taskly.domain.util.extractMentions
 import com.ronaldcolocho.taskly.domain.util.ChatSearchNormalizer
+import com.ronaldcolocho.taskly.domain.util.searchChatMessages
 import com.ronaldcolocho.taskly.domain.util.splitLinks
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import com.ronaldcolocho.taskly.media.AutoDownloadAttachment
@@ -59,8 +61,10 @@ import com.ronaldcolocho.taskly.util.FileUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -69,6 +73,7 @@ import java.util.Date
 import java.util.UUID
 import java.io.File
 import javax.inject.Inject
+import kotlin.coroutines.coroutineContext
 
 data class AttachmentDraft(
     val id: String,
@@ -82,6 +87,17 @@ data class AttachmentDraft(
     val error: String? = null
 )
 
+/**
+ * Keeps the composition context while attachments are being uploaded. A failed
+ * upload must be retried through the attachment pipeline, never by sending the
+ * temporary text-only message that was used as its optimistic placeholder.
+ */
+private data class DraftSendContext(
+    val text: String,
+    val replyTo: ReplyInfo?,
+    val mentions: List<String>
+)
+
 enum class DraftStatus { READY, UPLOADING, DONE, ERROR }
 
 internal data class ChatEphemeralState(
@@ -92,7 +108,8 @@ internal data class ChatEphemeralState(
 data class MessageNavigationRequest(
     val messageId: String,
     val requestId: Long,
-    val keepSavedFocus: Boolean = false
+    val keepSavedFocus: Boolean = false,
+    val isSearchResult: Boolean = false
 )
 
 data class MessageSearchUiState(
@@ -128,6 +145,7 @@ class ChatViewModel @Inject constructor(
     private val getRecentMessagesUseCase: GetRecentMessagesUseCase,
     private val getOlderMessagesUseCase: GetOlderMessagesUseCase,
     private val getNewerMessagesUseCase: GetNewerMessagesUseCase,
+    private val getThreadMessagesUseCase: GetThreadMessagesUseCase,
     private val getMessageWindowByIdUseCase: GetMessageWindowByIdUseCase,
     private val searchMessagesUseCase: SearchMessagesUseCase,
     private val ensureMessageSearchIndexesUseCase: EnsureMessageSearchIndexesUseCase,
@@ -160,6 +178,7 @@ class ChatViewModel @Inject constructor(
     private val _historyMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     private val _localPendingMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     private val _replyTo = MutableStateFlow<ChatMessage?>(null)
+    private val _threadRoot = MutableStateFlow<ChatMessage?>(null)
     private val _editing = MutableStateFlow<ChatMessage?>(null)
     private val _sendError = MutableStateFlow<String?>(null)
     private val _messageNavigation = MutableStateFlow<MessageNavigationRequest?>(null)
@@ -183,8 +202,11 @@ class ChatViewModel @Inject constructor(
     private var lastReadAtSent = 0L
     private var readCursorJob: Job? = null
     private var messageSearchJob: Job? = null
+    private var messageNavigationJob: Job? = null
     private val indexedMessageIds = mutableSetOf<String>()
+    private val loadedThreadIds = mutableSetOf<String>()
     private val voiceRetryFiles = mutableMapOf<String, Pair<File, Int>>()
+    private val failedDraftSends = mutableMapOf<String, DraftSendContext>()
 
     private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.Loading)
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -212,7 +234,9 @@ class ChatViewModel @Inject constructor(
 
     init {
         loadData()
-        savedStateHandle.get<String>("messageId")?.takeIf(String::isNotBlank)?.let { messageId ->
+        (savedStateHandle.get<String>("messageId")
+            ?: savedStateHandle.get<String>("threadRootId"))
+            ?.takeIf(String::isNotBlank)?.let { messageId ->
             val keepSavedFocus = savedStateHandle.get<Boolean>("focusSaved") == true
             viewModelScope.launch {
                 delay(100)
@@ -439,45 +463,63 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun onMessageSearchQueryChange(query: String) {
-        _messageSearch.value = MessageSearchUiState(query = query)
+    fun onMessageSearchQueryChange(query: String, threadRootId: String? = null) {
         messageSearchJob?.cancel()
+        cancelSearchNavigation()
         val normalized = ChatSearchNormalizer.normalize(query)
+        _messageSearch.value = MessageSearchUiState(query = query, isSearching = normalized.length >= 2)
         if (normalized.length < 2) return
         messageSearchJob = viewModelScope.launch {
             delay(MESSAGE_SEARCH_DEBOUNCE_MS)
-            _messageSearch.value = _messageSearch.value.copy(isSearching = true)
-            val loaded = (_uiState.value as? ChatUiState.Success)?.messages.orEmpty().filter { message ->
-                ChatSearchNormalizer.matches(message.text, normalized) ||
-                    message.attachments.any { ChatSearchNormalizer.matches(it.name, normalized) }
-            }
-            val remote = runCatching {
+            var searchError: String? = null
+            val remote = try {
                 searchMessagesUseCase(convId, uid.orEmpty(), normalized, MESSAGE_SEARCH_LIMIT)
-            }.getOrElse { error ->
-                _messageSearch.value = _messageSearch.value.copy(error = error.message)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                searchError = error.message
                 emptyList()
             }
-            val results = (loaded + remote).associateBy(ChatMessage::id).values.sortedByDescending(ChatMessage::createdAt)
-            _messageSearch.value = _messageSearch.value.copy(
+            val deletedIds = getDeletedMessageIdsUseCase().first()
+            coroutineContext.ensureActive()
+            val results = searchChatMessages(
+                loaded = (_uiState.value as? ChatUiState.Success)?.messages.orEmpty(),
+                remote = remote,
+                query = normalized,
+                threadRootId = threadRootId,
+                deletedIds = deletedIds
+            )
+            _messageSearch.value = MessageSearchUiState(
+                query = query,
                 results = results,
                 currentIndex = 0,
-                isSearching = false
+                isSearching = false,
+                error = searchError
             )
-            results.firstOrNull()?.let { navigateToMessage(it.id) }
+            results.firstOrNull()?.let { navigateToMessage(it.id, isSearchResult = true) }
         }
     }
 
     fun moveMessageSearchResult(delta: Int) {
         val state = _messageSearch.value
-        if (state.results.isEmpty()) return
+        if (state.isSearching || state.results.isEmpty()) return
         val next = (state.currentIndex + delta).mod(state.results.size)
+        if (next == state.currentIndex) return
         _messageSearch.value = state.copy(currentIndex = next)
-        navigateToMessage(state.results[next].id)
+        navigateToMessage(state.results[next].id, isSearchResult = true)
     }
 
     fun clearMessageSearch() {
         messageSearchJob?.cancel()
+        cancelSearchNavigation()
         _messageSearch.value = MessageSearchUiState()
+    }
+
+    private fun cancelSearchNavigation() {
+        if (_messageNavigation.value?.isSearchResult == true) {
+            messageNavigationJob?.cancel()
+            _messageNavigation.value = null
+        }
     }
 
     fun jumpToUnreadBoundary() {
@@ -549,24 +591,41 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun navigateToMessage(messageId: String, keepSavedFocus: Boolean = false) {
+    fun navigateToMessage(
+        messageId: String,
+        keepSavedFocus: Boolean = false,
+        isSearchResult: Boolean = false
+    ) {
         val currentUserId = uid ?: return
         if (messageId.isBlank()) return
-        viewModelScope.launch {
+        messageNavigationJob?.cancel()
+        val request = MessageNavigationRequest(
+            messageId = messageId,
+            requestId = System.nanoTime(),
+            keepSavedFocus = keepSavedFocus,
+            isSearchResult = isSearchResult
+        )
+        // Reserve navigation before fetching so automatic scrolling cannot compete with the jump.
+        _messageNavigation.value = request
+        messageNavigationJob = viewModelScope.launch {
             val currentMessages = (_uiState.value as? ChatUiState.Success)?.messages.orEmpty()
             if (currentMessages.none { it.id == messageId }) {
-                val window = runCatching {
+                val window = try {
                     getMessageWindowByIdUseCase(
                         convId = convId,
                         currentUserId = currentUserId,
                         messageId = messageId
                     )
-                }.getOrElse { error ->
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
                     _sendError.value = error.message ?: "No se pudo cargar el mensaje."
                     emptyList()
                 }
+                coroutineContext.ensureActive()
                 if (window.none { it.id == messageId }) {
                     _sendError.value = "El mensaje ya no esta disponible."
+                    consumeMessageNavigation(request.requestId)
                     return@launch
                 }
                 _historyMessages.update { history ->
@@ -577,11 +636,6 @@ class ChatViewModel @Inject constructor(
                 }
             }
             if (keepSavedFocus) _savedFocusMessageId.value = messageId
-            _messageNavigation.value = MessageNavigationRequest(
-                messageId = messageId,
-                requestId = System.nanoTime(),
-                keepSavedFocus = keepSavedFocus
-            )
         }
     }
 
@@ -603,8 +657,7 @@ class ChatViewModel @Inject constructor(
         val clean = text.trim()
         val state = _uiState.value as? ChatUiState.Success ?: return
         val mentions = if (state.conversation.isGroup) extractMentions(clean, state.conversation.members) else emptyList()
-        val reply = _replyTo.value?.let { ReplyInfo(it.id, it.text, it.senderId) }
-        _replyTo.value = null
+        val reply = activeReplyInfo()
 
         val newMessage = ChatMessage(
             id = generateFirestoreId(),
@@ -613,6 +666,7 @@ class ChatViewModel @Inject constructor(
             status = MessageStatus.SENDING,
             createdAt = System.currentTimeMillis(),
             replyTo = reply,
+            threadRootId = _threadRoot.value?.id,
             mentions = mentions
         )
         _localPendingMessages.value += newMessage
@@ -625,16 +679,26 @@ class ChatViewModel @Inject constructor(
         val clean = text.trim()
         val state = _uiState.value as? ChatUiState.Success ?: return
         val mentions = if (state.conversation.isGroup) extractMentions(clean, state.conversation.members) else emptyList()
-        val reply = _replyTo.value?.let { ReplyInfo(it.id, it.text, it.senderId) }
-        _replyTo.value = null
+        val reply = activeReplyInfo()
+        startDraftSend(
+            senderId = id,
+            sendContext = DraftSendContext(text = clean, replyTo = reply, mentions = mentions)
+        )
+    }
+
+    private fun startDraftSend(senderId: String, sendContext: DraftSendContext) {
+        val clean = sendContext.text
+        val mentions = sendContext.mentions
+        val reply = sendContext.replyTo
 
         val newMessage = ChatMessage(
             id = generateFirestoreId(),
-            senderId = id,
+            senderId = senderId,
             text = clean,
             status = MessageStatus.SENDING,
             createdAt = System.currentTimeMillis(),
             replyTo = reply,
+            threadRootId = _threadRoot.value?.id,
             mentions = mentions
         )
         _localPendingMessages.value += newMessage
@@ -658,7 +722,7 @@ class ChatViewModel @Inject constructor(
                 val file = FileUtil.getFileFromUri(context, d.uri)
                 val mime = context.contentResolver.getType(d.uri) ?: "application/octet-stream"
                 val result = if (file != null) {
-                    uploadAttachmentUseCase(file, mime, id, onProgress = { p ->
+                    uploadAttachmentUseCase(file, mime, senderId, onProgress = { p ->
                         _drafts.update { list ->
                             list.map { if (it.id == d.id) it.copy(progress = p) else it }
                         }
@@ -689,6 +753,7 @@ class ChatViewModel @Inject constructor(
             }
 
             if (failed) {
+                failedDraftSends[newMessage.id] = sendContext
                 _localPendingMessages.update { list ->
                     list.map { if (it.id == newMessage.id) it.copy(status = MessageStatus.FAILED) else it }
                 }
@@ -730,6 +795,7 @@ class ChatViewModel @Inject constructor(
                 }
             }
             _drafts.value = emptyList()
+            failedDraftSends.remove(newMessage.id)
             // Preserve the selected order on the server as well.
             for (message in finalMessages) {
                 sendPendingMessage(message)
@@ -772,7 +838,10 @@ class ChatViewModel @Inject constructor(
 
     fun onTextChanged(text: String) {
         val id = uid ?: return
-        if (text.isBlank() || _editing.value != null) return
+        if (text.isBlank() || _editing.value != null) {
+            clearTyping()
+            return
+        }
         val t = System.currentTimeMillis()
         if (t - lastTypingSent < 2000) return
         lastTypingSent = t
@@ -806,6 +875,14 @@ class ChatViewModel @Inject constructor(
     }
 
     fun retryMessage(message: ChatMessage) {
+        val failedDraft = failedDraftSends.remove(message.id)
+        if (failedDraft != null) {
+            _localPendingMessages.update { messages -> messages.filterNot { it.id == message.id } }
+            val currentUserId = uid ?: return
+            clearTyping()
+            startDraftSend(currentUserId, failedDraft)
+            return
+        }
         val retrying = message.copy(status = MessageStatus.SENDING)
         _localPendingMessages.value = _localPendingMessages.value.map {
             if (it.id == message.id) retrying else it
@@ -822,7 +899,9 @@ class ChatViewModel @Inject constructor(
             senderId = currentUserId,
             text = "",
             status = MessageStatus.SENDING,
-            createdAt = System.currentTimeMillis()
+            createdAt = System.currentTimeMillis(),
+            replyTo = activeReplyInfo(),
+            threadRootId = _threadRoot.value?.id
         )
         voiceRetryFiles[message.id] = file to durationSeconds
         _localPendingMessages.value += message
@@ -861,11 +940,47 @@ class ChatViewModel @Inject constructor(
     // ---- Acciones del mensaje ----
 
     fun setReplyTo(message: ChatMessage?) {
+        _threadRoot.value = null
         _editing.value = null
         _replyTo.value = message
     }
 
+    fun enterThread(root: ChatMessage) {
+        _editing.value = null
+        _replyTo.value = null
+        _threadRoot.value = root
+        loadThreadMessages(root.id)
+    }
+
+    fun exitThread() {
+        _threadRoot.value = null
+        _replyTo.value = null
+    }
+
+    private fun loadThreadMessages(rootId: String) {
+        val currentUserId = uid ?: return
+        if (!loadedThreadIds.add(rootId)) return
+        viewModelScope.launch {
+            val replies = runCatching {
+                getThreadMessagesUseCase(convId, currentUserId, rootId, THREAD_MESSAGE_LIMIT)
+            }.getOrElse { error ->
+                loadedThreadIds.remove(rootId)
+                _sendError.value = error.message ?: "No se pudo cargar el hilo"
+                emptyList()
+            }
+            if (replies.isNotEmpty()) {
+                _historyMessages.update { history ->
+                    (history + replies)
+                        .associateBy(ChatMessage::id)
+                        .values
+                        .sortedByDescending(ChatMessage::createdAt)
+                }
+            }
+        }
+    }
+
     fun clearReplyTo() {
+        _threadRoot.value = null
         _replyTo.value = null
     }
 
@@ -897,11 +1012,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun deleteMessage(message: ChatMessage) {
-        _localPendingMessages.value = _localPendingMessages.value.filter { it.id != message.id }
-        _historyMessages.value = _historyMessages.value.filter { it.id != message.id }
-        val id = uid ?: return
         viewModelScope.launch {
-            deleteMessageForMeUseCase(message.id)
             val pinned = (_uiState.value as? ChatUiState.Success)
                 ?.conversation?.pinnedMessages?.any { it.id == message.id } == true
             if (pinned) unpinMessageUseCase(convId, message.id)
@@ -1132,12 +1243,21 @@ class ChatViewModel @Inject constructor(
         const val MESSAGE_SEARCH_LIMIT = 100L
         const val READ_CURSOR_DEBOUNCE_MS = 600L
         const val FORWARD_CONVERSATION_LIMIT = 100L
+        const val THREAD_MESSAGE_LIMIT = 250L
     }
 
     override fun onCleared() {
+        clearTyping()
         voiceRetryFiles.values.forEach { (file, _) -> file.delete() }
         voiceRetryFiles.clear()
+        failedDraftSends.clear()
         super.onCleared()
+    }
+
+    private fun activeReplyInfo(): ReplyInfo? {
+        val target = _threadRoot.value ?: _replyTo.value
+        if (_threadRoot.value == null) _replyTo.value = null
+        return target?.let { ReplyInfo(it.id, it.text, it.senderId) }
     }
 }
 

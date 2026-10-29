@@ -35,14 +35,17 @@ import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.domain.util.formatDuration
 import com.ronaldcolocho.taskly.di.MediaEntryPoint
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
-import com.ronaldcolocho.taskly.ui.theme.Indigo600
+import com.ronaldcolocho.taskly.ui.screen.music.getTrackPalette
+import com.ronaldcolocho.taskly.ui.theme.ChatDivider
+import com.ronaldcolocho.taskly.ui.theme.ChatMuted
+import com.ronaldcolocho.taskly.ui.theme.ChatText
 import dagger.hilt.android.EntryPointAccessors
 
-private val Slate200 = Color(0xFF334155)
-private val Slate400 = Color(0xFF94A3B8)
-private val Slate500 = Color(0xFF94A3B8)
-private val Slate600 = Color(0xFF94A3B8)
-private val Slate800 = Color(0xFFF1F5F9)
+private val Slate200 = ChatDivider
+private val Slate400 = ChatMuted
+private val Slate500 = ChatMuted
+private val Slate600 = ChatMuted
+private val Slate800 = ChatText
 
 @Composable
 fun rememberAudioPlayerController(): AudioPlayerController {
@@ -71,6 +74,12 @@ fun AudioPlayerBar(
     val track = state.currentTrack ?: return
     val pct = if (state.durationMs > 0) (state.currentTimeMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f
 
+    val paletteOffset by controller.paletteOffset.collectAsStateWithLifecycle()
+    val trackPalette = remember(track.id, paletteOffset) {
+        getTrackPalette(track, offset = paletteOffset)
+    }
+    val accentColor = trackPalette.primary
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -87,17 +96,17 @@ fun AudioPlayerBar(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(Indigo600.copy(alpha = 0.15f))
+                        .background(accentColor.copy(alpha = 0.15f))
                         .clickable { onOpenPlayer?.invoke() ?: controller.toggleCurrent() },
                     contentAlignment = Alignment.Center
                 ) {
                     if (state.playing) {
-                        EqBars(color = Indigo600)
+                        EqBars(color = accentColor)
                     } else {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = null,
-                            tint = Indigo600,
+                            tint = accentColor,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -134,7 +143,7 @@ fun AudioPlayerBar(
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
-                            .background(Indigo600)
+                            .background(accentColor)
                     ) {
                         Icon(
                             imageVector = if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -166,7 +175,7 @@ fun AudioPlayerBar(
                     modifier = Modifier
                         .fillMaxWidth(pct)
                         .fillMaxHeight()
-                        .background(Indigo600)
+                        .background(accentColor)
                 )
             }
         }

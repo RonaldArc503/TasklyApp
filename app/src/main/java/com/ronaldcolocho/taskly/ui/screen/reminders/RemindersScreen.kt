@@ -56,6 +56,7 @@ fun RemindersScreen(
     var editingReminder by remember { mutableStateOf<Reminder?>(null) }
     var showCompleted by remember { mutableStateOf(false) }
     var pendingDeletion by remember { mutableStateOf<Reminder?>(null) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -83,7 +84,16 @@ fun RemindersScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     item {
-                        ReminderHeaderStats(state.items)
+                        ReminderHeaderStats(
+                            items = state.items,
+                            showDiagnostics = showDiagnostics,
+                            onToggleDiagnostics = { showDiagnostics = !showDiagnostics }
+                        )
+                    }
+                    if (showDiagnostics) {
+                        item {
+                            ReminderPermissionsCard(onRefresh = { viewModel.refreshAlarms() })
+                        }
                     }
                     item {
                         TabRow(selectedTabIndex = if (showCompleted) 1 else 0) {
@@ -113,7 +123,7 @@ fun RemindersScreen(
                                 item = reminder,
                                 highlighted = reminder.id == highlightReminderId,
                                 onUpdateDate = { newDate -> viewModel.updateDueDate(reminder.id, newDate) },
-                                onRestart = { viewModel.updateDueDate(reminder.id, nextMonthDueDate(reminder.dueDate)) },
+                                onSnooze = { minutes -> viewModel.snoozeReminder(reminder.id, minutes) },
                                 onUploadReceipt = { file, kind -> viewModel.uploadReceipt(reminder.id, file, kind) },
                                 onRemoveReceipt = { r -> viewModel.removeReceipt(reminder.id, r) },
                                 onLongClick = { editingReminder = reminder },
@@ -152,17 +162,31 @@ fun RemindersScreen(
 }
 
 @Composable
-fun ReminderHeaderStats(items: List<Reminder>) {
+fun ReminderHeaderStats(
+    items: List<Reminder>,
+    showDiagnostics: Boolean,
+    onToggleDiagnostics: () -> Unit
+) {
     val overdue = items.count { it.urgency == Urgency.OVERDUE }
     val red = items.count { it.urgency == Urgency.RED }
     val orange = items.count { it.urgency == Urgency.ORANGE }
 
-    Column {
-        if (overdue > 0 || red > 0 || orange > 0) {
-            Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (overdue > 0) BadgeChip("$overdue vencidos", Color(0xFFFEE2E2), Color(0xFFB91C1C))
                 if (red > 0) BadgeChip("$red por vencer", Color(0xFFFEE2E2), Color(0xFFB91C1C))
                 if (orange > 0) BadgeChip("$orange próximos", Color(0xFFFFEDD5), Color(0xFFC2410C))
+            }
+            TextButton(
+                onClick = onToggleDiagnostics,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(if (showDiagnostics) "Ocultar diagnóstico" else "Diagnóstico", fontSize = 12.sp)
             }
         }
     }
@@ -518,7 +542,7 @@ fun ReminderCard(
     item: Reminder,
     highlighted: Boolean = false,
     onUpdateDate: (Long) -> Unit,
-    onRestart: () -> Unit,
+    onSnooze: (Long) -> Unit,
     onUploadReceipt: (File, String) -> Unit,
     onRemoveReceipt: (Receipt) -> Unit,
     onLongClick: () -> Unit,
@@ -590,7 +614,21 @@ fun ReminderCard(
             
             Spacer(modifier = Modifier.height(8.dp))
             
-            BadgeChip(urgencyText, chipBg, chipText)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                BadgeChip(urgencyText, chipBg, chipText)
+                if (item.repeatType != ReminderRepeatType.NONE) {
+                    val repeatLabel = when (item.repeatType) {
+                        ReminderRepeatType.DAILY -> "Diario"
+                        ReminderRepeatType.WEEKLY -> "Semanal"
+                        ReminderRepeatType.MONTHLY -> "Mensual"
+                        ReminderRepeatType.NONE -> ""
+                    }
+                    BadgeChip(repeatLabel, Color(0xFFEEF2FF), Indigo600)
+                }
+                if (item.snoozedUntil > System.currentTimeMillis()) {
+                    BadgeChip("Pospuesto", Color(0xFFFEF3C7), Color(0xFFB45309))
+                }
+            }
             
             Spacer(modifier = Modifier.height(12.dp))
             
@@ -608,14 +646,36 @@ fun ReminderCard(
                     Text(dueDateText, fontSize = 11.sp)
                 }
                 
-                OutlinedButton(
-                    onClick = onRestart,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    modifier = Modifier.height(32.dp)
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Reiniciar", fontSize = 11.sp)
+                if (!item.isCompleted) {
+                    var showSnoozeMenu by remember { mutableStateOf(false) }
+                    Box {
+                        OutlinedButton(
+                            onClick = { showSnoozeMenu = true },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Posponer", fontSize = 11.sp)
+                        }
+                        DropdownMenu(
+                            expanded = showSnoozeMenu,
+                            onDismissRequest = { showSnoozeMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("15 minutos") },
+                                onClick = { onSnooze(15L); showSnoozeMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("1 hora") },
+                                onClick = { onSnooze(60L); showSnoozeMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Mañana a las 9 AM") },
+                                onClick = { onSnooze(24 * 60L); showSnoozeMenu = false }
+                            )
+                        }
+                    }
                 }
                 
                 OutlinedButton(

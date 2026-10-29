@@ -14,10 +14,13 @@ class GetCompletedRemindersUseCase @Inject constructor(private val repo: Reminde
     operator fun invoke(uid: String): Flow<List<Reminder>> = repo.getCompletedReminders(uid)
 }
 
-class CreateReminderUseCase @Inject constructor(private val repo: ReminderRepository) {
+class CreateReminderUseCase @Inject constructor(val repo: ReminderRepository) {
     suspend operator fun invoke(uid: String, title: String, dueDate: Long, hasTime: Boolean, repeatType: ReminderRepeatType = ReminderRepeatType.NONE): Reminder {
         val id = "rem-${System.currentTimeMillis().toString(36)}-${java.util.UUID.randomUUID().toString().take(6)}"
         val now = System.currentTimeMillis()
+        val anchor = if (dueDate > 0L) {
+            java.time.Instant.ofEpochMilli(dueDate).atZone(java.time.ZoneId.systemDefault()).dayOfMonth
+        } else 0
         val reminder = Reminder(
             id = id,
             title = title,
@@ -26,7 +29,8 @@ class CreateReminderUseCase @Inject constructor(private val repo: ReminderReposi
             repeatType = repeatType,
             receipts = emptyList(),
             createdAt = now,
-            updatedAt = now
+            updatedAt = now,
+            anchorDay = anchor
         )
         repo.addReminder(uid, reminder)
         return reminder

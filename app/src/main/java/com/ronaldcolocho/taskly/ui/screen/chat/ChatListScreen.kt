@@ -40,14 +40,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.UserProfile
+import com.ronaldcolocho.taskly.ui.theme.ChatAccent
+import com.ronaldcolocho.taskly.ui.theme.ChatDivider
+import com.ronaldcolocho.taskly.ui.theme.ChatGreen
 import kotlinx.coroutines.flow.distinctUntilChanged
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-// Color palette (local)
-private val Indigo600 = Color(0xFF4F46E5)
-private val Emerald500 = Color(0xFF10B981)
 
 private val AvatarPalette = listOf(
     Color(0xFF6366F1), // Indigo-500
@@ -101,7 +100,7 @@ fun ChatListScreen(
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Header
-        Surface(shadowElevation = 1.dp) {
+        Surface(color = MaterialTheme.colorScheme.surface) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -129,7 +128,7 @@ fun ChatListScreen(
                         Icon(
                             imageVector = Icons.Default.Edit,
                             contentDescription = "Nueva conversacion",
-                            tint = Indigo600
+                            tint = ChatAccent
                         )
                     }
                 }
@@ -139,7 +138,7 @@ fun ChatListScreen(
         when (val state = uiState) {
             is ChatListUiState.Loading -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Indigo600)
+                    CircularProgressIndicator(color = ChatAccent)
                 }
             }
             is ChatListUiState.Error -> {
@@ -161,14 +160,14 @@ fun ChatListScreen(
                                     .size(56.dp)
                                     .clip(RoundedCornerShape(16.dp))
                                     .background(
-                                        Indigo600.copy(alpha = 0.12f)
+                                        ChatAccent.copy(alpha = 0.12f)
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = null,
-                                    tint = Indigo600,
+                                    tint = ChatAccent,
                                     modifier = Modifier.size(28.dp)
                                 )
                             }
@@ -232,6 +231,7 @@ fun ChatListScreen(
                                 onTogglePinned = { viewModel.togglePinned(conv) },
                                 onToggleArchived = { viewModel.toggleArchived(conv) }
                             )
+                            HorizontalDivider(color = ChatDivider.copy(alpha = 0.6f))
                         }
                         if (state.isLoadingMore) {
                             item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
@@ -419,7 +419,7 @@ private fun ConversationItem(
         else -> conv.lastMessage
     }
 
-    val rowBg = if (isSelected) Indigo600.copy(alpha = 0.08f) else Color.Transparent
+    val rowBg = if (isSelected) ChatAccent.copy(alpha = 0.10f) else Color.Transparent
     val timeLabel = remember(conv.lastMessageAt) {
         conv.lastMessageAt.takeIf { it > 0 }?.let(::formatTime)
     }
@@ -473,7 +473,7 @@ private fun ConversationItem(
                         .align(Alignment.BottomEnd)
                         .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
                         .clip(CircleShape)
-                        .background(Emerald500)
+                        .background(ChatGreen)
                 )
             }
         }
@@ -549,12 +549,12 @@ private fun ConversationItem(
                         modifier = Modifier
                             .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
                             .clip(CircleShape)
-                            .background(Indigo600),
+                            .background(ChatAccent),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = if (conv.unreadCount > 99) "99+" else conv.unreadCount.toString(),
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onPrimary,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 5.dp)

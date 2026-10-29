@@ -8,6 +8,7 @@ import com.ronaldcolocho.taskly.domain.model.reminder.Reminder
 sealed interface HomeUiState {
     object Loading : HomeUiState
     data class Success(
+        val currentUserId: String,
         val user: UserProfile?,
         val pendingTasksCount: Int,
         val recentPendingTasks: List<Task>,

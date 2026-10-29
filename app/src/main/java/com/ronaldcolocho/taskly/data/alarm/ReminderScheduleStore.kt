@@ -35,7 +35,8 @@ class ReminderScheduleStore @Inject constructor(
                         repeatType = runCatching {
                             ReminderRepeatType.valueOf(value.optString("repeatType"))
                         }.getOrDefault(ReminderRepeatType.NONE),
-                        snoozedUntil = value.optLong("snoozedUntil")
+                        snoozedUntil = value.optLong("snoozedUntil"),
+                        anchorDay = value.optInt("anchorDay", 0)
                     )
                 )
             }
@@ -45,7 +46,7 @@ class ReminderScheduleStore @Inject constructor(
     @Synchronized
     fun replace(reminders: List<Reminder>) {
         val values = JSONArray()
-        reminders.filter { !it.isCompleted && it.hasTime && it.dueDate > 0L }.forEach { reminder ->
+        reminders.filter { !it.isCompleted && it.dueDate > 0L }.forEach { reminder ->
             values.put(reminder.toJson())
         }
         // The phone may be powered off immediately after the user saves a reminder.
@@ -56,7 +57,7 @@ class ReminderScheduleStore @Inject constructor(
     @Synchronized
     fun upsert(reminder: Reminder) {
         val values = read().filterNot { it.id == reminder.id }.toMutableList()
-        if (!reminder.isCompleted && reminder.hasTime && reminder.dueDate > 0L) values += reminder
+        if (!reminder.isCompleted && reminder.dueDate > 0L) values += reminder
         replace(values)
     }
 
@@ -70,6 +71,7 @@ class ReminderScheduleStore @Inject constructor(
         put("hasTime", hasTime)
         put("repeatType", repeatType.name)
         put("snoozedUntil", snoozedUntil)
+        put("anchorDay", anchorDay)
     }
 
     private companion object {

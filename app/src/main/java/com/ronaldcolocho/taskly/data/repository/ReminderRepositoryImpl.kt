@@ -55,6 +55,7 @@ class ReminderRepositoryImpl @Inject constructor(
             , "completedAt" to reminder.completedAt
             , "repeatType" to reminder.repeatType.name
             , "snoozedUntil" to reminder.snoozedUntil
+            , "anchorDay" to reminder.effectiveAnchorDay
         )
         reminderDoc(uid, reminder.id).set(data).await()
     }
@@ -64,7 +65,21 @@ class ReminderRepositoryImpl @Inject constructor(
             Receipt(it["publicId"] as? String ?: "", it["url"] as? String ?: "", it["name"] as? String ?: "", (it["size"] as? Number)?.toLong() ?: 0L, it["kind"] as? String ?: "")
         }
         val repeat = runCatching { com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.valueOf(doc.getString("repeatType") ?: "NONE") }.getOrDefault(com.ronaldcolocho.taskly.domain.model.reminder.ReminderRepeatType.NONE)
-        return Reminder(doc.id, doc.getString("title") ?: "", doc.getLong("dueDate") ?: 0L, doc.getBoolean("hasTime") ?: false, receipts, doc.getLong("createdAt") ?: 0L, doc.getLong("updatedAt") ?: 0L, doc.getBoolean("isCompleted") ?: false, doc.getLong("completedAt") ?: 0L, repeat, doc.getLong("snoozedUntil") ?: 0L)
+        val anchor = (doc.getLong("anchorDay") ?: 0L).toInt()
+        return Reminder(
+            doc.id,
+            doc.getString("title") ?: "",
+            doc.getLong("dueDate") ?: 0L,
+            doc.getBoolean("hasTime") ?: false,
+            receipts,
+            doc.getLong("createdAt") ?: 0L,
+            doc.getLong("updatedAt") ?: 0L,
+            doc.getBoolean("isCompleted") ?: false,
+            doc.getLong("completedAt") ?: 0L,
+            repeat,
+            doc.getLong("snoozedUntil") ?: 0L,
+            anchor
+        )
     }
 
     override suspend fun updateReminder(uid: String, id: String, patch: Map<String, Any?>) {

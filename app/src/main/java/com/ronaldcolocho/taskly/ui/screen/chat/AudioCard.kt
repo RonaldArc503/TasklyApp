@@ -43,12 +43,18 @@ import com.ronaldcolocho.taskly.domain.util.formatBytes
 import com.ronaldcolocho.taskly.domain.util.formatDuration
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import com.ronaldcolocho.taskly.ui.theme.Emerald500
-import com.ronaldcolocho.taskly.ui.theme.Indigo600
+import com.ronaldcolocho.taskly.ui.theme.ChatAccent as Indigo600
+import com.ronaldcolocho.taskly.ui.theme.ChatAccentContainer
+import com.ronaldcolocho.taskly.ui.theme.ChatDivider
+import com.ronaldcolocho.taskly.ui.theme.ChatMuted
+import com.ronaldcolocho.taskly.ui.theme.ChatOutgoing
+import com.ronaldcolocho.taskly.ui.theme.ChatSurfaceRaised
+import com.ronaldcolocho.taskly.ui.theme.ChatText
 
-private val Slate100 = Color(0xFF1E293B)
-private val Slate300 = Color(0xFF475569)
-private val Slate500 = Color(0xFF94A3B8)
-private val Slate800 = Color(0xFFF1F5F9)
+private val Slate100 = ChatSurfaceRaised
+private val Slate300 = ChatDivider
+private val Slate500 = ChatMuted
+private val Slate800 = ChatText
 
 @Composable
 fun AudioCard(
@@ -125,7 +131,7 @@ fun AudioCard(
 
     val bg = if (isMe) Color.White.copy(alpha = 0.15f) else Slate100
     val btnBg = if (isMe) Color.White else Indigo600
-    val btnTint = if (isMe) Indigo600 else Color.White
+    val btnTint = if (isMe) ChatOutgoing else Color(0xFF102B35)
     val subColor = if (isMe) Color.White.copy(alpha = 0.8f) else Slate500
     val trackColor = if (isMe) Color.White.copy(alpha = 0.25f) else Slate300
     val fillColor = if (isMe) Color.White else Emerald500
@@ -367,7 +373,7 @@ private fun ModeRow(
 ) {
     val bg by animateColorAsState(
         targetValue = when {
-            active && isMe -> Color(0xFF312E81)
+            active && isMe -> ChatAccentContainer
             active -> MaterialTheme.colorScheme.primaryContainer
             else -> Color.Transparent
         },

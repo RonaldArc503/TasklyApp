@@ -1,0 +1,10 @@
+NewPipe Extractor v0.26.5
+Copyright Team NewPipe and contributors.
+Source: https://github.com/TeamNewPipe/NewPipeExtractor/tree/v0.26.5
+License: GNU General Public License, version 3 or later.
+The license text is included in NewPipeExtractor-GPL-3.0.txt.
+
+This application uses the library as a dependency; no Metrolist source files
+are included. Distribution of a combined application must satisfy the applicable
+GPL source-code, notice, and licensing obligations. This notice is not a substitute
+for providing corresponding source when required.

@@ -74,9 +74,9 @@ fun AudioPlayerBar(
     val track = state.currentTrack ?: return
     val pct = if (state.durationMs > 0) (state.currentTimeMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f
 
-    val paletteOffset by controller.paletteOffset.collectAsStateWithLifecycle()
-    val trackPalette = remember(track.id, paletteOffset) {
-        getTrackPalette(track, offset = paletteOffset)
+    val colors by controller.colorState.collectAsStateWithLifecycle()
+    val trackPalette = remember(track.id, colors) {
+        getTrackPalette(track, colors)
     }
     val accentColor = trackPalette.primary
 

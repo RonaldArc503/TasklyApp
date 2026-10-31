@@ -8,3 +8,8 @@
 # Preserve the existing domain model rule until a minified release has been
 # validated end-to-end with Firebase, media playback, and attachment flows.
 -keep class com.ronaldcolocho.taskly.domain.model.** { *; }
+
+# NewPipe Extractor's player-signature interpreter.
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.ClassFileWriter
+-dontwarn org.mozilla.javascript.tools.**

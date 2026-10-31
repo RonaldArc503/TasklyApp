@@ -80,7 +80,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -120,12 +119,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.zIndex
 import androidx.core.view.ViewCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
+import com.ronaldcolocho.taskly.audio.PlayerColorMode
 import com.ronaldcolocho.taskly.audio.AudioPlayerState
 import com.ronaldcolocho.taskly.audio.AudioRepeatMode
 import com.ronaldcolocho.taskly.audio.AudioTrack
@@ -185,24 +186,19 @@ fun MusicPlayerScreen(
     val onSurface  = if (darkTheme) MareaOnSurfaceDark  else MareaOnSurfaceLight
     val secondary  = if (darkTheme) MareaSecondaryDark  else MareaSecondaryLight
 
-    // ── Per-song dynamic color palette (deterministic per track + anti-repetition + persistent user tap shuffle) ─
+    // Playback owns palette selection, including changes while this screen is closed.
     val trackId = playerState.currentTrack?.id ?: ""
-    val userPaletteOffset by audioController.paletteOffset.collectAsStateWithLifecycle()
-    var previousPaletteIdx by remember { mutableIntStateOf(-1) }
-
-    val basePaletteIdx = remember(trackId) {
-        val p = getTrackPalette(playerState.currentTrack, 0, previousPaletteIdx)
-        val idx = MAREA_PALETTES.indexOfFirst { it.id == p.id }.coerceAtLeast(0)
-        previousPaletteIdx = idx
-        idx
-    }
-
-    val trackPalette = remember(basePaletteIdx, userPaletteOffset) {
-        val finalIdx = ((basePaletteIdx + userPaletteOffset) % MAREA_PALETTES.size + MAREA_PALETTES.size) % MAREA_PALETTES.size
-        MAREA_PALETTES[finalIdx]
+    val colors by audioController.colorState.collectAsStateWithLifecycle()
+    val trackPalette = remember(trackId, colors) {
+        getTrackPalette(playerState.currentTrack, colors)
     }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    val changeColor: () -> Unit = {
+        val selection = audioController.changeColor()
+        val name = MAREA_PALETTES.firstOrNull { it.id == selection.paletteId }?.name.orEmpty()
+        feedbackMessage = "Color: $name"
+    }
     LaunchedEffect(feedbackMessage) {
         if (feedbackMessage != null) {
             delay(2200)
@@ -281,6 +277,20 @@ fun MusicPlayerScreen(
 
             Spacer(Modifier.height(12.dp))
 
+            if (playerState.buffering) {
+                androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = animPrimary)
+                Text("Preparando audio…", color = secondary, fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 4.dp))
+            }
+            playerState.error?.let { error ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(error, color = secondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.TextButton(onClick = audioController::retryCurrent) {
+                        Text("Reintentar", color = animPrimary)
+                    }
+                }
+            }
+
             // 2. Central stage (remaining space)
             BoxWithConstraints(
                 modifier = Modifier
@@ -303,20 +313,14 @@ fun MusicPlayerScreen(
                     onSwipeLeft     = { audioController.next() },
                     onSwipeRight    = { audioController.prev() },
                     onDoubleTap     = { /* Favorito — placeholder: no existe isFavorite en el modelo */ },
-                    onCyclePalette  = {
-                        val nextOffset = audioController.cyclePaletteForTrack(trackId, MAREA_PALETTES.size)
-                        val nextIdx = ((basePaletteIdx + nextOffset) % MAREA_PALETTES.size + MAREA_PALETTES.size) % MAREA_PALETTES.size
-                        val nextPalette = MAREA_PALETTES[nextIdx]
-                        feedbackMessage = "Tema: ${nextPalette.name}"
-                    }
+                    onCyclePalette = changeColor
                 )
             }
 
             // Hint text & Theme / Mode badge
             val statusText = feedbackMessage
-                ?: if (userPaletteOffset > 0) "Tema: ${trackPalette.name} · ${resolvedEffect.title}"
-                else "Desliza para cambiar · Toca para variar color (${resolvedEffect.title})"
-            val statusColor = if (feedbackMessage != null || userPaletteOffset > 0) animPrimary else secondary
+                ?: "${if (colors.mode == PlayerColorMode.ORIGINAL) "Original" else "Automático"}: ${trackPalette.name} · ${resolvedEffect.title}"
+            val statusColor = animPrimary
 
             Text(
                 text       = statusText,
@@ -425,15 +429,11 @@ fun MusicPlayerScreen(
             accentColor    = animPrimary,
             currentPaletteName = trackPalette.name,
             activePalettePrimary = trackPalette.primary,
-            onCyclePalette = {
-                val nextOffset = audioController.cyclePaletteForTrack(trackId, MAREA_PALETTES.size)
-                val nextIdx = ((basePaletteIdx + nextOffset) % MAREA_PALETTES.size + MAREA_PALETTES.size) % MAREA_PALETTES.size
-                val nextPalette = MAREA_PALETTES[nextIdx]
-                feedbackMessage = "Tema: ${nextPalette.name}"
-            },
-            onResetPalette = {
-                audioController.setPaletteOffsetForTrack(trackId, 0)
-                feedbackMessage = "Color restablecido"
+            colorMode = colors.mode,
+            onChangeColor = changeColor,
+            onSetColorMode = { mode ->
+                audioController.setColorMode(mode)
+                feedbackMessage = if (mode == PlayerColorMode.ORIGINAL) "Color original de la canción" else "Automático variado activado"
             }
         )
     }
@@ -2976,7 +2976,7 @@ private fun MareaSongInfo(
                     .background(accentColor)
             )
             Text(
-                text     = "Taskly",   // AudioTrack.name is the only artist info available; "Taskly" mirrors MediaMetadata
+                text     = track?.artist?.ifBlank { "Taskly" } ?: "Taskly",
                 style    = MareaArtistStyle,
                 color    = secondary,
                 maxLines = 1,
@@ -3407,7 +3407,7 @@ private fun MareaQueueRow(
                 "%d:%02d".format(track.durationSeconds / 60, track.durationSeconds % 60)
             else ""
             val subtitle = buildString {
-                append("Taskly")
+                append(track.artist.ifBlank { "Taskly" })
                 if (dur.isNotBlank()) append(" · $dur")
             }
             Text(
@@ -3434,587 +3434,24 @@ data class MareaTrackPalette(
     val glow      : Color
 )
 
-internal val MAREA_PALETTES = listOf(
-    // 1. Cian Eléctrico
-    MareaTrackPalette(
-        id        = "electric_cyan",
-        name      = "Cian Eléctrico",
-        primary   = Color(0xFF00F5FF),
-        secondary = Color(0xFF0052D4),
-        tertiary  = Color(0xFF4364F7),
-        glow      = Color(0xFF80FAFF)
-    ),
-    // 2. Glaciar Ártico
-    MareaTrackPalette(
-        id        = "nordic_glacier",
-        name      = "Glaciar Ártico",
-        primary   = Color(0xFF00D2FF),
-        secondary = Color(0xFF0A369D),
-        tertiary  = Color(0xFF3A86FF),
-        glow      = Color(0xFF7FE5FF)
-    ),
-    // 3. Marea Caribeña
-    MareaTrackPalette(
-        id        = "caribbean_tide",
-        name      = "Marea Caribeña",
-        primary   = Color(0xFF00F0B5),
-        secondary = Color(0xFF028090),
-        tertiary  = Color(0xFF00A896),
-        glow      = Color(0xFF8AFFE0)
-    ),
-    // 4. Aqua Cristalino
-    MareaTrackPalette(
-        id        = "crystal_aqua",
-        name      = "Aqua Cristalino",
-        primary   = Color(0xFF2DE2E6),
-        secondary = Color(0xFF0353A4),
-        tertiary  = Color(0xFF0466C8),
-        glow      = Color(0xFF9CF8FA)
-    ),
-    // 5. Abismo Marino
-    MareaTrackPalette(
-        id        = "deep_abyss",
-        name      = "Abismo Marino",
-        primary   = Color(0xFF00B4D8),
-        secondary = Color(0xFF03045E),
-        tertiary  = Color(0xFF0077B6),
-        glow      = Color(0xFF90E0EF)
-    ),
-    // 6. Aurora Menta
-    MareaTrackPalette(
-        id        = "mint_aurora",
-        name      = "Aurora Menta",
-        primary   = Color(0xFF05FFA1),
-        secondary = Color(0xFF008F7A),
-        tertiary  = Color(0xFF00C9A7),
-        glow      = Color(0xFF80FFD0)
-    ),
-    // 7. Turquesa Polar
-    MareaTrackPalette(
-        id        = "polar_turquoise",
-        name      = "Turquesa Polar",
-        primary   = Color(0xFF00E8C6),
-        secondary = Color(0xFF0F4C81),
-        tertiary  = Color(0xFF1B998B),
-        glow      = Color(0xFF85FFF0)
-    ),
-    // 8. Cobalto Real
-    MareaTrackPalette(
-        id        = "royal_cobalt",
-        name      = "Cobalto Real",
-        primary   = Color(0xFF2563EB),
-        secondary = Color(0xFF1E3A8A),
-        tertiary  = Color(0xFF60A5FA),
-        glow      = Color(0xFF93C5FD)
-    ),
-    // 9. Azul Ultraneón
-    MareaTrackPalette(
-        id        = "electric_blue",
-        name      = "Azul Ultraneón",
-        primary   = Color(0xFF1D4ED8),
-        secondary = Color(0xFF4F46E5),
-        tertiary  = Color(0xFF818CF8),
-        glow      = Color(0xFF67E8F9)
-    ),
-    // 10. Zafiro Profundo
-    MareaTrackPalette(
-        id        = "deep_sapphire",
-        name      = "Zafiro Profundo",
-        primary   = Color(0xFF0F52BA),
-        secondary = Color(0xFF001858),
-        tertiary  = Color(0xFF3A86FF),
-        glow      = Color(0xFF6EA8FE)
-    ),
-    // 11. Cielo Ultramar
-    MareaTrackPalette(
-        id        = "ultramarine_sky",
-        name      = "Cielo Ultramar",
-        primary   = Color(0xFF3B82F6),
-        secondary = Color(0xFF1D2D50),
-        tertiary  = Color(0xFF93C5FD),
-        glow      = Color(0xFFBFDBFE)
-    ),
-    // 12. Ola de Medianoche
-    MareaTrackPalette(
-        id        = "midnight_wave",
-        name      = "Ola de Medianoche",
-        primary   = Color(0xFF1E40AF),
-        secondary = Color(0xFF0B132B),
-        tertiary  = Color(0xFF4895EF),
-        glow      = Color(0xFF60A5FA)
-    ),
-    // 13. Pulso Índigo
-    MareaTrackPalette(
-        id        = "indigo_pulse",
-        name      = "Pulso Índigo",
-        primary   = Color(0xFF4338CA),
-        secondary = Color(0xFF1E1B4B),
-        tertiary  = Color(0xFF818CF8),
-        glow      = Color(0xFFA5B4FC)
-    ),
-    // 14. Azul Cuántico
-    MareaTrackPalette(
-        id        = "quantum_blue",
-        name      = "Azul Cuántico",
-        primary   = Color(0xFF312E81),
-        secondary = Color(0xFF03071E),
-        tertiary  = Color(0xFF4361EE),
-        glow      = Color(0xFF6366F1)
-    ),
-    // 15. Brisa Egea
-    MareaTrackPalette(
-        id        = "aegean_breeze",
-        name      = "Brisa Egea",
-        primary   = Color(0xFF0284C7),
-        secondary = Color(0xFF075985),
-        tertiary  = Color(0xFF7DD3FC),
-        glow      = Color(0xFFBAE6FD)
-    ),
-    // 16. Amatista Mística
-    MareaTrackPalette(
-        id        = "mystic_amethyst",
-        name      = "Amatista Mística",
-        primary   = Color(0xFF8B5CF6),
-        secondary = Color(0xFF3B0764),
-        tertiary  = Color(0xFFC4B5FD),
-        glow      = Color(0xFFDDD6FE)
-    ),
-    // 17. Violeta Cósmico
-    MareaTrackPalette(
-        id        = "cosmic_violet",
-        name      = "Violeta Cósmico",
-        primary   = Color(0xFF7C3AED),
-        secondary = Color(0xFF4C1D95),
-        tertiary  = Color(0xFFA78BFA),
-        glow      = Color(0xFFC084FC)
-    ),
-    // 18. Lavanda Astral
-    MareaTrackPalette(
-        id        = "astral_lavender",
-        name      = "Lavanda Astral",
-        primary   = Color(0xFFA855F7),
-        secondary = Color(0xFF581C87),
-        tertiary  = Color(0xFFD8B4FE),
-        glow      = Color(0xFFF3E8FF)
-    ),
-    // 19. Púrpura Galáctico
-    MareaTrackPalette(
-        id        = "deep_purple",
-        name      = "Púrpura Galáctico",
-        primary   = Color(0xFF9333EA),
-        secondary = Color(0xFF2E1065),
-        tertiary  = Color(0xFFC084FC),
-        glow      = Color(0xFFE9D5FF)
-    ),
-    // 20. Iris Cibernético
-    MareaTrackPalette(
-        id        = "cyber_iris",
-        name      = "Iris Cibernético",
-        primary   = Color(0xFF6D28D9),
-        secondary = Color(0xFF1E1B4B),
-        tertiary  = Color(0xFF8B5CF6),
-        glow      = Color(0xFFA78BFA)
-    ),
-    // 21. Noche Aterciopelada
-    MareaTrackPalette(
-        id        = "velvet_night",
-        name      = "Noche Aterciopelada",
-        primary   = Color(0xFF581C87),
-        secondary = Color(0xFF170F28),
-        tertiary  = Color(0xFF9333EA),
-        glow      = Color(0xFFC084FC)
-    ),
-    // 22. Lila Luminoso
-    MareaTrackPalette(
-        id        = "neon_lilac",
-        name      = "Lila Luminoso",
-        primary   = Color(0xFFB185DB),
-        secondary = Color(0xFF4A154B),
-        tertiary  = Color(0xFFDDA0DD),
-        glow      = Color(0xFFE8D7F1)
-    ),
-    // 23. Cíber Fucsia
-    MareaTrackPalette(
-        id        = "cyber_magenta",
-        name      = "Cíber Fucsia",
-        primary   = Color(0xFFFF007F),
-        secondary = Color(0xFF7928CA),
-        tertiary  = Color(0xFFFF4D94),
-        glow      = Color(0xFFFF80BF)
-    ),
-    // 24. Orquídea Eléctrica
-    MareaTrackPalette(
-        id        = "electric_orchid",
-        name      = "Orquídea Eléctrica",
-        primary   = Color(0xFFD946EF),
-        secondary = Color(0xFF701A75),
-        tertiary  = Color(0xFFF472B6),
-        glow      = Color(0xFFFBCFE8)
-    ),
-    // 25. Flor de Sakura
-    MareaTrackPalette(
-        id        = "sakura_bloom",
-        name      = "Flor de Sakura",
-        primary   = Color(0xFFEC4899),
-        secondary = Color(0xFF831843),
-        tertiary  = Color(0xFFFBCFE8),
-        glow      = Color(0xFFFCE7F3)
-    ),
-    // 26. Chicle Neón
-    MareaTrackPalette(
-        id        = "neon_bubblegum",
-        name      = "Chicle Neón",
-        primary   = Color(0xFFF43F5E),
-        secondary = Color(0xFF881337),
-        tertiary  = Color(0xFFFB7185),
-        glow      = Color(0xFFFECDD3)
-    ),
-    // 27. Rosa Hiperneón
-    MareaTrackPalette(
-        id        = "hyper_pink",
-        name      = "Rosa Hiperneón",
-        primary   = Color(0xFFFF1493),
-        secondary = Color(0xFF4A0033),
-        tertiary  = Color(0xFFFF69B4),
-        glow      = Color(0xFFFF85C0)
-    ),
-    // 28. Nebulosa Magenta
-    MareaTrackPalette(
-        id        = "magenta_nebula",
-        name      = "Nebulosa Magenta",
-        primary   = Color(0xFFBE185D),
-        secondary = Color(0xFF3B0764),
-        tertiary  = Color(0xFFF472B6),
-        glow      = Color(0xFFF9A8D4)
-    ),
-    // 29. Cuarzo Rosa
-    MareaTrackPalette(
-        id        = "rose_quartz",
-        name      = "Cuarzo Rosa",
-        primary   = Color(0xFFFB7185),
-        secondary = Color(0xFF4C0519),
-        tertiary  = Color(0xFFFDA4AF),
-        glow      = Color(0xFFFFE4E6)
-    ),
-    // 30. Coral Eléctrico
-    MareaTrackPalette(
-        id        = "hot_coral",
-        name      = "Coral Eléctrico",
-        primary   = Color(0xFFFF477E),
-        secondary = Color(0xFF7F055F),
-        tertiary  = Color(0xFFFF70A6),
-        glow      = Color(0xFFFFA8C5)
-    ),
-    // 31. Rubí Sangre
-    MareaTrackPalette(
-        id        = "blood_ruby",
-        name      = "Rubí Sangre",
-        primary   = Color(0xFFFF1E56),
-        secondary = Color(0xFF8B0000),
-        tertiary  = Color(0xFFFF647C),
-        glow      = Color(0xFFFFA3B2)
-    ),
-    // 32. Carmesí Tokio
-    MareaTrackPalette(
-        id        = "tokyo_crimson",
-        name      = "Carmesí Tokio",
-        primary   = Color(0xFFE11D48),
-        secondary = Color(0xFF4C0519),
-        tertiary  = Color(0xFFFB7185),
-        glow      = Color(0xFFFDA4AF)
-    ),
-    // 33. Lava Volcánica
-    MareaTrackPalette(
-        id        = "volcanic_lava",
-        name      = "Lava Volcánica",
-        primary   = Color(0xFFDC2626),
-        secondary = Color(0xFF450A0A),
-        tertiary  = Color(0xFFF87171),
-        glow      = Color(0xFFFCA5A5)
-    ),
-    // 34. Fuego Escarlata
-    MareaTrackPalette(
-        id        = "scarlet_fire",
-        name      = "Fuego Escarlata",
-        primary   = Color(0xFFEF4444),
-        secondary = Color(0xFF7F1D1D),
-        tertiary  = Color(0xFFFCA5A5),
-        glow      = Color(0xFFFECACA)
-    ),
-    // 35. Granate Real
-    MareaTrackPalette(
-        id        = "dark_garnet",
-        name      = "Granate Real",
-        primary   = Color(0xFF881337),
-        secondary = Color(0xFF38040E),
-        tertiary  = Color(0xFFBE123C),
-        glow      = Color(0xFFFB7185)
-    ),
-    // 36. Cereza Negra
-    MareaTrackPalette(
-        id        = "black_cherry",
-        name      = "Cereza Negra",
-        primary   = Color(0xFF9F1239),
-        secondary = Color(0xFF2A0813),
-        tertiary  = Color(0xFFE11D48),
-        glow      = Color(0xFFFDA4AF)
-    ),
-    // 37. Carmesí Imperial
-    MareaTrackPalette(
-        id        = "imperial_crimson",
-        name      = "Carmesí Imperial",
-        primary   = Color(0xFFBE123C),
-        secondary = Color(0xFF4C0519),
-        tertiary  = Color(0xFFFB7185),
-        glow      = Color(0xFFFECDD3)
-    ),
-    // 38. Llama Atómica
-    MareaTrackPalette(
-        id        = "atomic_flame",
-        name      = "Llama Atómica",
-        primary   = Color(0xFFFF3366),
-        secondary = Color(0xFF660022),
-        tertiary  = Color(0xFFFF6688),
-        glow      = Color(0xFFFFA3B8)
-    ),
-    // 39. Atardecer Carmesí
-    MareaTrackPalette(
-        id        = "sunset_crimson",
-        name      = "Atardecer Carmesí",
-        primary   = Color(0xFFFF2A6D),
-        secondary = Color(0xFFFF5E36),
-        tertiary  = Color(0xFFFFA726),
-        glow      = Color(0xFFFF8AA5)
-    ),
-    // 40. Cobre Ígneo
-    MareaTrackPalette(
-        id        = "fiery_copper",
-        name      = "Cobre Ígneo",
-        primary   = Color(0xFFF97316),
-        secondary = Color(0xFF7C2D12),
-        tertiary  = Color(0xFFFDBA74),
-        glow      = Color(0xFFFFEDD5)
-    ),
-    // 41. Llamarada Solar
-    MareaTrackPalette(
-        id        = "solar_flare",
-        name      = "Llamarada Solar",
-        primary   = Color(0xFFFF6B35),
-        secondary = Color(0xFF8B1E00),
-        tertiary  = Color(0xFFFF9F1C),
-        glow      = Color(0xFFFFB997)
-    ),
-    // 42. Especias de Bengala
-    MareaTrackPalette(
-        id        = "bengal_spice",
-        name      = "Especias de Bengala",
-        primary   = Color(0xFFEA580C),
-        secondary = Color(0xFF431407),
-        tertiary  = Color(0xFFFB923C),
-        glow      = Color(0xFFFED7AA)
-    ),
-    // 43. Mandarina Crepúsculo
-    MareaTrackPalette(
-        id        = "twilight_tangerine",
-        name      = "Mandarina Crepúsculo",
-        primary   = Color(0xFFFB923C),
-        secondary = Color(0xFF7C2D12),
-        tertiary  = Color(0xFFFDE047),
-        glow      = Color(0xFFFEF08A)
-    ),
-    // 44. Ámbar Volcánico
-    MareaTrackPalette(
-        id        = "volcanic_amber",
-        name      = "Ámbar Volcánico",
-        primary   = Color(0xFFC2410C),
-        secondary = Color(0xFF3A1000),
-        tertiary  = Color(0xFFEA580C),
-        glow      = Color(0xFFFDBA74)
-    ),
-    // 45. Durazno Tropical
-    MareaTrackPalette(
-        id        = "tropical_peach",
-        name      = "Durazno Tropical",
-        primary   = Color(0xFFFF6B6B),
-        secondary = Color(0xFF802020),
-        tertiary  = Color(0xFFFF8E53),
-        glow      = Color(0xFFFFB4B4)
-    ),
-    // 46. Terracota Zen
-    MareaTrackPalette(
-        id        = "terracotta_zen",
-        name      = "Terracota Zen",
-        primary   = Color(0xFFD9534F),
-        secondary = Color(0xFF4A1515),
-        tertiary  = Color(0xFFF0AD4E),
-        glow      = Color(0xFFF8D7DA)
-    ),
-    // 47. Oro Solar
-    MareaTrackPalette(
-        id        = "solar_gold",
-        name      = "Oro Solar",
-        primary   = Color(0xFFEAB308),
-        secondary = Color(0xFF713F12),
-        tertiary  = Color(0xFFFDE047),
-        glow      = Color(0xFFFEF9C3)
-    ),
-    // 48. Oro Celestial
-    MareaTrackPalette(
-        id        = "celestial_gold",
-        name      = "Oro Celestial",
-        primary   = Color(0xFFFACC15),
-        secondary = Color(0xFF854D0E),
-        tertiary  = Color(0xFFFEF08A),
-        glow      = Color(0xFFFEFCE8)
-    ),
-    // 49. Duna Dorada
-    MareaTrackPalette(
-        id        = "golden_dune",
-        name      = "Duna Dorada",
-        primary   = Color(0xFFD97706),
-        secondary = Color(0xFF451A03),
-        tertiary  = Color(0xFFFCD34D),
-        glow      = Color(0xFFFDE68A)
-    ),
-    // 50. Ámbar Silvestre
-    MareaTrackPalette(
-        id        = "wild_amber",
-        name      = "Ámbar Silvestre",
-        primary   = Color(0xFFB45309),
-        secondary = Color(0xFF2E1202),
-        tertiary  = Color(0xFFF59E0B),
-        glow      = Color(0xFFFDE68A)
-    ),
-    // 51. Miel Pura
-    MareaTrackPalette(
-        id        = "honeycomb_glow",
-        name      = "Miel Pura",
-        primary   = Color(0xFFF59E0B),
-        secondary = Color(0xFF78350F),
-        tertiary  = Color(0xFFFBBF24),
-        glow      = Color(0xFFFEF3C7)
-    ),
-    // 52. Citrino Neón
-    MareaTrackPalette(
-        id        = "lemon_zest",
-        name      = "Citrino Neón",
-        primary   = Color(0xFFFFE600),
-        secondary = Color(0xFF665C00),
-        tertiary  = Color(0xFFFFF066),
-        glow      = Color(0xFFFFFF99)
-    ),
-    // 53. Neón Lima
-    MareaTrackPalette(
-        id        = "neon_lime",
-        name      = "Neón Lima",
-        primary   = Color(0xFFCCFF00),
-        secondary = Color(0xFF15803D),
-        tertiary  = Color(0xFF84CC16),
-        glow      = Color(0xFFE6FF80)
-    ),
-    // 54. Verde Eléctrico
-    MareaTrackPalette(
-        id        = "acid_green",
-        name      = "Verde Eléctrico",
-        primary   = Color(0xFFA3E635),
-        secondary = Color(0xFF365314),
-        tertiary  = Color(0xFFBEF264),
-        glow      = Color(0xFFECFCCB)
-    ),
-    // 55. Té Matcha
-    MareaTrackPalette(
-        id        = "zen_matcha",
-        name      = "Té Matcha",
-        primary   = Color(0xFF65A30D),
-        secondary = Color(0xFF1A2E05),
-        tertiary  = Color(0xFF84CC16),
-        glow      = Color(0xFFBEF264)
-    ),
-    // 56. Chartreuse Vivo
-    MareaTrackPalette(
-        id        = "chartreuse_glow",
-        name      = "Chartreuse Vivo",
-        primary   = Color(0xFF84CC16),
-        secondary = Color(0xFF1E3A0A),
-        tertiary  = Color(0xFFA3E635),
-        glow      = Color(0xFFD9F99D)
-    ),
-    // 57. Aurora Boreal
-    MareaTrackPalette(
-        id        = "nordic_aurora",
-        name      = "Aurora Boreal",
-        primary   = Color(0xFF00F260),
-        secondary = Color(0xFF0575E6),
-        tertiary  = Color(0xFF00F5D4),
-        glow      = Color(0xFF80FFB0)
-    ),
-    // 58. Laguna Esmeralda
-    MareaTrackPalette(
-        id        = "emerald_lagoon",
-        name      = "Laguna Esmeralda",
-        primary   = Color(0xFF10B981),
-        secondary = Color(0xFF064E3B),
-        tertiary  = Color(0xFF34D399),
-        glow      = Color(0xFFA7F3D0)
-    ),
-    // 59. Esmeralda Sublime
-    MareaTrackPalette(
-        id        = "sublime_emerald",
-        name      = "Esmeralda Sublime",
-        primary   = Color(0xFF059669),
-        secondary = Color(0xFF022C22),
-        tertiary  = Color(0xFF6EE7B7),
-        glow      = Color(0xFFA7F3D0)
-    ),
-    // 60. Selva Tropical
-    MareaTrackPalette(
-        id        = "rainforest_bamboo",
-        name      = "Selva Tropical",
-        primary   = Color(0xFF16A34A),
-        secondary = Color(0xFF052E16),
-        tertiary  = Color(0xFF4ADE80),
-        glow      = Color(0xFFBBF7D0)
-    )
-)
-
+internal val MAREA_PALETTES = com.ronaldcolocho.taskly.audio.PLAYER_PALETTES.map { palette ->
+    fun color(rgb: Int) = Color(0xFF000000L or rgb.toLong())
+    MareaTrackPalette(palette.id, palette.name, color(palette.primary), color(palette.secondary),
+        color(palette.tertiary), color(palette.glow))
+}
 /** Returns true if this color is perceptually light (for contrasting dark icons/text). */
 private fun Color.isLight(): Boolean {
     val luminance = 0.299f * red + 0.587f * green + 0.114f * blue
     return luminance > 0.60f
 }
 
-/**
- * Maps any [AudioTrack] deterministically to one of the 60 curated vibrant palettes
- * using a 64-bit Murmur-style avalanche hash on id, name, and url.
- * An optional [previousIdx] guarantees consecutive tracks never repeat the same theme (shifting by a coprime stride).
- * An optional [offset] allows manually cycling/randomizing themes on demand.
- */
-internal fun getTrackPalette(track: AudioTrack?, offset: Int = 0, previousIdx: Int = -1): MareaTrackPalette {
-    if (track == null) {
-        val idx = ((offset % MAREA_PALETTES.size) + MAREA_PALETTES.size) % MAREA_PALETTES.size
-        return MAREA_PALETTES[idx]
-    }
-    val rawKey = "${track.id}|${track.name}|${track.url}".ifBlank { track.name }
-    if (rawKey.isBlank()) {
-        val idx = ((offset % MAREA_PALETTES.size) + MAREA_PALETTES.size) % MAREA_PALETTES.size
-        return MAREA_PALETTES[idx]
-    }
-
-    var h = -3750763034362895579L
-    for (i in 0 until rawKey.length) {
-        h = h xor rawKey[i].code.toLong()
-        h = h * 1099511628211L
-    }
-    // Avalanche bit mixing
-    h = h xor (h ushr 33)
-    h = h * -49064778989728563L
-    h = h xor (h ushr 33)
-
-    var baseIdx = (kotlin.math.abs(h) % MAREA_PALETTES.size).toInt()
-    // Anti-repetition: if it matches the immediately previous song's palette, jump by 7 (coprime to 60)
-    if (previousIdx in MAREA_PALETTES.indices && baseIdx == previousIdx) {
-        baseIdx = (baseIdx + 7) % MAREA_PALETTES.size
-    }
-    val finalIdx = ((baseIdx + offset) % MAREA_PALETTES.size + MAREA_PALETTES.size) % MAREA_PALETTES.size
-    return MAREA_PALETTES[finalIdx]
+/** Resolves the playback color, falling back to the song's stable original while state catches up. */
+internal fun getTrackPalette(
+    track: AudioTrack?, colors: com.ronaldcolocho.taskly.audio.PlayerColorState? = null
+): MareaTrackPalette {
+    val paletteId = colors?.takeIf { track != null && it.trackId == track.id }?.paletteId
+        ?: originalPlayerColors.original(track?.id).id
+    return MAREA_PALETTES.firstOrNull { it.id == paletteId } ?: MAREA_PALETTES.first()
 }
+
+private val originalPlayerColors = com.ronaldcolocho.taskly.audio.PlayerColorPolicy()

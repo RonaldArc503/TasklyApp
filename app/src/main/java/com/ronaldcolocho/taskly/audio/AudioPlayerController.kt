@@ -16,6 +16,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.ronaldcolocho.taskly.domain.model.DownloadedSong
 import com.ronaldcolocho.taskly.domain.model.MusicTrack
+import com.ronaldcolocho.taskly.domain.model.OnlineMusicSource
 import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
 import com.ronaldcolocho.taskly.domain.repository.IDownloadHistoryRepository
@@ -50,7 +51,8 @@ class AudioPlayerController @Inject constructor(
     private val musicRepository: IMusicRepository,
     private val downloadHistoryRepository: IDownloadHistoryRepository,
     private val auth: FirebaseAuth,
-    private val mediaCache: IMediaCacheRepository
+    private val mediaCache: IMediaCacheRepository,
+    private val playerColors: PlayerColorsController
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickerJob: Job? = null
@@ -100,27 +102,17 @@ class AudioPlayerController @Inject constructor(
         prefs.edit().putString("player_visual_effect", effect.id).apply()
     }
 
-    private val _paletteOffset = MutableStateFlow(0)
-    val paletteOffset: StateFlow<Int> = _paletteOffset.asStateFlow()
+    val colorState: StateFlow<PlayerColorState> = playerColors.state
 
-    fun getPaletteOffsetForTrack(trackId: String): Int {
-        if (trackId.isBlank()) return 0
-        return prefs.getInt("palette_offset_$trackId", 0)
-    }
-
-    fun setPaletteOffsetForTrack(trackId: String, offset: Int) {
-        if (trackId.isNotBlank()) {
-            prefs.edit().putInt("palette_offset_$trackId", offset).apply()
+    init {
+        playerColors.onTrackChanged(_state.value.currentTrack?.id)
+        scope.launch {
+            _state.map { it.currentTrack?.id }.distinctUntilChanged().collect(playerColors::onTrackChanged)
         }
-        _paletteOffset.value = offset
     }
 
-    fun cyclePaletteForTrack(trackId: String, totalPalettes: Int = 60): Int {
-        val current = getPaletteOffsetForTrack(trackId)
-        val next = (current + 1) % totalPalettes
-        setPaletteOffsetForTrack(trackId, next)
-        return next
-    }
+    fun setColorMode(mode: PlayerColorMode) = playerColors.setMode(mode)
+    fun changeColor(): PlayerColorState = playerColors.changeColor()
 
     /** Modo de reproducción: cambia con poca frecuencia (solo al cambiar de modo). */
     val modeState: StateFlow<AudioMode> = _state.map { it.mode }
@@ -215,7 +207,8 @@ class AudioPlayerController @Inject constructor(
                             item.mediaMetadata.title?.toString().orEmpty(),
                             item.mediaMetadata.extras?.getString("messageId").orEmpty(),
                             thumbnailUrl = item.mediaMetadata.artworkUri?.toString().orEmpty(),
-                            playlistId = item.mediaMetadata.extras?.getString("playlistId"))
+                            playlistId = item.mediaMetadata.extras?.getString("playlistId"),
+                            artist = item.mediaMetadata.artist?.toString().orEmpty())
                     }
                     _state.update { it.copy(tracks = liveTracks, shuffleModeEnabled = p.shuffleModeEnabled,
                         repeatMode = when (p.repeatMode) {
@@ -249,7 +242,7 @@ class AudioPlayerController @Inject constructor(
     private fun setupPlayerListener(p: Player) {
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _state.update { it.copy(playing = isPlaying) }
+                _state.update { it.copy(playing = isPlaying, error = if (isPlaying) null else it.error) }
                 if (isPlaying) {
                     startTicker()
                     _state.value.currentTrack?.let(::recordPlayback)
@@ -257,7 +250,8 @@ class AudioPlayerController @Inject constructor(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _state.update { it.copy(playing = false, error = "No se pudo reproducir el audio. Reintenta o verifica tu conexión.") }
+                _state.update { it.copy(playing = false, buffering = false,
+                    error = "No se pudo reproducir el audio. Reintenta o verifica tu conexión.") }
                 android.util.Log.e("AudioPlayer", "Playback error", error)
             }
 
@@ -277,8 +271,6 @@ class AudioPlayerController @Inject constructor(
                         playing = p.isPlaying
                     )
                 }
-                val activeId = newTrack?.id ?: _state.value.currentTrack?.id.orEmpty()
-                _paletteOffset.value = getPaletteOffsetForTrack(activeId)
                 if (trackId != null) {
                     enqueuedTrackIds.remove(trackId)
                 }
@@ -313,6 +305,7 @@ class AudioPlayerController @Inject constructor(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                _state.update { it.copy(buffering = playbackState == Player.STATE_BUFFERING) }
                 when (playbackState) {
                     Player.STATE_READY -> {
                         val dur = p.duration.takeIf { it > 0 }
@@ -377,12 +370,11 @@ class AudioPlayerController @Inject constructor(
             it.copy(
                 currentTrack = track,
                 playing = isPlaying,
+                buffering = p.playbackState == Player.STATE_BUFFERING,
                 currentTimeMs = p.currentPosition.takeIf { pos -> pos >= 0 } ?: 0L,
                 durationMs = dur
             )
         }
-        val activeId = track?.id ?: currentId.orEmpty()
-        _paletteOffset.value = getPaletteOffsetForTrack(activeId)
         if (isPlaying) startTicker()
     }
 
@@ -413,10 +405,11 @@ class AudioPlayerController @Inject constructor(
         return MediaItem.Builder()
             .setMediaId(this.id)
             .setUri(uri)
+            .setCustomCacheKey(OnlineMusicSource.cacheKey(this.url))
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(this.name)
-                    .setArtist("Taskly")
+                    .setArtist(artist.ifBlank { "Taskly" })
                     .setArtworkUri(thumbnailUrl.takeIf { it.isNotBlank() }?.let(Uri::parse))
                     .setExtras(Bundle().apply {
                         putString("messageId", msgId); putString("playlistId", playlistId); putString("originalUrl", url)
@@ -650,9 +643,8 @@ class AudioPlayerController @Inject constructor(
             }
             
             _state.update {
-                it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true, error = null)
+                it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true, buffering = true, error = null)
             }
-            _paletteOffset.value = getPaletteOffsetForTrack(track.id)
             p.prepare()
             p.play()
         }
@@ -689,7 +681,19 @@ class AudioPlayerController @Inject constructor(
         }
     }
 
-    fun retryCurrent() { _state.value.currentTrack?.let(::applyPlaylistAndPlay) }
+    fun retryCurrent() {
+        val snapshot = _state.value
+        val track = snapshot.currentTrack ?: return
+        withPlayer { p ->
+            if (p.currentMediaItem?.mediaId != track.id) applyPlaylistAndPlay(track)
+            else {
+                _state.update { it.copy(error = null, buffering = true) }
+                p.seekTo(p.currentMediaItemIndex, snapshot.currentTimeMs.coerceAtLeast(0))
+                p.prepare()
+                p.play()
+            }
+        }
+    }
     fun clearError() { _state.update { it.copy(error = null) } }
 
     fun updateMode(mode: AudioMode) {
@@ -827,7 +831,8 @@ class AudioPlayerController @Inject constructor(
             p.clearMediaItems()
         }
         _state.update {
-            it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0, durationMs = 0, playing = false)
+            it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0, durationMs = 0,
+                playing = false, buffering = false, error = null)
         }
         stopTicker()
     }
@@ -860,7 +865,8 @@ class AudioPlayerController @Inject constructor(
                     name = track.name,
                     sourceMessageId = track.msgId,
                     durationSeconds = track.durationSeconds,
-                    thumbnailUrl = track.thumbnailUrl
+                    thumbnailUrl = track.thumbnailUrl,
+                    artist = track.artist
                 )
             )
         }

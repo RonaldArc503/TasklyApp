@@ -1,8 +1,18 @@
 # Mejoras de música — 29 de octubre de 2026
 
+## Navegación propia de música
+
+- Menú inferior Marea con **Inicio**, **Mis listas** y **Mi biblioteca**. Aparece en las tres secciones y dentro del detalle de una lista. Se oculta en el reproductor completo y fuera de música.
+- **Inicio:** sesión actual con reanudación, últimas diez canciones escuchadas y las más escuchadas. Si todavía no hay historial, ofrece abrir la biblioteca.
+- **Mis listas:** cuadrícula, búsqueda de listas, orden y creación/edición/eliminación. Crear una lista abre su detalle.
+- **Mi biblioteca:** catálogo completo de canciones con búsqueda, filtros Todas/Favoritas/Descargadas/Por recuperar, tamaños y recuperación. Ya no ocupa la primera parte de Inicio ni limita la vista a seis canciones.
+- La pestaña se guarda en la entrada de navegación de música: se recupera al regresar desde una lista, el reproductor o el conversor. Una entrada nueva a música comienza en Inicio. Cada pestaña conserva su consulta, filtros y desplazamiento vertical mientras se navega dentro del módulo.
+- El minirreproductor se comparte por encima del menú, incluyendo los detalles de listas. Sus gestos anterior/siguiente siguen disponibles. El menú reserva espacio en el `Scaffold`, por lo que no tapa la última canción ni el contenido.
+- Buscar desde Inicio abre la búsqueda de canciones en Mi biblioteca. Las consultas de listas y canciones son independientes. La biblioteca solo se observa cuando se abre esa pestaña; Inicio no inicia el escaneo de archivos.
+
 ## Comportamiento implementado
 
-- **Favoritos por cuenta:** documentos privados `users/{uid}/musicFavorites/{sha256(mediaId)}`. Se conserva la información de la canción y se observa con Firestore, incluida su caché local. El corazón de la biblioteca y el gesto/menú de las listas usan el mismo origen. El filtro «Mis favoritas» reúne las canciones marcadas.
+- **Favoritos por cuenta:** documentos privados `users/{uid}/musicFavorites/{sha256(mediaId)}`. Se conserva la información de la canción y se observa con Firestore, incluida su caché local. El corazón de la biblioteca y el gesto/menú de las listas usan el mismo origen. El filtro «Favoritas» de Mi biblioteca reúne las canciones marcadas.
 - **Aleatorio:** la acción de una lista activa el modo aleatorio del reproductor y elige una canción inicial; no escribe posiciones en Firestore. Organizar explícitamente la cola o agregar una canción a continuación desactiva el aleatorio para respetar ese orden.
 - **Reanudación:** se guarda una sesión local por UID con canción, cola, posición, repetición y aleatorio. Hay puntos de guardado aproximadamente cada cinco segundos, además de cambios de cola, pausa y búsqueda temporal. Al restaurar se prepara el audio en pausa. Si el servicio mantiene una sesión viva, se conserva la sesión del servicio. Cambiar de cuenta detiene y sustituye la sesión anterior.
 - **Cola editable:** pulsación larga en el asa para arrastrar; menú con subir, bajar y quitar. Las listas y la biblioteca ofrecen reproducir después y agregar al final. Mover una canción conserva el decodificador y la posición; al quitar la actual se selecciona la siguiente superviviente, o una anterior si era la última. Vaciar la cola detiene el audio.
@@ -27,10 +37,11 @@
 
 ## Revisión manual pendiente
 
-1. Marcar una favorita, salir de la lista y reiniciar; comprobar «Mis favoritas» con y sin conexión.
-2. Activar aleatorio y volver a abrir la lista; su orden guardado debe mantenerse.
-3. Pausar a mitad de canción, cerrar el proceso y abrir la aplicación; comprobar cola, posición y restauración en pausa.
-4. Arrastrar antes/después de la actual, quitar una futura, quitar la actual y vaciar la cola; comprobar posición y estado de reproducción.
-5. Buscar por nombre y por lista; combinar filtros y orden.
-6. Descargar, salir de la pantalla y volver; activar modo avión y reproducir. Borrar un archivo fuera de la app y pulsar Actualizar; comprobar «Por recuperar» y recuperación.
-7. Cambiar de cuenta; comprobar que favoritos y sesión no se mezclen.
+1. Entrar en Música: debe iniciar en Inicio. Cambiar entre las tres pestañas mientras suena una canción; comprobar minirreproductor, búsqueda independiente y restauración del desplazamiento al volver. Abrir una lista, el reproductor y el conversor; volver debe recuperar la pestaña anterior. Comprobar también una lista abierta directamente desde un enlace.
+2. Marcar una favorita, salir de la lista y reiniciar; comprobar «Favoritas» en Mi biblioteca con y sin conexión.
+3. Activar aleatorio y volver a abrir la lista; su orden guardado debe mantenerse.
+4. Pausar a mitad de canción, cerrar el proceso y abrir la aplicación; comprobar cola, posición y restauración en pausa.
+5. Arrastrar antes/después de la actual, quitar una futura, quitar la actual y vaciar la cola; comprobar posición y estado de reproducción.
+6. Buscar por nombre y por lista; combinar filtros y orden.
+7. Descargar, salir de la pantalla y volver; activar modo avión y reproducir. Borrar un archivo fuera de la app y pulsar Actualizar; comprobar «Por recuperar» y recuperación.
+8. Cambiar de cuenta; comprobar que favoritos y sesión no se mezclen.

@@ -18,7 +18,7 @@ import com.ronaldcolocho.taskly.domain.model.*
 import java.util.Locale
 
 internal fun MusicTrack.toAudioTrack(playlistId: String? = null) = AudioTrack(
-    id, url, name, sourceMessageId, durationSeconds, thumbnailUrl, playlistId
+    id, url, name, sourceMessageId, durationSeconds, thumbnailUrl, playlistId, artist
 )
 
 internal fun formatMusicBytes(bytes: Long): String = when {
@@ -32,11 +32,9 @@ internal fun LazyListScope.musicLibraryItems(
     visible: List<MusicLibraryItem>,
     filter: MusicLibraryFilter,
     order: MusicLibraryOrder,
-    expanded: Boolean,
     downloadStates: Map<String, MediaDownloadState>,
     onFilter: (MusicLibraryFilter) -> Unit,
     onOrder: (MusicLibraryOrder) -> Unit,
-    onExpand: () -> Unit,
     onRefresh: () -> Unit,
     onPlay: (MusicLibraryItem) -> Unit,
     onFavorite: (MusicLibraryItem) -> Unit,
@@ -48,7 +46,7 @@ internal fun LazyListScope.musicLibraryItems(
     item(key = "music_library_controls") {
         Column(Modifier.fillMaxWidth().padding(top = 18.dp)) {
             Row(Modifier.padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Tu biblioteca", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("Mi biblioteca", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 var showOrder by remember { mutableStateOf(false) }
                 Box {
                     TextButton(onClick = { showOrder = true }) { Text(order.label) }
@@ -81,17 +79,11 @@ internal fun LazyListScope.musicLibraryItems(
                 style = MaterialTheme.typography.bodyMedium)
         }
     }
-    val shown = if (expanded) visible else visible.take(6)
-    items(shown, key = { "music_library_${it.track.id}" }) { item ->
+    items(visible, key = { "music_library_${it.track.id}" }) { item ->
         MusicLibraryRow(item, downloadStates[item.track.id],
             onPlay = { onPlay(item) }, onFavorite = { onFavorite(item) },
             onDownload = { if (item.canDownload) onDownload(item) else onRecover() },
             onNext = { onNext(item) }, onEnd = { onEnd(item) })
-    }
-    if (visible.size > 6) item(key = "music_library_expand") {
-        TextButton(onClick = onExpand, modifier = Modifier.padding(horizontal = 14.dp)) {
-            Text(if (expanded) "Mostrar menos" else "Ver las ${visible.size} canciones")
-        }
     }
 }
 

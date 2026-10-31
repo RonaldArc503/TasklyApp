@@ -40,7 +40,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -259,7 +258,7 @@ fun MareaPlaylistScreen(
                 start  = 22.dp,
                 end    = 22.dp,
                 top    = 12.dp,
-                bottom = if (playerState.currentTrack != null) 108.dp else 36.dp
+                bottom = 24.dp
             ),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -460,7 +459,8 @@ fun MareaPlaylistScreen(
                                 msgId           = track.sourceMessageId,
                                 durationSeconds = track.durationSeconds,
                                 thumbnailUrl    = track.thumbnailUrl,
-                                playlistId      = viewModel.selectedPlaylistId
+                                playlistId      = viewModel.selectedPlaylistId,
+                                artist          = track.artist
                             )
                             val allAudioTracks = sortedTracks.map {
                                 AudioTrack(
@@ -470,7 +470,8 @@ fun MareaPlaylistScreen(
                                     msgId           = it.sourceMessageId,
                                     durationSeconds = it.durationSeconds,
                                     thumbnailUrl    = it.thumbnailUrl,
-                                    playlistId      = viewModel.selectedPlaylistId
+                                    playlistId      = viewModel.selectedPlaylistId,
+                                    artist          = it.artist
                                 )
                             }
                             when (audioController.addToQueueNext(audioTrack, playlistFallback = allAudioTracks)) {
@@ -500,40 +501,6 @@ fun MareaPlaylistScreen(
                         onRemove = { viewModel.removeTrack(track) }
                     )
                 }
-            }
-        }
-
-        // ── 6. Mini Reproductor Flotante Abajo ─────────────────────
-        val currentTrack = playerState.currentTrack
-        if (currentTrack != null) {
-            val dur = if (playerState.durationMs > 0) playerState.durationMs
-            else (currentTrack.durationSeconds.takeIf { it > 0 }?.toLong()?.times(1000L)) ?: 0L
-            val progress = if (dur > 0)
-                (playerState.currentTimeMs.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
-            else 0f
-
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 14.dp)
-            ) {
-                MareaFloatingMiniPlayer(
-                    track        = currentTrack,
-                    isPlaying    = playerState.playing,
-                    progress     = progress,
-                    surface      = surface,
-                    onSurface    = onSurface,
-                    secondary    = secondary,
-                    lilac        = lilac,
-                    peach        = peach,
-                    onAccent     = onAccent,
-                    darkTheme    = darkTheme,
-                    onPlayPause  = { audioController.toggleCurrent() },
-                    onClick      = { onOpenPlayer(playlist?.name ?: "Mi lista") },
-                    onSwipeLeft  = { audioController.prev(forceTrackChange = true) },
-                    onSwipeRight = { audioController.next() }
-                )
             }
         }
 

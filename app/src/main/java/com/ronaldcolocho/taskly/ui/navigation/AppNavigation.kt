@@ -62,6 +62,9 @@ import com.ronaldcolocho.taskly.ui.screen.profile.ProfileScreen
 import com.ronaldcolocho.taskly.ui.screen.tasks.TasksScreen
 import com.ronaldcolocho.taskly.ui.state.AuthState
 import com.ronaldcolocho.taskly.ui.theme.ChatColorScheme
+import com.ronaldcolocho.taskly.ui.screen.music.MusicNavigationChrome
+import com.ronaldcolocho.taskly.ui.screen.music.MusicSection
+import kotlinx.coroutines.flow.MutableStateFlow
 
 sealed class Route(val route: String, val navigationRoute: String = route) {
     object Auth : Route("auth")
@@ -190,6 +193,28 @@ private fun MainScaffold(
     val isBottomBarVisible = currentDestination?.route in listOf(
         Route.Home.route, Route.Tasks.route, Route.ChatList.route, Route.Reminders.route, Route.Profile.route
     )
+    val isMusicBrowseRoute = currentDestination?.route in listOf(Route.Music.route, Route.MusicPlaylist.route)
+    val musicRootEntry = when (currentDestination?.route) {
+        Route.Music.route -> navBackStackEntry
+        Route.MusicPlaylist.route -> runCatching { navController.getBackStackEntry(Route.Music.route) }.getOrNull()
+        else -> null
+    }
+    val musicSectionFlow = remember(musicRootEntry) {
+        musicRootEntry?.savedStateHandle?.getStateFlow("music_section", MusicSection.HOME.name)
+            ?: MutableStateFlow(MusicSection.HOME.name)
+    }
+    val musicSectionName by musicSectionFlow.collectAsStateWithLifecycle()
+    val musicSection = MusicSection.entries.firstOrNull { it.name == musicSectionName } ?: MusicSection.HOME
+    val selectMusicSection: (MusicSection) -> Unit = { section ->
+        if (currentDestination?.route != Route.Music.route) {
+            navController.navigate(Route.Music.route) {
+                if (musicRootEntry != null) popUpTo(Route.Music.route)
+                else popUpTo(Route.MusicPlaylist.route) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+        navController.getBackStackEntry(Route.Music.route).savedStateHandle["music_section"] = section.name
+    }
 
     val navigateToTopLevel: (Route) -> Unit = { route ->
         navController.navigate(route.navigationRoute) {
@@ -223,7 +248,14 @@ private fun MainScaffold(
     MaterialTheme(colorScheme = activeColorScheme) {
     Scaffold(
         bottomBar = {
-            if (isBottomBarVisible) {
+            if (isMusicBrowseRoute) {
+                MusicNavigationChrome(
+                    controller = audioController,
+                    selected = if (currentDestination?.route == Route.MusicPlaylist.route) MusicSection.PLAYLISTS else musicSection,
+                    onSelect = selectMusicSection,
+                    onOpenPlayer = { navController.navigate(Route.MusicPlayer.createRoute("Música")) }
+                )
+            } else if (isBottomBarVisible) {
                 NavigationBar {
                     val items = listOf(
                         Triple(Route.Home, "Inicio", Icons.Filled.Home),
@@ -420,9 +452,15 @@ private fun MainScaffold(
                         onNavigateBack = { navController.popBackStack() }
                     )
                 }
-                composable(Route.Music.route) {
+                composable(Route.Music.route) { musicEntry ->
+                    val sectionFlow = remember(musicEntry) {
+                        musicEntry.savedStateHandle.getStateFlow("music_section", MusicSection.HOME.name)
+                    }
+                    val sectionName by sectionFlow.collectAsStateWithLifecycle()
                     com.ronaldcolocho.taskly.ui.screen.music.MusicScreen(
                         audioController = audioController,
+                        selectedSection = MusicSection.entries.firstOrNull { it.name == sectionName } ?: MusicSection.HOME,
+                        onSectionSelected = selectMusicSection,
                         onNavigateBack = { navController.popBackStack() },
                         onOpenPlaylist = { id -> navController.navigate(Route.MusicPlaylist.createRoute(id)) },
                         onOpenConverter = { navController.navigate(Route.Converter.route) },

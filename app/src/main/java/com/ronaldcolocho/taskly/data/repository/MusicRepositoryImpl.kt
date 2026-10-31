@@ -131,7 +131,7 @@ class MusicRepositoryImpl @Inject constructor(
         MusicTrack(
             id = it.mediaId, url = it.url, name = it.name,
             sourceMessageId = it.sourceMessageId, durationSeconds = it.durationSeconds,
-            addedAt = it.downloadedAt
+            addedAt = it.downloadedAt, artist = it.artist, thumbnailUrl = it.thumbnailUrl
         )
     }
 
@@ -250,7 +250,8 @@ class MusicRepositoryImpl @Inject constructor(
         durationSeconds = (getLong("durationSeconds") ?: 0L).toInt(),
         thumbnailUrl = getString("thumbnailUrl").orEmpty(),
         addedAt = getLong("addedAt") ?: 0L,
-        position = getLong("position") ?: (getLong("addedAt") ?: 0L)
+        position = getLong("position") ?: (getLong("addedAt") ?: 0L),
+        artist = getString("artist").orEmpty()
     )
 
     private fun MusicTrack.toMap(addedAt: Long, position: Long) = mapOf(
@@ -260,6 +261,7 @@ class MusicRepositoryImpl @Inject constructor(
         "sourceMessageId" to sourceMessageId,
         "durationSeconds" to durationSeconds,
         "thumbnailUrl" to thumbnailUrl,
+        "artist" to artist,
         "addedAt" to addedAt
         , "position" to position
     )
@@ -319,7 +321,8 @@ class MusicRepositoryImpl @Inject constructor(
                         thumbnailUrl = item.optString("thumbnailUrl"),
                         playCount = item.optInt("playCount"),
                         lastPlayedAt = item.optLong("lastPlayedAt"),
-                        addedAt = item.optLong("addedAt")
+                        addedAt = item.optLong("addedAt"),
+                        artist = item.optString("artist")
                     )
                 )
             }
@@ -336,6 +339,7 @@ class MusicRepositoryImpl @Inject constructor(
                 put("sourceMessageId", track.sourceMessageId)
                 put("durationSeconds", track.durationSeconds)
                 put("thumbnailUrl", track.thumbnailUrl)
+                put("artist", track.artist)
                 put("playCount", track.playCount)
                 put("lastPlayedAt", track.lastPlayedAt)
                 put("addedAt", track.addedAt)

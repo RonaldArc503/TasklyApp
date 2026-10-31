@@ -51,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ronaldcolocho.taskly.audio.PlayerVisualEffect
+import com.ronaldcolocho.taskly.audio.PlayerColorMode
 import com.ronaldcolocho.taskly.ui.theme.BricolageGrotesque
 import com.ronaldcolocho.taskly.ui.theme.MareaBackgroundDark
 import com.ronaldcolocho.taskly.ui.theme.MareaBackgroundLight
@@ -70,8 +71,9 @@ fun PlayerVisualEffectsSheet(
     accentColor: Color = Color(0xFF70A896), // Marea Mint
     currentPaletteName: String = "",
     activePalettePrimary: Color? = null,
-    onCyclePalette: (() -> Unit)? = null,
-    onResetPalette: (() -> Unit)? = null
+    colorMode: PlayerColorMode = PlayerColorMode.AUTOMATIC,
+    onChangeColor: (() -> Unit)? = null,
+    onSetColorMode: ((PlayerColorMode) -> Unit)? = null
 ) {
     val darkTheme = isSystemInDarkTheme()
     val background = if (darkTheme) MareaBackgroundDark else MareaBackgroundLight
@@ -138,7 +140,7 @@ fun PlayerVisualEffectsSheet(
                             color = onSurface
                         )
                         Text(
-                            text = "Estilo de animación visual del disco",
+                            text = "Elige el color y la animación",
                             style = androidx.compose.ui.text.TextStyle(
                                 fontFamily = BricolageGrotesque,
                                 fontSize = 12.sp
@@ -163,78 +165,22 @@ fun PlayerVisualEffectsSheet(
 
             Spacer(Modifier.height(18.dp))
 
-            if (currentPaletteName.isNotBlank() && onCyclePalette != null) {
-                androidx.compose.material3.Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = surface,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 14.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clip(CircleShape)
-                                    .background(activePalettePrimary ?: accentColor)
-                            )
-                            Column {
-                                Text(
-                                    text = "Color / Tema",
-                                    fontSize = 11.sp,
-                                    color = secondary,
-                                    fontFamily = BricolageGrotesque
-                                )
-                                Text(
-                                    text = currentPaletteName,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = onSurface,
-                                    fontFamily = BricolageGrotesque
-                                )
-                            }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            if (onResetPalette != null) {
-                                androidx.compose.material3.OutlinedButton(
-                                    onClick = onResetPalette,
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    modifier = Modifier.height(30.dp)
-                                ) {
-                                    Text("Original", fontSize = 11.sp, color = secondary)
-                                }
-                            }
-                            androidx.compose.material3.Button(
-                                onClick = onCyclePalette,
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                modifier = Modifier.height(30.dp),
-                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                    containerColor = accentColor
-                                )
-                            ) {
-                                Text("Variar", fontSize = 11.sp, color = background)
-                            }
-                        }
-                    }
-                }
-            }
-
             // Effects List
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false)
             ) {
-                items(PlayerVisualEffect.entries.toTypedArray()) { effect ->
+                if (currentPaletteName.isNotBlank() && onChangeColor != null && onSetColorMode != null) {
+                    item(key = "player_color_controls") {
+                        PlayerColorControls(currentPaletteName, activePalettePrimary ?: accentColor,
+                            colorMode, onChangeColor, onSetColorMode, surface, onSurface, secondary, accentColor)
+                    }
+                }
+                item(key = "animation_title") {
+                    Text("Animación", color = onSurface, fontFamily = BricolageGrotesque,
+                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+                items(PlayerVisualEffect.entries.toTypedArray(), key = { it.id }) { effect ->
                     val isSelected = effect == currentEffect
                     val cardBg by animateColorAsState(
                         if (isSelected) accentColor.copy(alpha = 0.14f) else surface,

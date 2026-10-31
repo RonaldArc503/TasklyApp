@@ -10,7 +10,8 @@ data class MusicTrack(
     val playCount: Int = 0,
     val lastPlayedAt: Long = 0L,
     val addedAt: Long = 0L
-    , val position: Long = 0L
+    , val position: Long = 0L,
+    val artist: String = ""
 )
 
 data class MusicPlaylist(
@@ -29,5 +30,7 @@ data class CachedAudioReference(
     val name: String,
     val sourceMessageId: String,
     val durationSeconds: Int,
-    val downloadedAt: Long
+    val downloadedAt: Long,
+    val artist: String = "",
+    val thumbnailUrl: String = ""
 )

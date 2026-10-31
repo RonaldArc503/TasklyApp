@@ -1,6 +1,8 @@
 package com.ronaldcolocho.taskly.data.repository
 
 import android.content.Context
+import com.ronaldcolocho.taskly.data.music.OnlineMusicRepository
+import com.ronaldcolocho.taskly.domain.model.OnlineMusicSource
 import com.ronaldcolocho.taskly.domain.model.MediaDownloadState
 import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
@@ -32,7 +34,8 @@ import javax.inject.Singleton
 @Singleton
 class MediaCacheRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val client: OkHttpClient
+    private val client: OkHttpClient,
+    private val onlineMusic: OnlineMusicRepository
 ) : IMediaCacheRepository {
 
     private val activeDownloads = ConcurrentHashMap<String, Flow<MediaDownloadState>>()
@@ -175,6 +178,7 @@ class MediaCacheRepositoryImpl @Inject constructor(
                         put("mediaId", item.mediaId); put("url", item.url); put("name", item.name)
                         put("sourceMessageId", item.sourceMessageId); put("durationSeconds", item.durationSeconds)
                         put("downloadedAt", item.downloadedAt)
+                        put("artist", item.artist); put("thumbnailUrl", item.thumbnailUrl)
                     })
                 }
                 audioCatalog.edit().putString(KEY_AUDIO_CATALOG, array.toString()).apply()
@@ -197,7 +201,8 @@ class MediaCacheRepositoryImpl @Inject constructor(
                 add(CachedAudioReference(
                     mediaId = item.optString("mediaId"), url = item.optString("url"),
                     name = item.optString("name"), sourceMessageId = item.optString("sourceMessageId"),
-                    durationSeconds = item.optInt("durationSeconds"), downloadedAt = item.optLong("downloadedAt")
+                    durationSeconds = item.optInt("durationSeconds"), downloadedAt = item.optLong("downloadedAt"),
+                    artist = item.optString("artist"), thumbnailUrl = item.optString("thumbnailUrl")
                 ))
             }
         }.filter { it.mediaId.isNotBlank() && it.url.isNotBlank() }
@@ -263,13 +268,16 @@ class MediaCacheRepositoryImpl @Inject constructor(
 
                         tmp = File(dir, finalFile.name + ".tmp")
                         val request = Request.Builder().url(url).build()
-                        client.newCall(request).execute().use { response ->
+                        val remote = if (kind == MediaKind.AUDIO && OnlineMusicSource.youtubeId(url) != null)
+                            onlineMusic.openDownload(url) else client.newCall(request).execute()
+                        remote.use { response ->
                             if (!response.isSuccessful) {
                                 throw Exception("Error al descargar (${response.code})")
                             }
                             val body = response.body ?: throw Exception("Respuesta vacía")
                             val total = body.contentLength()
                             val buffer = ByteArray(8192)
+                            var receivedBytes = 0L
                             body.byteStream().use { stream ->
                                 tmp!!.outputStream().buffered().use { sink ->
                                     var read = stream.read(buffer)
@@ -279,6 +287,7 @@ class MediaCacheRepositoryImpl @Inject constructor(
                                     while (read != -1) {
                                         sink.write(buffer, 0, read)
                                         downloaded += read
+                                        receivedBytes = downloaded
                                         if (total > 0) {
                                             val pct = downloaded.toFloat() / total
                                             val intPct = (pct * 100).toInt()
@@ -294,6 +303,8 @@ class MediaCacheRepositoryImpl @Inject constructor(
                                     }
                                 }
                             }
+                            if (receivedBytes <= 0 || (total > 0 && receivedBytes != total))
+                                throw java.io.IOException("La descarga quedó incompleta. Vuelve a intentarlo.")
                         }
 
                         if (!tmp!!.renameTo(finalFile)) {

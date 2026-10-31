@@ -7,7 +7,8 @@ data class AudioTrack(
     val msgId: String,
     val durationSeconds: Int = 0,
     val thumbnailUrl: String = "",
-    val playlistId: String? = null
+    val playlistId: String? = null,
+    val artist: String = ""
 )
 
 enum class AudioMode { INDIVIDUAL, QUEUE, REPEAT, LOOP }
@@ -39,5 +40,6 @@ data class AudioPlayerState(
     val sleepTimerEndAt: Long? = null,
     val currentTimeMs: Long = 0,
     val durationMs: Long = 0,
-    val error: String? = null
+    val error: String? = null,
+    val buffering: Boolean = false
 )

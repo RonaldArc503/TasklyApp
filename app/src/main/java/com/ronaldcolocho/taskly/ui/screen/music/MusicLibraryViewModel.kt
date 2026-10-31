@@ -77,10 +77,11 @@ class MusicLibraryViewModel @Inject constructor(
         val localTracks = downloaded.map { song ->
             MusicTrack(song.id, android.net.Uri.fromFile(File(song.localPath)).toString(), song.title,
                 sourceMessageId = song.savedMessageId.orEmpty(), durationSeconds = song.durationSeconds,
-                thumbnailUrl = song.thumbnailUrl, addedAt = song.downloadedAt)
+                thumbnailUrl = song.thumbnailUrl, addedAt = song.downloadedAt, artist = song.artist)
         }
         val cacheTracks = references.map {
-            MusicTrack(it.mediaId, it.url, it.name, it.sourceMessageId, it.durationSeconds, addedAt = it.downloadedAt)
+            MusicTrack(it.mediaId, it.url, it.name, it.sourceMessageId, it.durationSeconds,
+                addedAt = it.downloadedAt, artist = it.artist, thumbnailUrl = it.thumbnailUrl)
         }
         val sources = playlistTracks.map { it.first } + favorites + history + cacheTracks + localTracks
         val favoriteIds = favorites.mapTo(hashSetOf()) { it.id }
@@ -137,6 +138,6 @@ class MusicLibraryViewModel @Inject constructor(
         if (existing is MediaDownloadState.Downloading || existing is MediaDownloadState.Queued) return
         if (auth.currentUser == null) return
         mediaDownloads.downloadAudio(CachedAudioReference(track.id, track.url, track.name,
-            track.sourceMessageId, track.durationSeconds, System.currentTimeMillis()))
+            track.sourceMessageId, track.durationSeconds, System.currentTimeMillis(), track.artist, track.thumbnailUrl))
     }
 }

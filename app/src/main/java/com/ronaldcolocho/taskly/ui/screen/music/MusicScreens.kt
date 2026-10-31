@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -65,7 +66,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -81,6 +81,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +92,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -104,7 +106,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.withFrameNanos
@@ -142,6 +143,8 @@ import com.ronaldcolocho.taskly.ui.theme.MareaSurfaceLight
 @Composable
 fun MusicScreen(
     audioController: AudioPlayerController,
+    selectedSection: MusicSection,
+    onSectionSelected: (MusicSection) -> Unit,
     onNavigateBack: () -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenPlayer: (String) -> Unit = {},
@@ -149,20 +152,27 @@ fun MusicScreen(
     libraryViewModel: MusicLibraryViewModel = hiltViewModel(),
     onOpenConverter: () -> Unit = {}
 ) {
+    if (selectedSection == MusicSection.DISCOVER) {
+        MusicDiscoverScreen(audioController, onNavigateBack, onOpenPlayer)
+        return
+    }
     val tracks by viewModel.mostPlayed.collectAsStateWithLifecycle()
-    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val playlists = if (selectedSection == MusicSection.PLAYLISTS)
+        viewModel.playlists.collectAsStateWithLifecycle().value else emptyList()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val playerState by audioController.state.collectAsStateWithLifecycle()
-    val library by libraryViewModel.library.collectAsStateWithLifecycle()
-    val libraryError by libraryViewModel.error.collectAsStateWithLifecycle()
-    val downloadStates by libraryViewModel.downloadStates.collectAsStateWithLifecycle()
+    val library = if (selectedSection == MusicSection.LIBRARY)
+        libraryViewModel.library.collectAsStateWithLifecycle().value else MusicLibraryState()
+    val libraryError = if (selectedSection == MusicSection.LIBRARY)
+        libraryViewModel.error.collectAsStateWithLifecycle().value else null
+    val downloadStates = if (selectedSection == MusicSection.LIBRARY)
+        libraryViewModel.downloadStates.collectAsStateWithLifecycle().value else emptyMap()
     var libraryFilter by rememberSaveable { mutableStateOf(MusicLibraryFilter.ALL) }
     var libraryOrder by rememberSaveable { mutableStateOf(MusicLibraryOrder.RECENT) }
-    var libraryExpanded by rememberSaveable { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, libraryViewModel) {
+    DisposableEffect(lifecycleOwner, libraryViewModel, selectedSection) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) libraryViewModel.refresh()
+            if (event == Lifecycle.Event.ON_RESUME && selectedSection == MusicSection.LIBRARY) libraryViewModel.refresh()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -172,14 +182,25 @@ fun MusicScreen(
     var showVisualEffectsSheet by remember { mutableStateOf(false) }
     val visualEffect by audioController.visualEffect.collectAsStateWithLifecycle()
     var playlistQuery by rememberSaveable { mutableStateOf("") }
-    var playlistOrder by remember { mutableStateOf("Recientes") }
-    var searchExpanded by remember { mutableStateOf(false) }
+    var libraryQuery by rememberSaveable { mutableStateOf("") }
+    var playlistOrder by rememberSaveable { mutableStateOf("Recientes") }
+    var playlistSearchExpanded by rememberSaveable { mutableStateOf(false) }
+    var librarySearchExpanded by rememberSaveable { mutableStateOf(false) }
+    var requestSearchFocus by remember { mutableStateOf(false) }
+    val searchExpanded = when (selectedSection) {
+        MusicSection.HOME, MusicSection.DISCOVER -> false
+        MusicSection.PLAYLISTS -> playlistSearchExpanded
+        MusicSection.LIBRARY -> librarySearchExpanded
+    }
+    val homeListState = rememberLazyListState()
+    val playlistsListState = rememberLazyListState()
+    val libraryListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val searchFocusRequester = remember { FocusRequester() }
 
     val orderOptions = listOf("Recientes", "Antiguas", "A-Z", "Z-A")
-    val visibleSongs = remember(library.items, playlistQuery, libraryFilter, libraryOrder) {
-        filterMusicLibrary(library.items, playlistQuery, libraryFilter, libraryOrder)
+    val visibleSongs = remember(library.items, libraryQuery, libraryFilter, libraryOrder) {
+        filterMusicLibrary(library.items, libraryQuery, libraryFilter, libraryOrder)
     }
 
     val visiblePlaylists = remember(playlists, playlistQuery, playlistOrder) {
@@ -198,8 +219,14 @@ fun MusicScreen(
     // Chunk playlists into rows of 2 for the grid
     val playlistRows = remember(visiblePlaylists) { visiblePlaylists.chunked(2) }
 
-    LaunchedEffect(searchExpanded) {
-        if (searchExpanded) searchFocusRequester.requestFocus()
+    LaunchedEffect(requestSearchFocus, selectedSection) {
+        if (requestSearchFocus && searchExpanded) {
+            val listState = if (selectedSection == MusicSection.PLAYLISTS) playlistsListState else libraryListState
+            listState.scrollToItem(0)
+        }
+    }
+    LaunchedEffect(selectedSection) {
+        if (!searchExpanded) focusManager.clearFocus()
     }
 
     // Accessibility check
@@ -285,411 +312,393 @@ fun MusicScreen(
             )
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                bottom = if (playerState.currentTrack != null) 124.dp else 92.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(0.dp)
-        ) {
-            // ── Top Bar ─────────────────────────────────────────
-            item {
-                MusicTopBar(
-                    onBack = onNavigateBack,
-                    searchExpanded = searchExpanded,
-                    searchQuery = playlistQuery,
-                    onSearchQueryChange = { playlistQuery = it },
-                    onSearchToggle = {
-                        searchExpanded = !searchExpanded
-                        if (!searchExpanded) {
-                            playlistQuery = ""
-                            focusManager.clearFocus()
-                        }
-                    },
-                    focusRequester = searchFocusRequester,
-                    surface = surface,
-                    onSurface = onSurface,
-                    secondary = secondary,
-                    mint = mint,
-                    onAccent = onAccent,
-                    onSettingsClick = { showVisualEffectsSheet = true }
-                )
-            }
-
-            // ── Error banner ────────────────────────────────────
-            if (error != null) {
+        key(selectedSection) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = when (selectedSection) {
+                    MusicSection.HOME, MusicSection.DISCOVER -> homeListState
+                    MusicSection.PLAYLISTS -> playlistsListState
+                    MusicSection.LIBRARY -> libraryListState
+                },
+                contentPadding = PaddingValues(
+                    bottom = 20.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                // ── Top Bar ─────────────────────────────────────────
                 item {
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn() + slideInVertically(),
-                        exit = fadeOut()
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 22.dp, vertical = 6.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(surface)
-                                .border(1.dp, Color(0xFFE57373).copy(alpha = 0.5f), RoundedCornerShape(18.dp))
-                                .padding(horizontal = 16.dp, vertical = 12.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Text(
-                                    error.orEmpty(),
-                                    color = onSurface,
-                                    fontFamily = BricolageGrotesque,
-                                    fontSize = 13.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(onClick = viewModel::clearError) {
-                                    Text(
-                                        "Cerrar",
-                                        color = mint,
-                                        fontFamily = BricolageGrotesque,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
+                    MusicTopBar(
+                        onBack = onNavigateBack,
+                        sectionLabel = selectedSection.label,
+                        searchPlaceholder = if (selectedSection == MusicSection.PLAYLISTS) "Buscar listas..." else "Buscar canciones...",
+                        searchExpanded = searchExpanded,
+                        searchQuery = if (selectedSection == MusicSection.PLAYLISTS) playlistQuery else libraryQuery,
+                        onSearchQueryChange = {
+                            if (selectedSection == MusicSection.PLAYLISTS) playlistQuery = it else libraryQuery = it
+                        },
+                        onSearchToggle = {
+                            when (selectedSection) {
+                                MusicSection.HOME, MusicSection.DISCOVER -> {
+                                    onSectionSelected(MusicSection.DISCOVER)
+                                }
+                                MusicSection.PLAYLISTS -> {
+                                    playlistSearchExpanded = !playlistSearchExpanded
+                                    requestSearchFocus = playlistSearchExpanded
+                                    if (!playlistSearchExpanded) { playlistQuery = ""; focusManager.clearFocus() }
+                                }
+                                MusicSection.LIBRARY -> {
+                                    librarySearchExpanded = !librarySearchExpanded
+                                    requestSearchFocus = librarySearchExpanded
+                                    if (!librarySearchExpanded) { libraryQuery = ""; focusManager.clearFocus() }
                                 }
                             }
-                        }
-                    }
-                }
-            }
-
-            if (libraryError != null) item(key = "library_error") {
-                Row(Modifier.padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(libraryError.orEmpty(), modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { libraryViewModel.clearError(); libraryViewModel.refresh() }) { Text("Reintentar") }
-                }
-            }
-            musicLibraryItems(
-                state = library, visible = visibleSongs, filter = libraryFilter, order = libraryOrder,
-                expanded = libraryExpanded || playlistQuery.isNotBlank(), downloadStates = downloadStates,
-                onFilter = { libraryFilter = it; libraryExpanded = false }, onOrder = { libraryOrder = it },
-                onExpand = { libraryExpanded = !libraryExpanded }, onRefresh = libraryViewModel::refresh,
-                onPlay = { selected ->
-                    val playable = visibleSongs.filter { it.availableOffline || it.canDownload }.map { it.track }
-                    playTracks(audioController, playable, selected.track)
-                    onOpenPlayer(libraryFilter.label)
-                },
-                onFavorite = { libraryViewModel.setFavorite(it.track, !it.favorite) },
-                onDownload = { libraryViewModel.download(it.track) },
-                onNext = { audioController.addToQueueNext(it.track.toAudioTrack()) },
-                onEnd = { audioController.addToQueueEnd(it.track.toAudioTrack()) },
-                onRecover = onOpenConverter
-            )
-
-            // ── "Las más escuchadas" section header ──────────────
-            item {
-                Spacer(Modifier.height(14.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Las más escuchadas",
-                        style = androidx.compose.ui.text.TextStyle(
-                            fontFamily = BricolageGrotesque,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        ),
-                        color = onSurface
-                    )
-                    if (tracks.isNotEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(mint.copy(alpha = 0.16f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Text(
-                                text = "${tracks.size}",
-                                style = androidx.compose.ui.text.TextStyle(
-                                    fontFamily = BricolageGrotesque,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                ),
-                                color = mint
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            if (tracks.isEmpty()) {
-                item {
-                    EmptyMostPlayed(
-                        surface = surface,
-                        onSurface = onSurface,
-                        secondary = secondary,
-                        mint = mint,
-                        modifier = Modifier.padding(horizontal = 22.dp)
-                    )
-                }
-            } else {
-                item {
-                    MostPlayedCarousel(
-                        tracks = tracks,
-                        currentTrackId = playerState.currentTrack?.id,
-                        isPlaying = playerState.playing,
-                        animationsEnabled = animationsEnabled,
-                        surface = surface,
-                        onSurface = onSurface,
-                        mint = mint,
-                        lilac = lilac,
-                        onTrackClick = { track ->
-                            playTracks(audioController, tracks, track)
-                            onOpenPlayer("Las más escuchadas")
-                        }
-                    )
-                }
-            }
-
-            // ── "Mis listas" section header ─────────────────────
-            item {
-                Spacer(Modifier.height(28.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = "Mis listas",
-                            style = androidx.compose.ui.text.TextStyle(
-                                fontFamily = BricolageGrotesque,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 20.sp
-                            ),
-                            color = onSurface
-                        )
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(secondary.copy(alpha = 0.6f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Text(
-                                text = "${playlists.size}",
-                                style = androidx.compose.ui.text.TextStyle(
-                                    fontFamily = BricolageGrotesque,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                ),
-                                color = onSurface.copy(alpha = 0.85f)
-                            )
-                        }
-                    }
-
-                    // Quick "+ Nueva" pill in header
-                    MareaScaleButton(
-                        onClick = { showCreate = true },
-                        shape = RoundedCornerShape(16.dp),
-                        color = mint.copy(alpha = 0.15f),
-                        modifier = Modifier
-                            .height(34.dp)
-                            .border(1.dp, mint.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = null,
-                                tint = mint,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                "Nueva",
-                                style = androidx.compose.ui.text.TextStyle(
-                                    fontFamily = BricolageGrotesque,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                ),
-                                color = mint
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(14.dp))
-            }
-
-            // ── Sort chips ─────────────────────────────────────
-            item {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 22.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 14.dp)
-                ) {
-                    items(orderOptions) { option ->
-                        val isSelected = playlistOrder == option
-                        MareaScaleButton(
-                            onClick = { playlistOrder = option },
-                            shape = RoundedCornerShape(18.dp),
-                            color = if (isSelected) mint else surface,
-                            modifier = Modifier
-                                .height(36.dp)
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isSelected) mint else secondary.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(18.dp)
-                                )
-                        ) {
-                            Text(
-                                text = option,
-                                style = androidx.compose.ui.text.TextStyle(
-                                    fontFamily = BricolageGrotesque,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 12.sp
-                                ),
-                                color = if (isSelected) onAccent else onSurface.copy(alpha = 0.75f),
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // ── Empty playlists state ──────────────────────────
-            if (visiblePlaylists.isEmpty()) {
-                item {
-                    EmptyPlaylistsState(
-                        hasQuery = playlistQuery.isNotBlank(),
-                        searchQuery = playlistQuery,
+                        },
+                        focusRequester = searchFocusRequester,
+                        onSearchLaidOut = {
+                            if (requestSearchFocus) {
+                                searchFocusRequester.requestFocus()
+                                requestSearchFocus = false
+                            }
+                        },
                         surface = surface,
                         onSurface = onSurface,
                         secondary = secondary,
                         mint = mint,
                         onAccent = onAccent,
-                        onCreatePlaylist = { showCreate = true },
-                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp)
+                        onSettingsClick = { showVisualEffectsSheet = true }
                     )
                 }
-            }
 
-            // ── Playlist grid (2 columns via chunked rows) ─────
-            items(playlistRows) { row ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    row.forEach { playlist ->
-                        PlaylistGridCard(
-                            playlist = playlist,
-                            surface = surface,
-                            onSurface = onSurface,
-                            secondary = secondary,
-                            mint = mint,
-                            onClick = { onOpenPlaylist(playlist.id) },
-                            onRename = { name -> viewModel.renamePlaylist(playlist.id, name) },
-                            onDelete = { viewModel.deletePlaylist(playlist.id) },
-                            modifier = Modifier.weight(1f)
-                        )
+                // ── Error banner ────────────────────────────────────
+                if (error != null) {
+                    item {
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn() + slideInVertically(),
+                            exit = fadeOut()
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 22.dp, vertical = 6.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(surface)
+                                    .border(1.dp, Color(0xFFE57373).copy(alpha = 0.5f), RoundedCornerShape(18.dp))
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        error.orEmpty(),
+                                        color = onSurface,
+                                        fontFamily = BricolageGrotesque,
+                                        fontSize = 13.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = viewModel::clearError) {
+                                        Text(
+                                            "Cerrar",
+                                            color = mint,
+                                            fontFamily = BricolageGrotesque,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
-                    if (row.size == 1) {
-                        Spacer(Modifier.weight(1f))
+                }
+
+                if (selectedSection == MusicSection.LIBRARY) {
+                    if (libraryError != null) item(key = "library_error") {
+                        Row(Modifier.padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(libraryError.orEmpty(), modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+                            TextButton(onClick = { libraryViewModel.clearError(); libraryViewModel.refresh() }) { Text("Reintentar") }
+                        }
                     }
-                }
-            }
-
-            item { Spacer(Modifier.height(16.dp)) }
-        }
-
-        // ── Floating Action Button (Nueva lista) ─────────────
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(
-                    end = 20.dp,
-                    bottom = if (playerState.currentTrack != null) 92.dp else 24.dp
-                )
-        ) {
-            MareaScaleButton(
-                onClick = { showCreate = true },
-                shape = RoundedCornerShape(24.dp),
-                color = mint,
-                modifier = Modifier
-                    .height(50.dp)
-                    .shadow(
-                        elevation = 12.dp,
-                        shape = RoundedCornerShape(24.dp),
-                        ambientColor = Color.Black.copy(alpha = 0.35f),
-                        spotColor = Color.Black.copy(alpha = 0.45f)
-                    )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 18.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = "Crear lista",
-                        tint = onAccent,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        "Nueva lista",
-                        style = androidx.compose.ui.text.TextStyle(
-                            fontFamily = BricolageGrotesque,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        ),
-                        color = onAccent
+                    musicLibraryItems(
+                        state = library, visible = visibleSongs, filter = libraryFilter, order = libraryOrder,
+                        downloadStates = downloadStates,
+                        onFilter = { libraryFilter = it }, onOrder = { libraryOrder = it },
+                        onRefresh = libraryViewModel::refresh,
+                        onPlay = { selected ->
+                            val playable = visibleSongs.filter { it.availableOffline || it.canDownload }.map { it.track }
+                            playTracks(audioController, playable, selected.track)
+                            onOpenPlayer(libraryFilter.label)
+                        },
+                        onFavorite = { libraryViewModel.setFavorite(it.track, !it.favorite) },
+                        onDownload = { libraryViewModel.download(it.track) },
+                        onNext = { audioController.addToQueueNext(it.track.toAudioTrack()) },
+                        onEnd = { audioController.addToQueueEnd(it.track.toAudioTrack()) },
+                        onRecover = onOpenConverter
                     )
                 }
+
+                if (selectedSection == MusicSection.HOME) {
+                    if (playerState.currentTrack != null) item(key = "music_resume") {
+                        MusicResumeCard(playerState, surface, onSurface, mint,
+                            onToggle = audioController::toggleCurrent, onOpenPlayer = { onOpenPlayer("Música") })
+                    }
+                    val recentTracks = tracks.filter { it.lastPlayedAt > 0 }.sortedByDescending { it.lastPlayedAt }.take(10)
+                    if (recentTracks.isNotEmpty()) {
+                        item(key = "recent_title") {
+                            Text("Escuchadas recientemente", color = onSurface, fontFamily = BricolageGrotesque,
+                                fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                                modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp))
+                        }
+                        item(key = "recent_tracks") {
+                            MostPlayedCarousel(recentTracks, playerState.currentTrack?.id, playerState.playing,
+                                animationsEnabled, surface, onSurface, mint, lilac,
+                                onTrackClick = { track ->
+                                    playTracks(audioController, recentTracks, track)
+                                    onOpenPlayer("Escuchadas recientemente")
+                                }, showRank = false)
+                        }
+                    }
+                    // ── "Las más escuchadas" section header ──────────────
+                    item {
+                        Spacer(Modifier.height(14.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 22.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Las más escuchadas",
+                                style = androidx.compose.ui.text.TextStyle(
+                                    fontFamily = BricolageGrotesque,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 20.sp
+                                ),
+                                color = onSurface
+                            )
+                            if (tracks.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(mint.copy(alpha = 0.16f))
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = "${tracks.size}",
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            fontFamily = BricolageGrotesque,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        ),
+                                        color = mint
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+
+                    if (tracks.isEmpty()) {
+                        item {
+                            Column {
+                                EmptyMostPlayed(
+                                    surface = surface,
+                                    onSurface = onSurface,
+                                    secondary = secondary,
+                                    mint = mint,
+                                    modifier = Modifier.padding(horizontal = 22.dp)
+                                )
+                                TextButton(onClick = { onSectionSelected(MusicSection.LIBRARY) },
+                                    modifier = Modifier.padding(horizontal = 14.dp)) {
+                                    Text("Explorar mi biblioteca", color = mint, fontFamily = BricolageGrotesque)
+                                }
+                            }
+                        }
+                    } else {
+                        item {
+                            MostPlayedCarousel(
+                                tracks = tracks,
+                                currentTrackId = playerState.currentTrack?.id,
+                                isPlaying = playerState.playing,
+                                animationsEnabled = animationsEnabled,
+                                surface = surface,
+                                onSurface = onSurface,
+                                mint = mint,
+                                lilac = lilac,
+                                onTrackClick = { track ->
+                                    playTracks(audioController, tracks, track)
+                                    onOpenPlayer("Las más escuchadas")
+                                }
+                            )
+                        }
+                    }
+
+                }
+
+                if (selectedSection == MusicSection.PLAYLISTS) {
+                    // ── "Mis listas" section header ─────────────────────
+                    item {
+                        Spacer(Modifier.height(28.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 22.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = "Mis listas",
+                                    style = androidx.compose.ui.text.TextStyle(
+                                        fontFamily = BricolageGrotesque,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 20.sp
+                                    ),
+                                    color = onSurface
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(secondary.copy(alpha = 0.6f))
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = "${playlists.size}",
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            fontFamily = BricolageGrotesque,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        ),
+                                        color = onSurface.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
+
+                            // Quick "+ Nueva" pill in header
+                            MareaScaleButton(
+                                onClick = { showCreate = true },
+                                shape = RoundedCornerShape(16.dp),
+                                color = mint.copy(alpha = 0.15f),
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .border(1.dp, mint.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = null,
+                                        tint = mint,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        "Nueva",
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            fontFamily = BricolageGrotesque,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        ),
+                                        color = mint
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                    }
+
+                    // ── Sort chips ─────────────────────────────────────
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 22.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 14.dp)
+                        ) {
+                            items(orderOptions) { option ->
+                                val isSelected = playlistOrder == option
+                                MareaScaleButton(
+                                    onClick = { playlistOrder = option },
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = if (isSelected) mint else surface,
+                                    modifier = Modifier
+                                        .height(36.dp)
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) mint else secondary.copy(alpha = 0.5f),
+                                            shape = RoundedCornerShape(18.dp)
+                                        )
+                                ) {
+                                    Text(
+                                        text = option,
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            fontFamily = BricolageGrotesque,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            fontSize = 12.sp
+                                        ),
+                                        color = if (isSelected) onAccent else onSurface.copy(alpha = 0.75f),
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Empty playlists state ──────────────────────────
+                    if (visiblePlaylists.isEmpty()) {
+                        item {
+                            EmptyPlaylistsState(
+                                hasQuery = playlistQuery.isNotBlank(),
+                                searchQuery = playlistQuery,
+                                surface = surface,
+                                onSurface = onSurface,
+                                secondary = secondary,
+                                mint = mint,
+                                onAccent = onAccent,
+                                onCreatePlaylist = { showCreate = true },
+                                modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp)
+                            )
+                        }
+                    }
+
+                    // ── Playlist grid (2 columns via chunked rows) ─────
+                    items(playlistRows) { row ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 5.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            row.forEach { playlist ->
+                                PlaylistGridCard(
+                                    playlist = playlist,
+                                    surface = surface,
+                                    onSurface = onSurface,
+                                    secondary = secondary,
+                                    mint = mint,
+                                    onClick = { onOpenPlaylist(playlist.id) },
+                                    onRename = { name -> viewModel.renamePlaylist(playlist.id, name) },
+                                    onDelete = { viewModel.deletePlaylist(playlist.id) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (row.size == 1) {
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+
+                }
+                item { Spacer(Modifier.height(16.dp)) }
             }
         }
 
-        // ── Sticky Floating Mini Player at Bottom ───────────
-        val currentTrack = playerState.currentTrack
-        if (currentTrack != null) {
-            val dur = if (playerState.durationMs > 0) playerState.durationMs
-            else (currentTrack.durationSeconds.takeIf { it > 0 }?.toLong()?.times(1000L)) ?: 0L
-            val progress = if (dur > 0)
-                (playerState.currentTimeMs.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
-            else 0f
-
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 14.dp)
-            ) {
-                MareaFloatingMiniPlayer(
-                    track       = currentTrack,
-                    isPlaying   = playerState.playing,
-                    progress    = progress,
-                    surface     = surface,
-                    onSurface   = onSurface,
-                    secondary   = secondary,
-                    lilac       = lilac,
-                    peach       = peach,
-                    onAccent    = onAccent,
-                    darkTheme   = darkTheme,
-                    onPlayPause = { audioController.toggleCurrent() },
-                    onClick     = { onOpenPlayer("Música") }
-                )
-            }
-        }
     }
 
     if (showCreate) {
@@ -729,11 +738,14 @@ fun MusicScreen(
 @Composable
 private fun MusicTopBar(
     onBack: () -> Unit,
+    sectionLabel: String,
+    searchPlaceholder: String,
     searchExpanded: Boolean,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onSearchToggle: () -> Unit,
     focusRequester: FocusRequester,
+    onSearchLaidOut: () -> Unit,
     surface: Color,
     onSurface: Color,
     secondary: Color,
@@ -795,7 +807,7 @@ private fun MusicTopBar(
                         onValueChange = onSearchQueryChange,
                         placeholder = {
                             Text(
-                                "Buscar canciones y listas...",
+                                searchPlaceholder,
                                 style = androidx.compose.ui.text.TextStyle(
                                     fontFamily = BricolageGrotesque,
                                     fontSize = 14.sp
@@ -806,7 +818,8 @@ private fun MusicTopBar(
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
-                            .focusRequester(focusRequester),
+                            .focusRequester(focusRequester)
+                            .onGloballyPositioned { onSearchLaidOut() },
                         textStyle = androidx.compose.ui.text.TextStyle(
                             fontFamily = BricolageGrotesque,
                             fontSize = 14.sp,
@@ -851,7 +864,7 @@ private fun MusicTopBar(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "Tus listas y reproducciones",
+                    text = sectionLabel,
                     style = androidx.compose.ui.text.TextStyle(
                         fontFamily = BricolageGrotesque,
                         fontSize = 12.sp
@@ -903,7 +916,8 @@ private fun MostPlayedCarousel(
     onSurface: Color,
     mint: Color,
     lilac: Color,
-    onTrackClick: (MusicTrack) -> Unit
+    onTrackClick: (MusicTrack) -> Unit,
+    showRank: Boolean = true
 ) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 22.dp),
@@ -914,7 +928,7 @@ private fun MostPlayedCarousel(
             val isActive = track.id == currentTrackId
             MostPlayedCard(
                 track = track,
-                rank = index + 1,
+                rank = if (showRank) index + 1 else 0,
                 isActive = isActive,
                 isPlaying = isActive && isPlaying,
                 animationsEnabled = animationsEnabled,
@@ -1009,7 +1023,7 @@ private fun MostPlayedCard(
             }
 
             // Rank glass badge at top-left
-            Box(
+            if (rank > 0) Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(6.dp)
@@ -2175,7 +2189,7 @@ internal fun playTracks(
     playlistId: String? = null
 ) {
     val audioTracks = tracks.map {
-        AudioTrack(it.id, it.url, it.name, it.sourceMessageId, it.durationSeconds, it.thumbnailUrl, playlistId)
+        it.toAudioTrack(playlistId)
     }
     controller.updatePlaylist(audioTracks)
     audioTracks.firstOrNull { it.id == selected.id }?.let(controller::playWithQueue)
@@ -2189,7 +2203,7 @@ internal fun previewTrack(controller: AudioPlayerController, track: MusicTrack) 
         track.name,
         track.sourceMessageId,
         track.durationSeconds,
-        track.thumbnailUrl
+        track.thumbnailUrl, artist = track.artist
     )
     controller.updatePlaylist(listOf(audioTrack))
     controller.toggleTrack(audioTrack)

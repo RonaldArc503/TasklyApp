@@ -16,7 +16,7 @@ data class MusicLibraryItem(
 }
 
 enum class MusicLibraryFilter(val label: String) {
-    ALL("Canciones"), FAVORITES("Mis favoritas"), OFFLINE("Sin conexión"), MISSING("Por recuperar")
+    ALL("Todas"), FAVORITES("Favoritas"), OFFLINE("Descargadas"), MISSING("Por recuperar")
 }
 
 enum class MusicLibraryOrder(val label: String) {
@@ -34,7 +34,7 @@ fun filterMusicLibrary(
             MusicLibraryFilter.OFFLINE -> item.availableOffline
             MusicLibraryFilter.MISSING -> item.needsDownload
         }
-        val text = normalizeMusicQuery(item.track.name + " " + item.playlistNames.joinToString(" "))
+        val text = normalizeMusicQuery(item.track.name + " " + item.track.artist + " " + item.playlistNames.joinToString(" "))
         matchesFilter && terms.all { it in text }
     }.sortedWith(when (order) {
         MusicLibraryOrder.RECENT -> compareByDescending<MusicLibraryItem> { it.track.addedAt }

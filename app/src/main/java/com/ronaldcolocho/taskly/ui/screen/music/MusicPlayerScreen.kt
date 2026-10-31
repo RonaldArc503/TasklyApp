@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -70,6 +71,7 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -112,6 +114,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -124,6 +127,10 @@ import androidx.compose.ui.unit.min
 import androidx.compose.ui.zIndex
 import androidx.core.view.ViewCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.audio.AudioPlayerController
 import com.ronaldcolocho.taskly.audio.PlayerColorMode
@@ -176,9 +183,21 @@ fun MusicPlayerScreen(
     audioController: AudioPlayerController,
     playlistName: String = "Mi lista",
     darkTheme: Boolean = androidx.compose.foundation.isSystemInDarkTheme(),
-    onNavigateBack: () -> Unit = {}
+    onNavigateBack: () -> Unit = {},
+    lyricsViewModel: MusicLyricsViewModel = hiltViewModel()
 ) {
     val playerState by audioController.state.collectAsStateWithLifecycle()
+    val showLyrics by lyricsViewModel.showing.collectAsStateWithLifecycle()
+    val lyricsState by lyricsViewModel.state.collectAsStateWithLifecycle()
+    val lyricsLifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lyricsLifecycle, lyricsViewModel) {
+        val observer = LifecycleEventObserver { _, _ ->
+            lyricsViewModel.setScreenActive(lyricsLifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        }
+        lyricsLifecycle.addObserver(observer)
+        lyricsViewModel.setScreenActive(lyricsLifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        onDispose { lyricsLifecycle.removeObserver(observer); lyricsViewModel.setScreenActive(false) }
+    }
 
     // ── Theme tokens resolved for dark/light ─────────────────
     val background = if (darkTheme) MareaBackgroundDark else MareaBackgroundLight
@@ -211,6 +230,7 @@ fun MusicPlayerScreen(
     val animSecondary by animateColorAsState(trackPalette.secondary, tween(650), label = "secondary")
     val animTertiary  by animateColorAsState(trackPalette.tertiary, tween(650), label = "tertiary")
     val animGlow      by animateColorAsState(trackPalette.glow, tween(650), label = "glow")
+    val lyricsAccent = lyricsTextAccent(animPrimary, background, onSurface)
 
     // ── Visual effects state ──────────────────────────────────
     val currentEffect by audioController.visualEffect.collectAsStateWithLifecycle()
@@ -300,7 +320,15 @@ fun MusicPlayerScreen(
             ) {
                 val coverSize = min(maxWidth * 0.72f, 290.dp)
 
-                MareaAlbumArt(
+                if (showLyrics && playerState.currentTrack != null) {
+                    androidx.compose.runtime.key(trackId) {
+                        MusicLyricsPane(
+                            state = if (lyricsState.trackId == trackId) lyricsState else MusicLyricsState(trackId, loading = true),
+                            positionMs = playerState.currentTimeMs, onSurface = onSurface, secondary = secondary,
+                            accent = lyricsAccent, onRetry = lyricsViewModel::retry
+                        )
+                    }
+                } else MareaAlbumArt(
                     coverUrl        = playerState.currentTrack?.thumbnailUrl ?: "",
                     isPlaying       = playerState.playing,
                     size            = coverSize,
@@ -313,7 +341,8 @@ fun MusicPlayerScreen(
                     onSwipeLeft     = { audioController.next() },
                     onSwipeRight    = { audioController.prev() },
                     onDoubleTap     = { /* Favorito — placeholder: no existe isFavorite en el modelo */ },
-                    onCyclePalette = changeColor
+                    onCyclePalette = changeColor,
+                    modifier = Modifier.testTag("music_visual_stage")
                 )
             }
 
@@ -322,7 +351,7 @@ fun MusicPlayerScreen(
                 ?: "${if (colors.mode == PlayerColorMode.ORIGINAL) "Original" else "Automático"}: ${trackPalette.name} · ${resolvedEffect.title}"
             val statusColor = animPrimary
 
-            Text(
+            if (!showLyrics || feedbackMessage != null) Text(
                 text       = statusText,
                 style      = MareaContextStyle.copy(fontSize = androidx.compose.ui.unit.TextUnit(12f, androidx.compose.ui.unit.TextUnitType.Sp)),
                 color      = statusColor,
@@ -341,7 +370,9 @@ fun MusicPlayerScreen(
                 track       = playerState.currentTrack,
                 onSurface   = onSurface,
                 secondary   = secondary,
-                accentColor = animPrimary
+                accentColor = if (showLyrics) lyricsAccent else animPrimary,
+                showingLyrics = showLyrics,
+                onToggleLyrics = lyricsViewModel::toggle
             )
 
             Spacer(Modifier.height(22.dp))
@@ -529,7 +560,8 @@ private fun MareaAlbumArt(
     onSwipeLeft    : () -> Unit,
     onSwipeRight   : () -> Unit,
     onDoubleTap    : () -> Unit,
-    onCyclePalette : () -> Unit
+    onCyclePalette : () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val currentOnCyclePalette by rememberUpdatedState(onCyclePalette)
     val currentOnSwipeLeft by rememberUpdatedState(onSwipeLeft)
@@ -652,7 +684,7 @@ private fun MareaAlbumArt(
     }
 
     Box(
-        modifier = Modifier.size(size * 1.16f),
+        modifier = modifier.size(size * 1.16f),
         contentAlignment = Alignment.Center
     ) {
         // 1. Lush atmospheric ambient aura behind the tide (breathes and glows in song colors)
@@ -2952,19 +2984,25 @@ private fun MareaSongInfo(
     track       : AudioTrack?,
     onSurface   : Color,
     secondary   : Color,
-    accentColor : Color
+    accentColor : Color,
+    showingLyrics: Boolean,
+    onToggleLyrics: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Text(
-            text     = track?.name ?: "—",
-            style    = MareaTitleStyle,
-            color    = onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = track?.name ?: "—", style = MareaTitleStyle, color = onSurface,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+            )
+            IconToggleButton(checked = showingLyrics, onCheckedChange = { onToggleLyrics() },
+                enabled = track != null, modifier = Modifier.size(48.dp).testTag("music_lyrics_toggle")) {
+                Icon(Icons.Default.Lyrics, if (showingLyrics) "Mostrar animación" else "Mostrar letra",
+                    tint = if (showingLyrics) accentColor else secondary)
+            }
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp)

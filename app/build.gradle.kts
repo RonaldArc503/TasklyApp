@@ -109,6 +109,8 @@ dependencies {
     testImplementation("com.google.protobuf:protobuf-javalite:4.36.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
 
 

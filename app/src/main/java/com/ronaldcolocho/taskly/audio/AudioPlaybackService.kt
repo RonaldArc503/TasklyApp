@@ -19,6 +19,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import com.ronaldcolocho.taskly.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.*
 
 @AndroidEntryPoint
 class AudioPlaybackService : MediaSessionService() {
@@ -26,6 +27,7 @@ class AudioPlaybackService : MediaSessionService() {
     @Inject lateinit var onlineMusic: OnlineMusicRepository
     private var mediaSession: MediaSession? = null
     private var streamCache: SimpleCache? = null
+    private val radioScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
         super.onCreate()
@@ -47,6 +49,15 @@ class AudioPlaybackService : MediaSessionService() {
                 true // handle audio focus automatically
             )
             .build()
+
+        player.addListener(RelatedPlaybackQueue(player, radioScope, load = { seed ->
+            withContext(Dispatchers.IO) {
+                onlineMusic.related(seed.url).map { track ->
+                    AudioTrack(track.id, track.url, track.name, track.sourceMessageId, track.durationSeconds,
+                        track.thumbnailUrl, artist = track.artist, relatedAutoplay = true)
+                }
+            }
+        }))
         
         val openCurrentAudio = PendingIntent.getActivity(
             this,
@@ -67,6 +78,7 @@ class AudioPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        radioScope.cancel()
         mediaSession?.run {
             player.release()
             release()

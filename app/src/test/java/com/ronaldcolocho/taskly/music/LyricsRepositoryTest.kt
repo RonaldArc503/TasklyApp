@@ -23,6 +23,33 @@ class LyricsRepositoryTest {
     private fun repository(http: OkHttpClient, directory: java.io.File, now: () -> Long = System::currentTimeMillis) =
         LyricsRepository(http, directory, now, listOf(LyricsSource.LRCLIB))
 
+    @Test fun keepsLegacyPositiveCacheAndIgnoresLegacyNegativeCache() = runBlocking {
+        val legacyName = java.security.MessageDigest.getInstance("SHA-256").digest(query.legacyKey.toByteArray())
+            .joinToString("") { "%02x".format(it) } + ".json"
+        val directory = folder.newFolder()
+        val legacy = java.io.File(directory, legacyName)
+        legacy.writeText("""{"found":true,"plain":"Saved fixture","synced":"","instrumental":false,"savedAt":1}""")
+        val offline = OkHttpClient.Builder().addInterceptor { throw AssertionError("Legacy positive must stay offline") }.build()
+        val found = repository(offline, directory).lookup(query) as LyricsLookup.Found
+        assertEquals("Saved fixture", found.lyrics.plainText)
+        assertEquals(2, directory.listFiles()!!.size)
+        val negativeDirectory = folder.newFolder()
+        java.io.File(negativeDirectory, legacyName).writeText("""{"found":false,"savedAt":${System.currentTimeMillis()},"sources":"LRCLIB"}""")
+        var calls = 0
+        val online = OkHttpClient.Builder().addInterceptor { chain -> calls++; response(chain.request(), 200, record) }.build()
+        assertTrue(repository(online, negativeDirectory).lookup(query) is LyricsLookup.Found)
+        assertEquals(1, calls)
+    }
+
+    @Test fun providerQueryUsesBaseTitleAndPrimaryArtistWithoutLosingMatchValidation() = runBlocking {
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            assertEquals("Song", chain.request().url.queryParameter("track_name"))
+            assertEquals("Artist", chain.request().url.queryParameter("artist_name"))
+            response(chain.request(), 200, record)
+        }.build()
+        assertTrue(repository(http, folder.newFolder()).lookup(LyricsQuery("Song (feat. Guest)", "Artist、Guest", 200)) is LyricsLookup.Found)
+    }
+
     @Test fun exactLookupIdentifiesAppAndPersistsForOfflineUse() = runBlocking {
         var requests = 0
         val http = OkHttpClient.Builder().addInterceptor { chain ->

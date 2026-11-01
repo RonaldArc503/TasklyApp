@@ -10,6 +10,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import java.io.File
+import java.io.IOException
+import java.io.InterruptedIOException
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -35,7 +37,7 @@ class LyricsRepository internal constructor(
     private val misses = ConcurrentHashMap<String, Long>()
     private val transport = LyricsHttpTransport(http, now, diagnostic)
     private val sources = LyricsSources(transport)
-    private val sourceSignature = sourceOrder.joinToString(",") { it.label }
+    private val sourceSignature = "v2:" + sourceOrder.joinToString(",") { it.label }
 
     /** Waiters share the same work; when the last waiter leaves, cancellation reaches OkHttp. */
     suspend fun lookup(query: LyricsQuery, refresh: Boolean = false): LyricsLookup {
@@ -75,12 +77,17 @@ class LyricsRepository internal constructor(
         // A retry never discards an existing readable lyric.
         if (cached is LyricsLookup.Found || (!refresh && cached != null)) return cached
         recent[query.key]?.takeIf { it.until > now() }?.let { return it.result }
-        val unavailable = mutableListOf<Long>()
+        val unavailable = mutableListOf<Pair<LyricsSource, LyricsUnavailable>>()
+        fun failure(source: LyricsSource, detail: String, automatic: Boolean = true) {
+            val deadline = if (automatic) transport.failed(source, detail = detail) else now() + 5000
+            unavailable += source to LyricsUnavailable(deadline, detail, automatic)
+        }
         for (source in sourceOrder) {
             val missKey = "${source.name}:${query.key}"
             if (!refresh && (misses[missKey] ?: 0L) > now()) continue
-            if (transport.availableAt(source) > now()) {
-                unavailable += transport.availableAt(source)
+            val paused = transport.unavailable(source)
+            if (paused != null) {
+                unavailable += source to paused
                 continue
             }
             try {
@@ -95,27 +102,42 @@ class LyricsRepository internal constructor(
                 misses[missKey] = now() + 15 * 60_000
                 if (misses.size > 256) misses.entries.minByOrNull { it.value }?.let { misses.remove(it.key) }
             } catch (_: TimeoutCancellationException) {
-                unavailable += transport.failed(source)
+                failure(source, "tiempo de espera agotado")
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: LyricsUnavailable) { unavailable += error.availableAtMs }
-            catch (_: Exception) { unavailable += transport.failed(source) }
+            catch (error: LyricsUnavailable) { unavailable += source to error }
+            catch (error: LyricsHttpError) {
+                failure(source, if (error.status in listOf(401, 403)) "consulta rechazada (HTTP ${error.status})"
+                    else "error del servicio (HTTP ${error.status})", automatic = error.status >= 500)
+            }
+            catch (_: InterruptedIOException) { failure(source, "tiempo de espera agotado") }
+            catch (_: IOException) { failure(source, "no se pudo conectar con el servicio") }
+            catch (_: Exception) { failure(source, "respuesta de letras no válida", automatic = false) }
         }
+        val retryable = unavailable.filter { it.second.autoRetry }.ifEmpty { unavailable }
         val result = if (unavailable.isEmpty()) LyricsLookup.NotFound else LyricsLookup.Failed(
-            "Los proveedores de letras están temporalmente ocupados o sin conexión.",
-            maxOf(now() + 5000, unavailable.min()))
+            "No se pudo obtener la letra. " + unavailable.joinToString("; ") { (source, error) -> "${source.label}: ${error.detail}" } + ".",
+            maxOf(now() + 5000, retryable.minOf { it.second.availableAtMs }),
+            autoRetry = unavailable.any { it.second.autoRetry })
         if (result is LyricsLookup.NotFound) writeCache(query, result)
         recent[query.key] = Recent(result, (result as? LyricsLookup.Failed)?.retryAtMs ?: (now() + 5000))
         if (recent.size > 64) recent.entries.minByOrNull { it.value.until }?.let { recent.remove(it.key) }
         return result
     }
 
-    private fun file(query: LyricsQuery): File {
-        val hash = MessageDigest.getInstance("SHA-256").digest(query.key.toByteArray()).joinToString("") { "%02x".format(it) }
+    private fun file(key: String): File {
+        val hash = MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
         return File(directory, "$hash.json")
     }
 
-    private fun readCache(query: LyricsQuery): LyricsLookup? = runCatching {
-        val file = file(query)
+    private fun readCache(query: LyricsQuery): LyricsLookup? {
+        readCacheFile(file(query.key))?.let { return it }
+        // Keep previously saved lyrics; old negative results must not hide the improved matching.
+        val legacy = readCacheFile(file(query.legacyKey))
+        if (legacy is LyricsLookup.Found) { writeCache(query, legacy); return legacy }
+        return null
+    }
+
+    private fun readCacheFile(file: File): LyricsLookup? = runCatching {
         if (!file.isFile || file.length() > 1_048_576) return null
         val json = JsonParser.parseString(file.readText()).asJsonObject
         if (!json.get("found").asBoolean) {
@@ -142,7 +164,7 @@ class LyricsRepository internal constructor(
                     addProperty("provider", result.lyrics.provider)
                 }
             }
-            val target = file(query)
+            val target = file(query.key)
             val temp = File(directory, target.name + ".tmp")
             temp.writeText(json.toString())
             try {

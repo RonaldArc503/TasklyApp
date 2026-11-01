@@ -33,7 +33,7 @@ import com.ronaldcolocho.taskly.ui.theme.BricolageGrotesque
 
 @Composable
 internal fun MusicDiscoverScreen(
-    controller: AudioPlayerController, onBack: () -> Unit, onOpenPlayer: (String) -> Unit,
+    controller: AudioPlayerController, onBack: () -> Unit,
     viewModel: MusicDiscoverViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -104,7 +104,7 @@ internal fun MusicDiscoverScreen(
                     player.currentTrack?.id == track.id && player.playing,
                     onPlay = {
                         if (player.currentTrack?.id == track.id) controller.toggleCurrent()
-                        else { playTracks(controller, state.tracks, track); onOpenPlayer("Descubrir música") }
+                        else playTracks(controller, state.tracks, track)
                     },
                     onFavorite = { viewModel.favorite(track, track.id !in favorites) },
                     onPlaylist = { playlistName = ""; playlistTrack = track },

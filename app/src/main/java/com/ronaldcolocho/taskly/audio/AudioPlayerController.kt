@@ -3,20 +3,17 @@ package com.ronaldcolocho.taskly.audio
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
-import android.os.Bundle
 import com.google.firebase.auth.FirebaseAuth
 import android.util.Log
 import androidx.compose.runtime.Stable
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.ronaldcolocho.taskly.domain.model.DownloadedSong
 import com.ronaldcolocho.taskly.domain.model.MusicTrack
-import com.ronaldcolocho.taskly.domain.model.OnlineMusicSource
 import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
 import com.ronaldcolocho.taskly.domain.repository.IDownloadHistoryRepository
@@ -100,6 +97,14 @@ class AudioPlayerController @Inject constructor(
     fun setVisualEffect(effect: PlayerVisualEffect) {
         _visualEffect.value = effect
         prefs.edit().putString("player_visual_effect", effect.id).apply()
+    }
+
+    private val _showAnimationCover = MutableStateFlow(prefs.getBoolean("player_show_animation_cover", true))
+    val showAnimationCover: StateFlow<Boolean> = _showAnimationCover.asStateFlow()
+
+    fun setShowAnimationCover(show: Boolean) {
+        _showAnimationCover.value = show
+        prefs.edit().putBoolean("player_show_animation_cover", show).apply()
     }
 
     val colorState: StateFlow<PlayerColorState> = playerColors.state
@@ -201,14 +206,7 @@ class AudioPlayerController @Inject constructor(
                     val known = _state.value.tracks.associateBy { it.id }
                     val liveTracks = (0 until p.mediaItemCount).map { index ->
                         val item = p.getMediaItemAt(index)
-                        known[item.mediaId] ?: AudioTrack(item.mediaId,
-                            item.mediaMetadata.extras?.getString("originalUrl")
-                                ?: item.localConfiguration?.uri?.toString().orEmpty(),
-                            item.mediaMetadata.title?.toString().orEmpty(),
-                            item.mediaMetadata.extras?.getString("messageId").orEmpty(),
-                            thumbnailUrl = item.mediaMetadata.artworkUri?.toString().orEmpty(),
-                            playlistId = item.mediaMetadata.extras?.getString("playlistId"),
-                            artist = item.mediaMetadata.artist?.toString().orEmpty())
+                        item.toAudioTrack(known[item.mediaId])
                     }
                     _state.update { it.copy(tracks = liveTracks, shuffleModeEnabled = p.shuffleModeEnabled,
                         repeatMode = when (p.repeatMode) {
@@ -241,10 +239,15 @@ class AudioPlayerController @Inject constructor(
 
     private fun setupPlayerListener(p: Player) {
         p.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
+                        Player.EVENT_MEDIA_METADATA_CHANGED)) syncStateWithPlayer(player)
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _state.update { it.copy(playing = isPlaying, error = if (isPlaying) null else it.error) }
                 if (isPlaying) {
-                    startTicker()
+                    syncStateWithPlayer(p)
                     _state.value.currentTrack?.let(::recordPlayback)
                 } else stopTicker()
             }
@@ -257,20 +260,8 @@ class AudioPlayerController @Inject constructor(
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val trackId = mediaItem?.mediaId
-                val newTrack = _state.value.tracks.find { it.id == trackId }
-                val pos = p.currentPosition.takeIf { it >= 0 } ?: 0L
-                val dur = p.duration.takeIf { it > 0 }
-                    ?: (newTrack?.durationSeconds?.takeIf { it > 0 }?.toLong()?.times(1000L))
-                    ?: 0L
-
-                _state.update {
-                    it.copy(
-                        currentTrack = newTrack ?: it.currentTrack,
-                        currentTimeMs = pos,
-                        durationMs = dur,
-                        playing = p.isPlaying
-                    )
-                }
+                syncStateWithPlayer(p)
+                val newTrack = _state.value.currentTrack
                 if (trackId != null) {
                     enqueuedTrackIds.remove(trackId)
                 }
@@ -359,15 +350,19 @@ class AudioPlayerController @Inject constructor(
         })
     }
 
-    private fun syncStateWithPlayer(p: Player) {
-        val currentId = p.currentMediaItem?.mediaId
-        val track = _state.value.tracks.find { it.id == currentId }
+    private fun syncStateWithPlayer(p: Player, syncQueue: Boolean = true) {
+        val known = _state.value.tracks.associateBy { it.id }
+        val tracks = if (syncQueue) (0 until p.mediaItemCount).map { index ->
+            p.getMediaItemAt(index).let { it.toAudioTrack(known[it.mediaId]) }
+        } else _state.value.tracks
+        val track = p.currentMediaItem?.let { it.toAudioTrack(known[it.mediaId]) }
         val isPlaying = p.isPlaying
         val dur = p.duration.takeIf { it > 0 }
             ?: track?.durationSeconds?.takeIf { it > 0 }?.let { it * 1000L }
             ?: 0L
         _state.update {
             it.copy(
+                tracks = tracks,
                 currentTrack = track,
                 playing = isPlaying,
                 buffering = p.playbackState == Player.STATE_BUFFERING,
@@ -375,7 +370,7 @@ class AudioPlayerController @Inject constructor(
                 durationMs = dur
             )
         }
-        if (isPlaying) startTicker()
+        if (isPlaying && tickerJob?.isActive != true) startTicker()
     }
 
     private fun AudioRepeatMode.toPlayerRepeatMode(): Int = when (this) {
@@ -402,21 +397,7 @@ class AudioPlayerController @Inject constructor(
             Log.d("AudioPlayer", "REMOTE FALLBACK: track=$id")
             Uri.parse(this.url)
         }
-        return MediaItem.Builder()
-            .setMediaId(this.id)
-            .setUri(uri)
-            .setCustomCacheKey(OnlineMusicSource.cacheKey(this.url))
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(this.name)
-                    .setArtist(artist.ifBlank { "Taskly" })
-                    .setArtworkUri(thumbnailUrl.takeIf { it.isNotBlank() }?.let(Uri::parse))
-                    .setExtras(Bundle().apply {
-                        putString("messageId", msgId); putString("playlistId", playlistId); putString("originalUrl", url)
-                    })
-                    .build()
-            )
-            .build()
+        return toPlaybackMediaItem(uri)
     }
 
     fun setTrackResolver(resolver: (AudioTrack) -> File?) {
@@ -628,8 +609,10 @@ class AudioPlayerController @Inject constructor(
             return
         }
         enqueuedTrackIds.clear()
+        // Connecting to a live session may refresh state before this deferred action runs.
+        val selection = _state.value
         withPlayer { p ->
-            val s = _state.value
+            val s = selection
 
             val items = s.tracks.map { it.toMediaItem() }
             p.setMediaItems(items)
@@ -643,7 +626,7 @@ class AudioPlayerController @Inject constructor(
             }
             
             _state.update {
-                it.copy(currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true, buffering = true, error = null)
+                it.copy(tracks = s.tracks, currentTrack = track, currentTimeMs = 0, durationMs = 0, playing = true, buffering = true, error = null)
             }
             p.prepare()
             p.play()
@@ -842,14 +825,7 @@ class AudioPlayerController @Inject constructor(
         tickerJob = scope.launch {
             while (isActive) {
                 withPlayer { p ->
-                    val pos = p.currentPosition.takeIf { it >= 0 } ?: 0L
-                    val dur = p.duration.takeIf { it > 0 }
-                    _state.update { current ->
-                        current.copy(
-                            currentTimeMs = pos,
-                            durationMs = if (dur != null && dur > 0) dur else current.durationMs
-                        )
-                    }
+                    syncStateWithPlayer(p, syncQueue = false)
                 }
                 delay(300)
             }

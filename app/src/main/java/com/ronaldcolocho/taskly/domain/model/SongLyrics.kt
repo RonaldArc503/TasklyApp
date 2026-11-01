@@ -19,7 +19,14 @@ data class SongLyrics(
 }
 
 data class LyricsQuery(val title: String, val artist: String, val durationSeconds: Int) {
-    val key: String get() = "${normalizeLyricsText(title)}|${normalizeLyricsText(artist)}|$durationSeconds"
+    val searchTitle: String get() = lyricsMetadata(title, artist).title
+    val searchArtist: String get() = lyricsMetadata(title, artist).performers.firstOrNull().orEmpty()
+    val key: String get() {
+        val metadata = lyricsMetadata(title, artist)
+        return "v2|${normalizeLyricsText(metadata.title)}|${normalizeLyricsText(searchArtist)}|" +
+            "${metadata.guests.map(::normalizeLyricsText).sorted().joinToString(",")}|$durationSeconds"
+    }
+    internal val legacyKey: String get() = "${normalizeLyricsText(title)}|${normalizeLyricsText(artist)}|$durationSeconds"
 
     companion object {
         fun from(name: String, artist: String, durationSeconds: Int): LyricsQuery {
@@ -43,10 +50,43 @@ fun normalizeLyricsText(text: String): String = Normalizer.normalize(text, Norma
     .replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
     .replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
 
+private data class LyricsMetadata(val title: String, val performers: List<String>, val guests: List<String>)
+
+private fun lyricsMetadata(title: String, artist: String): LyricsMetadata {
+    val credits = mutableListOf<String>()
+    var base = title.replace(Regex("[\\[(]\\s*(?:feat\\.?|ft\\.?|featuring|con)\\s+([^\\])]+)[\\])]", RegexOption.IGNORE_CASE)) {
+        credits += it.groupValues[1]
+        " "
+    }
+    base = base.replace(Regex("\\s+(?:feat\\.?|ft\\.?|featuring)\\s+([^\\[(]+)", RegexOption.IGNORE_CASE)) {
+        credits += it.groupValues[1]
+        " "
+    }.replace(Regex("\\s+"), " ").trim()
+    fun splitArtists(text: String) = text.split(Regex("\\s*(?:、|,|;|&|\\b(?:feat\\.?|ft\\.?|featuring|con)\\s+)\\s*", RegexOption.IGNORE_CASE))
+        .map { it.trim() }.filter { it.isNotBlank() }.distinctBy(::normalizeLyricsText)
+    val performers = splitArtists(artist)
+    val primary = performers.firstOrNull()?.let(::normalizeLyricsText)
+    val guests = (performers.drop(1) + credits.flatMap(::splitArtists))
+        .filter { normalizeLyricsText(it) != primary }.distinctBy(::normalizeLyricsText)
+    return LyricsMetadata(base, performers, guests)
+}
+
+/** Credits may move between title and artist; recording/version names remain part of the title. */
+fun lyricsMetadataMatches(title: String, artist: String, query: LyricsQuery): Boolean {
+    val candidate = lyricsMetadata(title, artist)
+    val requested = lyricsMetadata(query.title, query.artist)
+    if (normalizeLyricsText(candidate.title) != normalizeLyricsText(requested.title)) return false
+    if (query.artist.isNotBlank()) {
+        if (normalizeLyricsText(candidate.performers.firstOrNull().orEmpty()) != normalizeLyricsText(query.searchArtist)) return false
+    }
+    val guests = candidate.guests.map(::normalizeLyricsText).toSet()
+    val wantedGuests = requested.guests.map(::normalizeLyricsText).toSet()
+    return guests.isEmpty() || wantedGuests.isEmpty() || guests == wantedGuests
+}
+
 fun selectLyrics(candidates: List<LyricsCandidate>, query: LyricsQuery): SongLyrics? {
     val matches = candidates.filter {
-        it.lyrics.usable && normalizeLyricsText(it.title) == normalizeLyricsText(query.title) &&
-            (query.artist.isBlank() || normalizeLyricsText(it.artist) == normalizeLyricsText(query.artist)) &&
+        it.lyrics.usable && lyricsMetadataMatches(it.title, it.artist, query) &&
             (query.durationSeconds <= 0 || kotlin.math.abs(it.durationSeconds - query.durationSeconds) <= 2.0)
     }
     if (query.artist.isBlank() && (query.durationSeconds <= 0 || matches.map { normalizeLyricsText(it.artist) }.distinct().size != 1))
@@ -82,5 +122,5 @@ fun activeLyricsLine(lines: List<LyricsLine>, positionMs: Long): Int {
 sealed interface LyricsLookup {
     data class Found(val lyrics: SongLyrics) : LyricsLookup
     data object NotFound : LyricsLookup
-    data class Failed(val message: String, val retryAtMs: Long? = null) : LyricsLookup
+    data class Failed(val message: String, val retryAtMs: Long? = null, val autoRetry: Boolean = true) : LyricsLookup
 }

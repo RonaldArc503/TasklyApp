@@ -15,13 +15,13 @@ internal class LyricsSources(private val http: LyricsHttpTransport) {
 
     private suspend fun lrclib(query: LyricsQuery): SongLyrics? {
         if (query.artist.isNotBlank()) {
-            val params = mutableMapOf("track_name" to query.title, "artist_name" to query.artist)
+            val params = mutableMapOf("track_name" to query.searchTitle, "artist_name" to query.searchArtist)
             if (query.durationSeconds in 1..3600) params["duration"] = query.durationSeconds.toString()
             val exact = http.get(LyricsSource.LRCLIB, "https://lrclib.net/api/get", params)
             if (exact != null) selectLyrics(listOf(lrcCandidate(JsonParser.parseString(exact).asJsonObject)), query)?.let { return it }
         }
-        val params = mutableMapOf("track_name" to query.title)
-        if (query.artist.isNotBlank()) params["artist_name"] = query.artist
+        val params = mutableMapOf("track_name" to query.searchTitle)
+        if (query.artist.isNotBlank()) params["artist_name"] = query.searchArtist
         val json = http.get(LyricsSource.LRCLIB, "https://lrclib.net/api/search", params) ?: return null
         return selectLyrics(JsonParser.parseString(json).asJsonArray.take(100).mapNotNull {
             runCatching { lrcCandidate(it.asJsonObject) }.getOrNull()
@@ -34,24 +34,29 @@ internal class LyricsSources(private val http: LyricsHttpTransport) {
 
     private suspend fun kugou(query: LyricsQuery): SongLyrics? {
         if (query.artist.isBlank() || query.durationSeconds <= 0) return null
-        // Validate the catalog metadata first and examine only one matching song, bounding the request count.
+        // One catalog candidate, one optional keyword fallback and one download keep this bounded.
         val json = http.get(LyricsSource.KUGOU, "https://mobileservice.kugou.com/api/v3/search/song", mapOf(
             "version" to "9108", "plat" to "0", "pagesize" to "5", "showtype" to "0",
-            "keyword" to "${query.title} - ${query.artist}")) ?: return null
-        val songs = JsonParser.parseString(json).asJsonObject.getAsJsonObject("data")?.getAsJsonArray("info") ?: return null
-        val song = songs.map { it.asJsonObject }.filter {
-            normalizeLyricsText(it.text("songname")) == normalizeLyricsText(query.title) &&
-                normalizeLyricsText(it.text("singername")) == normalizeLyricsText(query.artist) &&
+            "keyword" to "${query.title} - ${query.artist}"))
+        val songs = json?.let { JsonParser.parseString(it).asJsonObject.getAsJsonObject("data")?.getAsJsonArray("info") }
+        val song = songs?.map { it.asJsonObject }?.filter {
+            lyricsMetadataMatches(it.text("songname"), it.text("singername"), query) &&
                 abs(it.number("duration") - query.durationSeconds) <= 2
-        }.minByOrNull { abs(it.number("duration") - query.durationSeconds) } ?: return null
-        val hash = song.text("hash").takeIf { it.matches(Regex("[A-Fa-f0-9]{32}")) } ?: return null
-        val search = http.get(LyricsSource.KUGOU, "https://lyrics.kugou.com/search", mapOf(
-            "ver" to "1", "man" to "yes", "client" to "pc", "hash" to hash)) ?: return null
-        val candidates = JsonParser.parseString(search).asJsonObject.getAsJsonArray("candidates") ?: return null
-        val candidate = candidates.map { it.asJsonObject }.firstOrNull {
-            abs(it.number("duration") / 1000.0 - query.durationSeconds) <= 2 &&
-                it.text("accesskey").isNotBlank() && it.text("id").toLongOrNull() != null
-        } ?: return null
+        }?.minByOrNull { abs(it.number("duration") - query.durationSeconds) }
+        val hash = song?.text("hash")?.takeIf { it.matches(Regex("[A-Fa-f0-9]{32}")) }
+        fun candidate(search: String?, catalogValidated: Boolean): JsonObject? = search?.let {
+            JsonParser.parseString(it).asJsonObject.getAsJsonArray("candidates")?.map { value -> value.asJsonObject }?.firstOrNull { value ->
+                abs(value.number("duration") / 1000.0 - query.durationSeconds) <= 2 &&
+                    value.text("accesskey").isNotBlank() && value.text("id").toLongOrNull() != null &&
+                    (if (value.text("song").isBlank() || value.text("singer").isBlank()) catalogValidated
+                     else lyricsMetadataMatches(value.text("song"), value.text("singer"), query))
+            }
+        }
+        val byHash = hash?.let { candidate(http.get(LyricsSource.KUGOU, "https://lyrics.kugou.com/search", mapOf(
+            "ver" to "1", "man" to "yes", "client" to "pc", "hash" to it)), catalogValidated = true) }
+        val candidate = byHash ?: candidate(http.get(LyricsSource.KUGOU, "https://lyrics.kugou.com/search", mapOf(
+            "ver" to "1", "man" to "yes", "client" to "pc", "duration" to (query.durationSeconds * 1000L).toString(),
+            "keyword" to "${query.searchTitle} - ${query.searchArtist}")), catalogValidated = false) ?: return null
         val downloaded = http.get(LyricsSource.KUGOU, "https://lyrics.kugou.com/download", mapOf(
             "fmt" to "lrc", "charset" to "utf8", "client" to "pc", "ver" to "1",
             "id" to candidate.text("id"), "accesskey" to candidate.text("accesskey"))) ?: return null
@@ -63,7 +68,7 @@ internal class LyricsSources(private val http: LyricsHttpTransport) {
     private suspend fun better(query: LyricsQuery): SongLyrics? {
         if (query.artist.isBlank() || query.durationSeconds <= 0) return null
         val json = http.get(LyricsSource.BETTER, "https://lyrics-api.boidu.dev/getLyrics", mapOf(
-            "s" to query.title, "a" to query.artist, "d" to query.durationSeconds.toString())) ?: return null
+            "s" to query.searchTitle, "a" to query.searchArtist, "d" to query.durationSeconds.toString())) ?: return null
         val ttml = JsonParser.parseString(json).asJsonObject.text("ttml")
         if (ttml.isBlank()) return null
         val lines = parseTtmlLyrics(ttml)

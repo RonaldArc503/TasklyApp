@@ -11,6 +11,16 @@ import java.util.concurrent.TimeUnit
 
 /** Opt-in network smoke test; ordinary unit runs remain offline. */
 class YoutubeMusicLiveTest {
+    @Test fun songRadioReturnsRelatedTracksWithCurrentMetadata() {
+        assumeTrue(System.getenv("TASKLY_MUSIC_RADIO_LIVE_TEST") == "1")
+        val source = "https://www.youtube.com/watch?v=DXiXPhvYuNU"
+        val related = OnlineMusicRepository(OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).build()).related(source)
+        assertTrue("La radio debe devolver canciones similares", related.isNotEmpty())
+        assertTrue(related.all { it.url != source && it.name.isNotBlank() && it.thumbnailUrl.isNotBlank() })
+        assertEquals(related.size, related.map { it.id }.distinct().size)
+        println("Radio de Necio: ${related.size} canciones; primeras=${related.take(3).map { it.name to it.artist }}")
+    }
+
     @Test fun searchAndReadAudioRange() {
         assumeTrue(System.getenv("TASKLY_MUSIC_LIVE_TEST") == "1")
         val http = OkHttpClient.Builder().callTimeout(45, TimeUnit.SECONDS).build()

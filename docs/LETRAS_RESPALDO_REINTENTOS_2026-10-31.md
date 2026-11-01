@@ -23,7 +23,7 @@ Resolver la espera estática de LRCLIB y permitir letras desde LRCLIB, KuGou y B
 ## Implementación
 
 - Orden: LRCLIB → KuGou → BetterLyrics. Una letra válida, incluso sin sincronización, termina la búsqueda; no se consulta a todos para obtener el mismo resultado. KuGou valida título, artista y duración antes de descargar el LRC; BetterLyrics recibe esos metadatos y convierte TTML a líneas sincronizadas. No requiere claves configuradas por el usuario ni dependencias de producción adicionales.
-- Cada proveedor tiene su propio control: llamadas secuenciales, separación mínima de 500 ms y hasta 20 solicitudes HTTP por ventana móvil de un minuto. KuGou necesita hasta tres solicitudes para resolver una letra. Cada proveedor tiene un presupuesto de 6,5 segundos; cada llamada HTTP, 6 segundos. Se respeta `Retry-After` en 429/503 y se añade espera progresiva con una pequeña variación aleatoria.
+- Cada proveedor tiene su propio control: llamadas secuenciales, separación mínima de 500 ms y hasta 20 solicitudes HTTP por ventana móvil de un minuto. KuGou necesita normalmente tres solicitudes; el respaldo directo permite un máximo de cuatro. Cada proveedor tiene un presupuesto de 6,5 segundos; cada llamada HTTP, 6 segundos. Se respeta `Retry-After` en 429/503 y se añade espera progresiva con una pequeña variación aleatoria.
 - Las consultas simultáneas de una canción comparten el trabajo. Cancelar un observador conserva el trabajo de los demás; salir del último cancela la llamada de OkHttp. Ocultar letras, salir de la pantalla o cambiar canción cancela la observación.
 - La cuenta regresiva usa la fecha real de disponibilidad, deshabilita el botón durante la espera y realiza como máximo dos reintentos automáticos por observación visible. Después se habilita el reintento manual. Los errores recientes se reutilizan durante al menos cinco segundos para evitar peticiones repetidas.
 - La caché conserva las letras anteriores y registra el proveedor. Los negativos antiguos de LRCLIB no impiden probar los respaldos. No se guarda un fallo temporal como «sin letra»; las ausencias comprobadas de cada proveedor se recuerdan 15 minutos para no repetirlas durante los reintentos.
@@ -41,6 +41,20 @@ Resolver la espera estática de LRCLIB y permitir letras desde LRCLIB, KuGou y B
 
 ## Límites
 
+La corrección posterior del caso «Necio» se describe a continuación. Los resultados y el hash de la sección de validación anterior corresponden al APK previo a esa corrección.
+
 - Los servicios externos pueden cambiar o estar temporalmente inaccesibles. Tener más proveedores aumenta cobertura, pero no garantiza letras para todas las versiones.
 - Se mantiene sincronización por línea y texto simple cuando está disponible. No se añade sincronización por palabra ni traducción.
 - Las validaciones de Android se realizan en emulador API 35; no equivalen a una prueba en teléfono físico ni a una release minificada.
+
+## Corrección de colaboraciones y errores: «Necio»
+
+- Caso reproducido: Taskly busca `Necio (feat. Carlos Santana)`; KuGou devuelve `Necio`, artista `Romeo Santos、Carlos Santana`, duración 264 segundos. El filtro anterior descartaba el registro antes de solicitar sus letras.
+- Se reconocen créditos `feat.`, `ft.`, `featuring` y `con`, incluidos los separados en el campo de artistas. Se conserva el artista principal, se rechazan colaboradores conocidos diferentes y se mantienen etiquetas de versión como Live, Remix y Acoustic. Se conserva la tolerancia de duración de ±2 segundos.
+- LRCLIB y BetterLyrics reciben el título base y el artista principal. KuGou conserva la búsqueda de catálogo con los créditos originales y añade una búsqueda directa de letras si no obtiene un candidato válido por catálogo/hash. El respaldo exige título, artista y duración compatibles; no descarga candidatos sin metadatos verificables ni recorre todos los resultados.
+- La clave de caché normaliza los créditos para reutilizar una letra entre `feat.` y `con` y entre distintos separadores de artistas. Se migran las letras positivas de la caché anterior y se ignoran los negativos anteriores para permitir la búsqueda corregida.
+- Los errores distinguen proveedor ocupado, límite de consultas, espera agotada, conexión fallida, rechazo HTTP y respuesta inválida. Un rechazo 401/403 no bloquea globalmente las siguientes canciones ni activa reintentos automáticos. Se conserva la espera mínima para consultas repetidas.
+- El parser TTML también admite segundos decimales sin sufijo, como `17.393`, formato observado en BetterLyrics; así se conservan las líneas del primer minuto.
+- Prueba real con el repositorio de producción, habilitando `TASKLY_LYRICS_NECIO_LIVE_TEST=1`: **tres HTTP 200 de KuGou, 68 líneas sincronizadas**. La variante `Necio (con Carlos Santana)` con artistas separados por `、` se reabrió con un cliente que prohíbe toda conexión, comprobando reutilización desde disco. No se imprime contenido de letras ni claves de acceso.
+- Suite final: **98 casos, 94 aprobados, 4 omitidos, 0 fallos**. Los cuatro omitidos son pruebas optativas de red; la específica de «Necio» se ejecutó correctamente en la comprobación real anterior. Incluye regresiones de colaboración, versiones diferentes, caché antigua, respaldo por palabra clave, candidatos incompletos, rechazo HTTP sin bloquear otra canción y motivo de timeout conservado durante el enfriamiento.
+- `:app:assembleDebug` y `MusicLyricsDeviceTest` en Android 15/API 35: correctos. La prueba de interfaz también comprueba el mensaje de 401, ausencia de reintento automático y una sola solicitud durante la espera, además de las interacciones existentes de letras, portada y controles.

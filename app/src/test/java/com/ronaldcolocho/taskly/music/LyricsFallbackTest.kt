@@ -25,6 +25,93 @@ class LyricsFallbackTest {
         Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(code).message("Fixture")
             .body(body.toResponseBody("application/json".toMediaType())).apply { retry?.let { header("Retry-After", it) } }.build()
 
+    @Test fun necioCatalogCreditsMatchAndSpanishCreditsReuseOfflineCache() = runBlocking {
+        var calls = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            val r = chain.request()
+            response(r, 200, when {
+                r.url.encodedPath.endsWith("/song") -> """{"data":{"info":[{"songname":"Necio","singername":"Romeo Santos、Carlos Santana","duration":264,"hash":"0123456789abcdef0123456789abcdef"}]}}"""
+                r.url.encodedPath == "/search" -> """{"candidates":[{"song":"Necio","singer":"Romeo Santos","id":"42","accesskey":"fixture-key","duration":264430}]}"""
+                else -> """{"content":"${Base64.getEncoder().encodeToString(lrc.toByteArray())}"}"""
+            })
+        }.build()
+        val directory = folder.newFolder()
+        val query = LyricsQuery("Necio (feat. Carlos Santana)", "Romeo Santos", 264)
+        val found = LyricsRepository(http, directory, sourceOrder = listOf(LyricsSource.KUGOU)).lookup(query)
+        assertTrue(found is LyricsLookup.Found)
+        assertEquals(3, calls)
+        val offline = OkHttpClient.Builder().addInterceptor { throw AssertionError("Cache must avoid network") }.build()
+        assertEquals(found, LyricsRepository(offline, directory).lookup(
+            LyricsQuery("Necio (con Carlos Santana)", "Romeo Santos & Carlos Santana", 264)))
+    }
+
+    @Test fun emptyCatalogFallsBackToKeywordLyricsWithValidatedMetadata() = runBlocking {
+        val paths = mutableListOf<String>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val r = chain.request(); paths += r.url.encodedPath
+            response(r, 200, when {
+                r.url.encodedPath.endsWith("/song") -> """{"data":{"info":[]}}"""
+                r.url.encodedPath == "/search" -> {
+                    assertEquals("Song - Artist", r.url.queryParameter("keyword"))
+                    assertEquals("200000", r.url.queryParameter("duration"))
+                    """{"candidates":[{"song":"Song (Live)","singer":"Artist","id":"1","accesskey":"wrong","duration":200000},{"song":"Song","singer":"Other","id":"2","accesskey":"wrong","duration":200000},{"song":"Song","singer":"Artist","id":"42","accesskey":"fixture-key","duration":200100}]}"""
+                }
+                else -> {
+                    assertEquals("42", r.url.queryParameter("id"))
+                    """{"content":"${Base64.getEncoder().encodeToString(lrc.toByteArray())}"}"""
+                }
+            })
+        }.build()
+        assertTrue(LyricsRepository(http, folder.newFolder(), sourceOrder = listOf(LyricsSource.KUGOU)).lookup(query) is LyricsLookup.Found)
+        assertEquals(listOf("/api/v3/search/song", "/search", "/download"), paths)
+    }
+
+    @Test fun directLyricsNeverDownloadsCandidatesWithUnknownMetadataOrWrongDuration() = runBlocking {
+        var calls = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            val r = chain.request()
+            assertFalse(r.url.encodedPath.endsWith("/download"))
+            response(r, 200, if (r.url.encodedPath.endsWith("/song")) """{"data":{"info":[]}}"""
+                else """{"candidates":[{"id":"1","accesskey":"fixture","duration":200000},{"song":"Song","singer":"Artist","id":"2","accesskey":"fixture","duration":210000}]}""")
+        }.build()
+        assertEquals(LyricsLookup.NotFound, LyricsRepository(http, folder.newFolder(), sourceOrder = listOf(LyricsSource.KUGOU)).lookup(query))
+        assertEquals(2, calls)
+    }
+
+    @Test fun rejectedQueryShowsItsSourceAndDoesNotBlockAnotherSong() = runBlocking {
+        var calls = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            val r = chain.request()
+            if (r.url.queryParameter("track_name") == "Rejected") response(r, 401)
+            else response(r, 200, record())
+        }.build()
+        val repo = LyricsRepository(http, folder.newFolder(), sourceOrder = listOf(LyricsSource.LRCLIB))
+        val failed = repo.lookup(query.copy(title = "Rejected")) as LyricsLookup.Failed
+        assertTrue(failed.message.contains("LRCLIB: consulta rechazada (HTTP 401)"))
+        assertFalse(failed.autoRetry)
+        assertFalse(failed.message.contains("ocupado"))
+        assertEquals(failed, repo.lookup(query.copy(title = "Rejected"), refresh = true))
+        assertEquals(1, calls)
+        assertTrue(repo.lookup(query) is LyricsLookup.Found)
+        assertEquals(2, calls)
+    }
+
+    @Test fun timeoutsKeepTheirReasonDuringProviderCooldown() = runBlocking {
+        var calls = 0
+        val http = OkHttpClient.Builder().addInterceptor { calls++; throw java.io.InterruptedIOException("timeout") }.build()
+        val repo = LyricsRepository(http, folder.newFolder(), sourceOrder = listOf(LyricsSource.LRCLIB))
+        val first = repo.lookup(query) as LyricsLookup.Failed
+        val second = repo.lookup(query.copy(title = "Another song")) as LyricsLookup.Failed
+        assertTrue(first.message.contains("tiempo de espera agotado"))
+        assertTrue(second.message.contains("tiempo de espera agotado"))
+        assertTrue(first.autoRetry)
+        assertFalse(second.message.contains("ocupado"))
+        assertEquals(1, calls)
+    }
+
     @Test fun lrclibBusyFallsBackToKugouAndStopsBeforeBetterLyrics() = runBlocking {
         val paths = mutableListOf<String>()
         val http = OkHttpClient.Builder().addInterceptor { chain ->
@@ -142,6 +229,7 @@ class LyricsFallbackTest {
     @Test fun ttmlParserPreservesTimingAndRejectsExternalDeclarations() {
         assertEquals(listOf(1000L, 5000L), parseTtmlLyrics(ttml).map { it.timeMs })
         assertEquals("First fixture line", parseTtmlLyrics(ttml).first().text)
+        assertEquals(17393L, parseTtmlLyrics(ttml.replace("1s", "17.393")).last().timeMs)
         assertTrue(runCatching { parseTtmlLyrics("""<!DOCTYPE tt [<!ENTITY secret SYSTEM "file:///secret">]><tt><body><p begin="1s">&secret;</p></body></tt>""") }.isFailure)
     }
 }

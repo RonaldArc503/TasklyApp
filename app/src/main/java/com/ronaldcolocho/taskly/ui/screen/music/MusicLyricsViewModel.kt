@@ -51,7 +51,7 @@ class MusicLyricsViewModel @Inject constructor(
                         _state.value = MusicLyricsState(id, loading = true)
                         val result = repository.lookup(query, refresh && attempt == 0)
                         val deadline = (result as? LyricsLookup.Failed)?.retryAtMs
-                        val automatic = deadline != null && attempt < 2
+                        val automatic = deadline != null && (result as LyricsLookup.Failed).autoRetry && attempt < 2
                         _state.value = MusicLyricsState(id, result = result)
                         if (deadline == null) break
                         while (true) {

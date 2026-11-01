@@ -50,6 +50,10 @@ class MusicLyricsDeviceTest {
             shell("appops set ${context.packageName} $op allow")
         val scale = shell("settings get global animator_duration_scale")
         shell("settings put global animator_duration_scale 0")
+        val prefs = context.getSharedPreferences("audio_prefs", Context.MODE_PRIVATE)
+        val hadCoverPreference = prefs.contains("player_show_animation_cover")
+        val originalCoverPreference = prefs.getBoolean("player_show_animation_cover", true)
+        prefs.edit().putBoolean("player_show_animation_cover", true).commit()
         var controller: AudioPlayerController? = null
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -57,9 +61,18 @@ class MusicLyricsDeviceTest {
                 lateinit var media: MediaCacheRepositoryImpl
                 val busyCalls = AtomicInteger()
                 val persistentBusyCalls = AtomicInteger()
+                val rejectedCalls = AtomicInteger()
                 val wav = createSilentWav(context)
-                val first = AudioTrack("lyrics-test-first", wav.toURI().toString(), "Test Song", "", 60, artist = "Test Artist")
-                val second = first.copy(id = "lyrics-test-second", name = "Second Song")
+                val cover = File(context.cacheDir, "player-cover-fixture.png")
+                android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888).apply {
+                    eraseColor(android.graphics.Color.rgb(90, 160, 135))
+                    cover.outputStream().use { compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                    recycle()
+                }
+                val first = AudioTrack("lyrics-test-first", wav.toURI().toString(), "Test Song", "", 60,
+                    thumbnailUrl = cover.toURI().toString(), artist = "Test Artist")
+                val secondCover = File(context.cacheDir, "player-cover-second.png").also { cover.copyTo(it, overwrite = true) }
+                val second = first.copy(id = "lyrics-test-second", name = "Second Song", thumbnailUrl = secondCover.toURI().toString())
                 scenario.onActivity { activity ->
                     val http = OkHttpClient()
                     media = MediaCacheRepositoryImpl(context, http, OnlineMusicRepository(http))
@@ -71,6 +84,12 @@ class MusicLyricsDeviceTest {
                         DownloadHistoryRepositoryImpl(context), FirebaseAuth.getInstance(), media, PlayerColorsController(context))
                     val api = OkHttpClient.Builder().addInterceptor { chain ->
                         val title = chain.request().url.queryParameter("track_name").orEmpty()
+                        if (title == "Rejected Song") {
+                            rejectedCalls.incrementAndGet()
+                            return@addInterceptor Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                                .code(401).message("Rejected fixture")
+                                .body("{}".toResponseBody("application/json".toMediaType())).build()
+                        }
                         if ((title == "Busy Song" && busyCalls.incrementAndGet() == 1) ||
                             (title == "Always Busy" && persistentBusyCalls.incrementAndGet() > 0)) {
                             return@addInterceptor Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
@@ -93,6 +112,16 @@ class MusicLyricsDeviceTest {
                 }
                 compose.waitUntil(15_000) { controller!!.state.value.currentTrack?.id == first.id }
                 compose.onNodeWithTag("music_visual_stage").assertExists()
+                compose.onNodeWithTag("music_animation_cover").assertExists()
+                compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
+                compose.onNodeWithTag("music_animation_cover_toggle").assertIsOn().performClick().assertIsOff()
+                org.junit.Assert.assertFalse(prefs.getBoolean("player_show_animation_cover", true))
+                compose.onNodeWithContentDescription("Cerrar").performClick()
+                compose.onNodeWithTag("music_animation_cover").assertDoesNotExist()
+                compose.onNodeWithTag("music_visual_stage").assertExists()
+                compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
+                compose.onNodeWithTag("music_animation_cover_toggle").assertIsOff()
+                compose.onNodeWithContentDescription("Cerrar").performClick()
                 compose.onNodeWithTag("music_lyrics_toggle").performClick()
                 compose.waitUntil(15_000) { lyrics.state.value.result is LyricsLookup.Found }
                 compose.onNodeWithTag("music_lyrics_pane").assertExists()
@@ -108,15 +137,27 @@ class MusicLyricsDeviceTest {
                 compose.runOnIdle { controller!!.seek(11_000) }
                 compose.waitUntil(10_000) { controller!!.state.value.currentTimeMs >= 11_000 }
                 compose.onNodeWithText("Second fixture line").assertIsSelected()
-                compose.runOnIdle { controller!!.next() }
+                compose.runOnIdle {
+                    // A catalog refresh must not replace the metadata of the real player queue.
+                    controller!!.updatePlaylist(emptyList())
+                    controller!!.seek(59_600)
+                }
                 compose.waitUntil(15_000) {
                     lyrics.state.value.trackId == second.id && lyrics.state.value.result is LyricsLookup.Found
                 }
                 compose.onNodeWithText("Next song fixture").assertExists()
+                compose.onNodeWithText("Second Song").assertExists()
+                org.junit.Assert.assertEquals(second.thumbnailUrl, controller!!.state.value.currentTrack?.thumbnailUrl)
                 compose.onNodeWithText("First fixture line").assertDoesNotExist()
                 compose.onNodeWithTag("music_lyrics_toggle").assertIsOn().performClick()
                 compose.onNodeWithTag("music_visual_stage").assertExists()
                 compose.onNodeWithTag("music_lyrics_pane").assertDoesNotExist()
+                compose.onNodeWithTag("music_animation_cover").assertDoesNotExist()
+                compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
+                compose.onNodeWithTag("music_animation_cover_toggle").performClick().assertIsOn()
+                org.junit.Assert.assertTrue(prefs.getBoolean("player_show_animation_cover", false))
+                compose.onNodeWithContentDescription("Cerrar").performClick()
+                compose.onNodeWithTag("music_animation_cover").assertExists()
 
                 val busy = first.copy(id = "lyrics-test-busy", name = "Busy Song")
                 val persistent = first.copy(id = "lyrics-test-always-busy", name = "Always Busy")
@@ -139,12 +180,51 @@ class MusicLyricsDeviceTest {
                     lyrics.state.value.trackId == persistent.id && lyrics.state.value.result is LyricsLookup.Failed &&
                         !lyrics.state.value.loading && lyrics.state.value.retrySeconds == 0 && persistentBusyCalls.get() == 3
                 }
+                // Wait for the rendered button, not the intermediate result before its countdown is published.
+                compose.waitUntil(10_000) {
+                    compose.onAllNodesWithText("Reintentar").fetchSemanticsNodes().singleOrNull()?.config
+                        ?.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled) == false
+                }
                 compose.onNodeWithText("Reintentar").assertIsEnabled()
                 org.junit.Assert.assertEquals(3, persistentBusyCalls.get())
+                val rejected = first.copy(id = "lyrics-test-rejected", name = "Rejected Song")
+                runBlocking(Dispatchers.IO) { media.cacheLocalFile(rejected.id, wav, MediaKind.AUDIO) }
+                compose.runOnIdle { controller!!.updatePlaylist(listOf(rejected)); controller!!.playWithQueue(rejected) }
+                compose.waitUntil(10_000) { lyrics.state.value.trackId == rejected.id && lyrics.state.value.retrySeconds > 0 }
+                org.junit.Assert.assertFalse(lyrics.state.value.autoRetry)
+                compose.onNodeWithText("No se pudo obtener la letra. LRCLIB: consulta rechazada (HTTP 401).").assertExists()
+                compose.waitUntil(10_000) { lyrics.state.value.retrySeconds == 0 }
+                compose.onNodeWithText("Reintentar").assertIsEnabled()
+                org.junit.Assert.assertEquals(1, rejectedCalls.get())
+                if (InstrumentationRegistry.getArguments().getString("musicRadioLive") == "1") {
+                    compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                    val radioSeed = first.copy(id = "youtube:DXiXPhvYuNU", url = "https://www.youtube.com/watch?v=DXiXPhvYuNU",
+                        name = "Necio", artist = "Romeo Santos", relatedAutoplay = true)
+                    runBlocking(Dispatchers.IO) { media.cacheLocalFile(radioSeed.id, wav, MediaKind.AUDIO) }
+                    compose.runOnIdle { controller!!.updatePlaylist(listOf(radioSeed)); controller!!.playWithQueue(radioSeed) }
+                    compose.waitUntil(15_000) { controller!!.state.value.currentTrack?.id == radioSeed.id && controller!!.state.value.playing }
+                    scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED)
+                    val beforeBackground = controller!!.state.value.currentTimeMs
+                    compose.waitUntil(30_000) {
+                        controller!!.state.value.tracks.size > 1 && controller!!.state.value.currentTimeMs > beforeBackground + 400
+                    }
+                    val radio = controller!!.state.value
+                    org.junit.Assert.assertEquals(radioSeed.id, radio.currentTrack?.id)
+                    org.junit.Assert.assertTrue(radio.playing)
+                    org.junit.Assert.assertTrue(radio.tracks.size in 2..6)
+                    org.junit.Assert.assertEquals(radio.tracks.size, radio.tracks.map { it.id }.distinct().size)
+                    org.junit.Assert.assertTrue(radio.tracks.all { it.relatedAutoplay && it.playlistId == null })
+                    android.util.Log.i("MusicRadioTest", "Radio en servicio con pantalla detenida: ${radio.tracks.size - 1} recomendaciones; reproducción activa")
+                    scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+                }
                 compose.runOnIdle { controller!!.stop() }
             }
         } finally {
             instrumentation.runOnMainSync { controller?.stop(); controller?.release() }
+            prefs.edit().apply {
+                if (hadCoverPreference) putBoolean("player_show_animation_cover", originalCoverPreference)
+                else remove("player_show_animation_cover")
+            }.commit()
             shell("settings put global animator_duration_scale ${scale.takeIf { it.toFloatOrNull() != null } ?: "1"}")
         }
     }

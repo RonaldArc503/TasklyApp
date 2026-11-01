@@ -16,6 +16,7 @@ class OnlineMusicRepository @Inject constructor(private val http: OkHttpClient) 
     }
 
     fun search(query: String, page: Page? = null) = client.search(query, page)
+    fun related(reference: String) = client.related(reference)
 
     @Synchronized fun resolve(reference: String, refresh: Boolean = false): ResolvedMusicStream {
         val id = OnlineMusicSource.youtubeId(reference) ?: throw IOException("Canción no válida.")

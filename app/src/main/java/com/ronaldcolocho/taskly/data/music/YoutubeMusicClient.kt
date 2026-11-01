@@ -42,7 +42,17 @@ class YoutubeMusicClient(client: OkHttpClient) {
             extractor.fetchPage()
             extractor.initialPage
         } else extractor.getPage(page)
-        val tracks = result.items.filterIsInstance<StreamInfoItem>().mapNotNull { item ->
+        return MusicSearchPage(tracksFrom(result.items.filterIsInstance<StreamInfoItem>()), result.nextPage?.takeIf { Page.isValid(it) })
+    }
+
+    fun related(reference: String): List<MusicTrack> {
+        val id = OnlineMusicSource.youtubeId(reference) ?: throw IOException("Canción no válida.")
+        val extractor = ServiceList.YouTube.getPlaylistExtractor("https://www.youtube.com/watch?v=$id&list=RDAMVM$id")
+        extractor.fetchPage()
+        return tracksFrom(extractor.initialPage.items).filter { it.id != OnlineMusicSource.trackId(id) }.take(10)
+    }
+
+    private fun tracksFrom(items: List<StreamInfoItem>): List<MusicTrack> = items.mapNotNull { item ->
             val id = OnlineMusicSource.youtubeId(item.url) ?: return@mapNotNull null
             MusicTrack(
                 id = OnlineMusicSource.trackId(id), url = OnlineMusicSource.reference(id),
@@ -51,8 +61,6 @@ class YoutubeMusicClient(client: OkHttpClient) {
                 artist = item.uploaderName.orEmpty()
             )
         }.distinctBy { it.id }
-        return MusicSearchPage(tracks, result.nextPage?.takeIf { Page.isValid(it) })
-    }
 
     fun resolve(reference: String): ResolvedMusicStream {
         val id = OnlineMusicSource.youtubeId(reference) ?: throw IOException("Canción no válida.")

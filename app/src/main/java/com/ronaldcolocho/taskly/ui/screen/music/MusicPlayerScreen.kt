@@ -234,6 +234,7 @@ fun MusicPlayerScreen(
 
     // ── Visual effects state ──────────────────────────────────
     val currentEffect by audioController.visualEffect.collectAsStateWithLifecycle()
+    val showAnimationCover by audioController.showAnimationCover.collectAsStateWithLifecycle()
     val resolvedEffect = remember(trackId, currentEffect) {
         if (currentEffect == PlayerVisualEffect.RANDOM) {
             val nonRandomStyles = listOf(
@@ -329,7 +330,7 @@ fun MusicPlayerScreen(
                         )
                     }
                 } else MareaAlbumArt(
-                    coverUrl        = playerState.currentTrack?.thumbnailUrl ?: "",
+                    coverUrl        = if (showAnimationCover) playerState.currentTrack?.thumbnailUrl.orEmpty() else "",
                     isPlaying       = playerState.playing,
                     size            = coverSize,
                     g1              = animPrimary,
@@ -457,6 +458,8 @@ fun MusicPlayerScreen(
                 feedbackMessage = "Efecto: ${effect.title}"
             },
             onDismiss      = { showEffectsSheet = false },
+            showAnimationCover = showAnimationCover,
+            onShowAnimationCoverChange = audioController::setShowAnimationCover,
             accentColor    = animPrimary,
             currentPaletteName = trackPalette.name,
             activePalettePrimary = trackPalette.primary,
@@ -836,6 +839,7 @@ private fun MareaAlbumArt(
                     contentScale       = ContentScale.Crop,
                     modifier           = Modifier
                         .fillMaxSize(0.80f)
+                        .testTag("music_animation_cover")
                         .align(Alignment.Center)
                         .clip(CircleShape)
                         .alpha(0.85f)

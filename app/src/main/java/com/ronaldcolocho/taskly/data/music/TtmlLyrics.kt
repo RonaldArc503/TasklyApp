@@ -42,7 +42,7 @@ private fun ttmlTime(value: String): Long? {
         parts.size in 2..3 -> parts.fold(0.0 as Double?) { total, part ->
             if (total == null) null else part.toDoubleOrNull()?.let { total * 60 + it }
         }
-        else -> null
+        else -> value.trim().toDoubleOrNull()
     }
     return seconds?.takeIf { it.isFinite() && it >= 0 && it <= 86_400 }?.times(1000)?.toLong()
 }

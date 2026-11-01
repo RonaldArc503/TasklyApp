@@ -8,8 +8,15 @@ data class AudioTrack(
     val durationSeconds: Int = 0,
     val thumbnailUrl: String = "",
     val playlistId: String? = null,
-    val artist: String = ""
+    val artist: String = "",
+    val relatedAutoplay: Boolean = false
 )
+
+/** Browsing starts a radio from one song; a saved playlist keeps its complete explicit queue. */
+fun playbackQueueForSelection(tracks: List<AudioTrack>, selected: AudioTrack): List<AudioTrack> =
+    if (selected.playlistId == null && com.ronaldcolocho.taskly.domain.model.OnlineMusicSource.youtubeId(selected.url) != null)
+        listOf(selected.copy(relatedAutoplay = true))
+    else tracks.map { it.copy(relatedAutoplay = false) }
 
 enum class AudioMode { INDIVIDUAL, QUEUE, REPEAT, LOOP }
 

@@ -153,7 +153,7 @@ fun MusicScreen(
     onOpenConverter: () -> Unit = {}
 ) {
     if (selectedSection == MusicSection.DISCOVER) {
-        MusicDiscoverScreen(audioController, onNavigateBack, onOpenPlayer)
+        MusicDiscoverScreen(audioController, onNavigateBack)
         return
     }
     val tracks by viewModel.mostPlayed.collectAsStateWithLifecycle()
@@ -181,6 +181,7 @@ fun MusicScreen(
     var showCreate by remember { mutableStateOf(false) }
     var showVisualEffectsSheet by remember { mutableStateOf(false) }
     val visualEffect by audioController.visualEffect.collectAsStateWithLifecycle()
+    val showAnimationCover by audioController.showAnimationCover.collectAsStateWithLifecycle()
     var playlistQuery by rememberSaveable { mutableStateOf("") }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var playlistOrder by rememberSaveable { mutableStateOf("Recientes") }
@@ -726,6 +727,8 @@ fun MusicScreen(
                 showVisualEffectsSheet = false
             },
             onDismiss = { showVisualEffectsSheet = false },
+            showAnimationCover = showAnimationCover,
+            onShowAnimationCoverChange = audioController::setShowAnimationCover,
             accentColor = mint
         )
     }
@@ -2191,8 +2194,10 @@ internal fun playTracks(
     val audioTracks = tracks.map {
         it.toAudioTrack(playlistId)
     }
-    controller.updatePlaylist(audioTracks)
-    audioTracks.firstOrNull { it.id == selected.id }?.let(controller::playWithQueue)
+    val selectedAudio = audioTracks.firstOrNull { it.id == selected.id } ?: return
+    val queue = com.ronaldcolocho.taskly.audio.playbackQueueForSelection(audioTracks, selectedAudio)
+    controller.updatePlaylist(queue)
+    queue.firstOrNull { it.id == selected.id }?.let(controller::playWithQueue)
 }
 
 /** Plays a downloaded song by itself, so previewing never changes the playlist being edited. */

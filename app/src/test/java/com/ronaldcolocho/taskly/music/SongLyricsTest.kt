@@ -5,6 +5,28 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SongLyricsTest {
+    @Test fun collaborationLabelsAndArtistSeparatorsShareAnIdentity() {
+        val english = LyricsQuery("Necio (feat. Carlos Santana)", "Romeo Santos", 264)
+        val spanish = LyricsQuery("Necio (con Carlos Santana)", "Romeo Santos、Carlos Santana", 264)
+        assertEquals("Necio", english.searchTitle)
+        assertEquals("Romeo Santos", spanish.searchArtist)
+        assertEquals(english.key, spanish.key)
+        assertTrue(lyricsMetadataMatches("Necio", "Romeo Santos、Carlos Santana", english))
+        assertTrue(lyricsMetadataMatches("Necio (ft. Carlos Santana)", "Romeo Santos", spanish))
+        assertTrue(lyricsMetadataMatches("Necio", "Romeo Santos", english))
+    }
+
+    @Test fun collaborationMatchingKeepsRecordingVersionAndKnownGuests() {
+        val query = LyricsQuery("Song (feat. Guest)", "Artist", 200)
+        assertFalse(lyricsMetadataMatches("Song (feat. Other)", "Artist", query))
+        assertFalse(lyricsMetadataMatches("Song (Live)", "Artist、Guest", query))
+        assertFalse(lyricsMetadataMatches("Song (Remix)", "Artist、Guest", query))
+        assertFalse(lyricsMetadataMatches("Song", "Other Artist、Guest", query))
+        assertTrue(lyricsMetadataMatches("Song (Live)", "Artist、Guest", query.copy(title = "Song ft. Guest (Live)")))
+        assertNotEquals(query.key, query.copy(title = "Song (Live) (feat. Guest)").key)
+        assertNull(selectLyrics(listOf(LyricsCandidate("Song", "Artist、Guest", 205.0, SongLyrics("Fixture"))), query))
+    }
+
     @Test fun parsesFractionsRepeatedTimestampsAndSortedLines() {
         val lines = parseLrc("[ar:Artista]\n[00:20.125]Tercera\n[00:01.5][00:10.05]Repetida\n[00:04]Segunda\n[99:99]Inválida")
         assertEquals(listOf(1500L, 4000L, 10050L, 20125L), lines.map { it.timeMs })

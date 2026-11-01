@@ -10,6 +10,24 @@ class AudioSessionSnapshotTest {
     private val b = track("b")
     private val c = track("c")
 
+    @Test fun onlineBrowsingStartsFromSelectedSongAndPlaylistsRemainClosed() {
+        val online = a.copy(url = "https://www.youtube.com/watch?v=DXiXPhvYuNU", playlistId = null)
+        val radio = playbackQueueForSelection(listOf(online, b), online)
+        assertEquals(listOf(online.id), radio.map { it.id })
+        assertTrue(radio.single().relatedAutoplay)
+        val playlist = listOf(online.copy(playlistId = "saved", relatedAutoplay = true), b)
+        assertEquals(playlist.map { it.id }, playbackQueueForSelection(playlist, playlist.first()).map { it.id })
+        assertTrue(playbackQueueForSelection(playlist, playlist.first()).none { it.relatedAutoplay })
+        assertFalse(playbackQueueForSelection(listOf(a), a).single().relatedAutoplay)
+    }
+
+    @Test fun radioIntentSurvivesSessionRestoreAndOldSessionsStayFinite() {
+        val radio = a.copy(playlistId = null, relatedAutoplay = true)
+        val json = AudioSessionCodec.encode(AudioSessionSnapshot(listOf(radio), radio.id, 0, AudioMode.QUEUE, AudioRepeatMode.OFF, false))
+        assertTrue(AudioSessionCodec.decode(json)!!.tracks.single().relatedAutoplay)
+        assertFalse(AudioSessionCodec.decode(json.replace(",\"relatedAutoplay\":true", ""))!!.tracks.single().relatedAutoplay)
+    }
+
     @Test fun sessionRoundTripKeepsQueueAndPositionButRestoresPaused() {
         val playing = AudioPlayerState(listOf(a, b, c), b, playing = true, mode = AudioMode.LOOP,
             repeatMode = AudioRepeatMode.ALL, shuffleModeEnabled = true, currentTimeMs = 72_531)

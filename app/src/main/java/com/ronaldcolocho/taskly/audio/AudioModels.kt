@@ -9,7 +9,8 @@ data class AudioTrack(
     val thumbnailUrl: String = "",
     val playlistId: String? = null,
     val artist: String = "",
-    val relatedAutoplay: Boolean = false
+    val relatedAutoplay: Boolean = false,
+    val sourceChannel: String = ""
 )
 
 /** Browsing starts a radio from one song; a saved playlist keeps its complete explicit queue. */
@@ -48,5 +49,7 @@ data class AudioPlayerState(
     val currentTimeMs: Long = 0,
     val durationMs: Long = 0,
     val error: String? = null,
-    val buffering: Boolean = false
+    val buffering: Boolean = false,
+    val radioLoading: Boolean = false,
+    val radioError: String? = null
 )

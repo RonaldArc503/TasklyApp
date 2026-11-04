@@ -13,6 +13,7 @@ internal fun AudioTrack.toPlaybackMediaItem(uri: Uri = Uri.parse(url)): MediaIte
         .setExtras(Bundle().apply {
             putString("messageId", msgId); putString("playlistId", playlistId); putString("originalUrl", url)
             putInt("durationSeconds", durationSeconds)
+            putString("sourceChannel", sourceChannel)
             putBoolean("relatedAutoplay", relatedAutoplay && playlistId == null)
         }).build()).build()
 
@@ -27,5 +28,6 @@ internal fun MediaItem.toAudioTrack(known: AudioTrack? = null): AudioTrack {
         if (ownMetadata) metadata.artworkUri?.toString().orEmpty() else metadata.artworkUri?.toString() ?: known?.thumbnailUrl.orEmpty(),
         if (ownMetadata) extras?.getString("playlistId") else known?.playlistId,
         metadata.artist?.toString() ?: known?.artist.orEmpty(),
-        extras?.getBoolean("relatedAutoplay", known?.relatedAutoplay ?: false) ?: known?.relatedAutoplay ?: false)
+        extras?.getBoolean("relatedAutoplay", known?.relatedAutoplay ?: false) ?: known?.relatedAutoplay ?: false,
+        extras?.getString("sourceChannel") ?: known?.sourceChannel.orEmpty())
 }

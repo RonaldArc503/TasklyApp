@@ -131,7 +131,7 @@ class MusicDiscoverViewModel @Inject constructor(
         if (track.id in state.value.downloadedIds || downloadStates.value[track.id] is MediaDownloadState.Downloading ||
             downloadStates.value[track.id] is MediaDownloadState.Queued) return
         downloads.downloadAudio(CachedAudioReference(track.id, track.url, track.name, track.sourceMessageId,
-            track.durationSeconds, System.currentTimeMillis(), track.artist, track.thumbnailUrl))
+            track.durationSeconds, System.currentTimeMillis(), track.artist, track.thumbnailUrl, track.sourceChannel))
         feedback("Descarga agregada. Podrás encontrarla en Mi biblioteca.")
     }
 

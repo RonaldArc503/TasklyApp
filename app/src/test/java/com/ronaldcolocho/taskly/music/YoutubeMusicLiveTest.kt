@@ -17,6 +17,8 @@ class YoutubeMusicLiveTest {
         val related = OnlineMusicRepository(OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).build()).related(source)
         assertTrue("La radio debe devolver canciones similares", related.isNotEmpty())
         assertTrue(related.all { it.url != source && it.name.isNotBlank() && it.thumbnailUrl.isNotBlank() })
+        assertTrue("El catálogo musical debe entregar al menos un artista identificado", related.any { it.artist.isNotBlank() })
+        assertTrue(related.all { it.artist.isBlank() || "LETRAS4K" !in it.artist })
         assertEquals(related.size, related.map { it.id }.distinct().size)
         println("Radio de Necio: ${related.size} canciones; primeras=${related.take(3).map { it.name to it.artist }}")
     }

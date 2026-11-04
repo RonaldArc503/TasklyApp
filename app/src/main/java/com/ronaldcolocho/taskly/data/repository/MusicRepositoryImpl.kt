@@ -15,17 +15,24 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
 class MusicRepositoryImpl @Inject constructor(
     @ApplicationContext context: Context,
@@ -95,22 +102,40 @@ class MusicRepositoryImpl @Inject constructor(
                     close(error)
                 } else {
                     trySend(snapshot?.documents.orEmpty().map { document ->
-                        MusicPlaylist(
-                            id = document.id,
-                            userId = document.getString("userId").orEmpty(),
-                            name = document.getString("name").orEmpty(),
-                            createdAt = document.getLong("createdAt") ?: 0L,
-                            updatedAt = document.getLong("updatedAt") ?: 0L,
-                            coverUrl = document.getString("coverUrl").orEmpty(),
-                            songCount = (document.getLong("songCount") ?: 0L).toInt()
-                        )
+                        document.toMusicPlaylist()
                     })
                 }
             }
         awaitClose { listener.remove() }
+    }.flatMapLatest { lists ->
+        if (lists.isEmpty()) flowOf(emptyList())
+        else combine(lists.map { list ->
+            if (list.editable) flowOf(list) else observeSharedMetadata(list).onStart { emit(list) }.catch { emit(list) }
+        }) { it.toList() }
+    }
+
+    private fun observeSharedMetadata(list: MusicPlaylist): Flow<MusicPlaylist> = callbackFlow {
+        val listener = playlists(list.sharedOwnerId).document(list.sharedPlaylistId).addSnapshotListener { snapshot, error ->
+            if (error != null) close(error)
+            else trySend(snapshot?.takeIf { it.exists() }?.toMusicPlaylist()?.let { source ->
+                list.copy(name = source.name, coverUrl = source.coverUrl, songCount = source.songCount,
+                    updatedAt = maxOf(list.updatedAt, source.updatedAt))
+            } ?: list)
+        }
+        awaitClose { listener.remove() }
     }
 
     override fun observePlaylistTracks(userId: String, playlistId: String): Flow<List<MusicTrack>> = callbackFlow {
+        val listener = playlists(userId).document(playlistId).addSnapshotListener { snapshot, error ->
+            if (error != null) close(error) else trySend(snapshot?.toMusicPlaylist())
+        }
+        awaitClose { listener.remove() }
+    }.map { list ->
+        (list?.sharedOwnerId?.ifBlank { userId } ?: userId) to
+            (list?.sharedPlaylistId?.ifBlank { playlistId } ?: playlistId)
+    }.distinctUntilChanged().flatMapLatest { (owner, id) -> observeTrackDocuments(owner, id) }
+
+    private fun observeTrackDocuments(userId: String, playlistId: String): Flow<List<MusicTrack>> = callbackFlow {
         val listener = playlists(userId).document(playlistId).collection("tracks")
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
@@ -131,7 +156,7 @@ class MusicRepositoryImpl @Inject constructor(
         MusicTrack(
             id = it.mediaId, url = it.url, name = it.name,
             sourceMessageId = it.sourceMessageId, durationSeconds = it.durationSeconds,
-            addedAt = it.downloadedAt, artist = it.artist, thumbnailUrl = it.thumbnailUrl
+            addedAt = it.downloadedAt, artist = it.artist, thumbnailUrl = it.thumbnailUrl, sourceChannel = it.sourceChannel
         )
     }
 
@@ -184,13 +209,16 @@ class MusicRepositoryImpl @Inject constructor(
             // The track document id is the attachment publicId. A transaction keeps this
             // deduplication and the parent count correct even when two taps race.
             firestore.runTransaction { transaction ->
+                val list = transaction.get(playlist)
+                check(list.getString("sharedOwnerId").isNullOrBlank()) { "Esta lista compartida es de solo lectura." }
                 val alreadyAdded = transaction.get(trackDocument).exists()
-                transaction.set(trackDocument, track.toMap(now, if (alreadyAdded) track.position else now))
+                if (alreadyAdded) return@runTransaction
+                transaction.set(trackDocument, track.toMap(now, now))
                 transaction.update(
                     playlist,
                     mapOf(
                         "updatedAt" to now,
-                        "songCount" to if (alreadyAdded) FieldValue.increment(0) else FieldValue.increment(1)
+                        "songCount" to FieldValue.increment(1)
                     )
                 )
             }.await()
@@ -226,6 +254,7 @@ class MusicRepositoryImpl @Inject constructor(
 
     override suspend fun syncPlaylistSongCount(userId: String, playlistId: String, actualCount: Int) {
         val playlist = playlists(userId).document(playlistId)
+        if (!playlist.get().await().getString("sharedOwnerId").isNullOrBlank()) return
         val migratedTracks = migrateLegacyTracks(userId, playlistId)
         val resolvedCount = if (migratedTracks > 0) {
             playlist.collection("tracks").get().await().size()
@@ -251,7 +280,7 @@ class MusicRepositoryImpl @Inject constructor(
         thumbnailUrl = getString("thumbnailUrl").orEmpty(),
         addedAt = getLong("addedAt") ?: 0L,
         position = getLong("position") ?: (getLong("addedAt") ?: 0L),
-        artist = getString("artist").orEmpty()
+        artist = getString("artist").orEmpty(), sourceChannel = getString("sourceChannel").orEmpty()
     )
 
     private fun MusicTrack.toMap(addedAt: Long, position: Long) = mapOf(
@@ -262,18 +291,10 @@ class MusicRepositoryImpl @Inject constructor(
         "durationSeconds" to durationSeconds,
         "thumbnailUrl" to thumbnailUrl,
         "artist" to artist,
+        "sourceChannel" to sourceChannel,
         "addedAt" to addedAt
         , "position" to position
     )
-
-    /**
-     * Cloudinary public ids contain '/'. Firestore interprets those as path separators,
-     * so they cannot be used directly as document ids.
-     */
-    private fun trackDocumentId(mediaId: String): String = MessageDigest
-        .getInstance("SHA-256")
-        .digest(mediaId.toByteArray(Charsets.UTF_8))
-        .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
     /** Copies, but never deletes, tracks written by older builds under tracks/taskly/{uid}. */
     private suspend fun migrateLegacyTracks(userId: String, playlistId: String): Int = legacyMigrationMutex.withLock {
@@ -322,7 +343,7 @@ class MusicRepositoryImpl @Inject constructor(
                         playCount = item.optInt("playCount"),
                         lastPlayedAt = item.optLong("lastPlayedAt"),
                         addedAt = item.optLong("addedAt"),
-                        artist = item.optString("artist")
+                        artist = item.optString("artist"), sourceChannel = item.optString("sourceChannel")
                     )
                 )
             }
@@ -340,6 +361,7 @@ class MusicRepositoryImpl @Inject constructor(
                 put("durationSeconds", track.durationSeconds)
                 put("thumbnailUrl", track.thumbnailUrl)
                 put("artist", track.artist)
+                put("sourceChannel", track.sourceChannel)
                 put("playCount", track.playCount)
                 put("lastPlayedAt", track.lastPlayedAt)
                 put("addedAt", track.addedAt)

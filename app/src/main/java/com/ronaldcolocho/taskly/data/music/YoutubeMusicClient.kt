@@ -4,6 +4,9 @@ import com.ronaldcolocho.taskly.domain.model.MusicTrack
 import com.ronaldcolocho.taskly.domain.model.OnlineMusicSource
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
+import com.google.gson.JsonObject
+import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.Page
@@ -32,6 +35,7 @@ class ResolvedMusicStream(
 /** Blocking network operations; callers run on IO, including Media3's loader thread. */
 class YoutubeMusicClient(client: OkHttpClient) {
     init { initialize(client) }
+    private val radioHttp = client.newBuilder().callTimeout(12, java.util.concurrent.TimeUnit.SECONDS).build()
 
     fun search(query: String, page: Page? = null): MusicSearchPage {
         require(query.isNotBlank()) { "Escribe una canción o artista." }
@@ -47,9 +51,26 @@ class YoutubeMusicClient(client: OkHttpClient) {
 
     fun related(reference: String): List<MusicTrack> {
         val id = OnlineMusicSource.youtubeId(reference) ?: throw IOException("Canción no válida.")
-        val extractor = ServiceList.YouTube.getPlaylistExtractor("https://www.youtube.com/watch?v=$id&list=RDAMVM$id")
-        extractor.fetchPage()
-        return tracksFrom(extractor.initialPage.items).filter { it.id != OnlineMusicSource.trackId(id) }.take(10)
+        val payload = JsonObject().apply {
+            add("context", JsonObject().apply { add("client", JsonObject().apply {
+                addProperty("clientName", "WEB_REMIX")
+                addProperty("clientVersion", YoutubeParsingHelper.getYoutubeMusicClientVersion())
+                addProperty("hl", "es"); addProperty("gl", "SV")
+            }) })
+            addProperty("videoId", id); addProperty("playlistId", "RDAMVM$id")
+            addProperty("isAudioOnly", true); addProperty("enablePersistentPlaylistPanel", true)
+        }
+        val request = okhttp3.Request.Builder().url("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+        YoutubeParsingHelper.getYoutubeMusicHeaders().forEach { (name, values) -> values.forEach { request.addHeader(name, it) } }
+        request.header("User-Agent", USER_AGENT)
+        return radioHttp.newCall(request.build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("Radio musical HTTP ${response.code}")
+            val source = response.body?.source() ?: throw IOException("Respuesta vacía de radio")
+            source.request(2_097_153)
+            if (source.buffer.size > 2_097_152) throw IOException("Respuesta de radio demasiado grande")
+            parseMusicRadioMetadata(source.buffer.readUtf8(), id)
+        }
     }
 
     private fun tracksFrom(items: List<StreamInfoItem>): List<MusicTrack> = items.mapNotNull { item ->

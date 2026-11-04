@@ -91,6 +91,30 @@ service cloud.firestore {
       allow read, write: if own(uid);
     }
 
+    function sharedPlaylist(uid, playlistId) {
+      let list = get(/databases/$(database)/documents/users/$(uid)/playlists/$(playlistId)).data;
+      let share = get(/databases/$(database)/documents/sharedMusicPlaylists/$(list.shareId)).data;
+      return signedIn() && share.ownerId == uid && share.playlistId == playlistId;
+    }
+
+    match /sharedMusicPlaylists/{shareId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() &&
+        request.resource.data.keys().hasOnly(['ownerId', 'playlistId']) &&
+        request.resource.data.ownerId == request.auth.uid &&
+        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)/playlists/$(request.resource.data.playlistId)).data.shareId == shareId;
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /users/{uid}/playlists/{playlistId} {
+      allow get: if sharedPlaylist(uid, playlistId);
+      match /tracks/{trackId} {
+        allow read: if sharedPlaylist(uid, playlistId);
+      }
+    }
+
     // El dueño controla sus estados. Un participante solo puede desarchivar
     // el chat del receptor al enviarle un mensaje, sin tocar pin u otros campos.
     match /users/{uid}/chatStates/{conversationId} {

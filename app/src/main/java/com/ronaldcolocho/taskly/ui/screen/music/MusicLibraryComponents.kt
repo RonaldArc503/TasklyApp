@@ -18,7 +18,7 @@ import com.ronaldcolocho.taskly.domain.model.*
 import java.util.Locale
 
 internal fun MusicTrack.toAudioTrack(playlistId: String? = null) = AudioTrack(
-    id, url, name, sourceMessageId, durationSeconds, thumbnailUrl, playlistId, artist
+    id, url, name, sourceMessageId, durationSeconds, thumbnailUrl, playlistId, artist, sourceChannel = sourceChannel
 )
 
 internal fun formatMusicBytes(bytes: Long): String = when {
@@ -39,6 +39,7 @@ internal fun LazyListScope.musicLibraryItems(
     onPlay: (MusicLibraryItem) -> Unit,
     onFavorite: (MusicLibraryItem) -> Unit,
     onDownload: (MusicLibraryItem) -> Unit,
+    onAddToPlaylist: (MusicLibraryItem) -> Unit,
     onNext: (MusicLibraryItem) -> Unit,
     onEnd: (MusicLibraryItem) -> Unit,
     onRecover: () -> Unit
@@ -83,6 +84,7 @@ internal fun LazyListScope.musicLibraryItems(
         MusicLibraryRow(item, downloadStates[item.track.id],
             onPlay = { onPlay(item) }, onFavorite = { onFavorite(item) },
             onDownload = { if (item.canDownload) onDownload(item) else onRecover() },
+            onAddToPlaylist = { onAddToPlaylist(item) },
             onNext = { onNext(item) }, onEnd = { onEnd(item) })
     }
 }
@@ -90,7 +92,7 @@ internal fun LazyListScope.musicLibraryItems(
 @Composable
 private fun MusicLibraryRow(
     item: MusicLibraryItem, download: MediaDownloadState?, onPlay: () -> Unit,
-    onFavorite: () -> Unit, onDownload: () -> Unit, onNext: () -> Unit, onEnd: () -> Unit
+    onFavorite: () -> Unit, onDownload: () -> Unit, onAddToPlaylist: () -> Unit, onNext: () -> Unit, onEnd: () -> Unit
 ) {
     var menu by remember { mutableStateOf(false) }
     val playable = item.availableOffline || item.canDownload
@@ -128,10 +130,9 @@ private fun MusicLibraryRow(
                             onClick = { onNext(); menu = false })
                         DropdownMenuItem(text = { Text("Agregar al final") }, enabled = playable,
                             onClick = { onEnd(); menu = false })
-                        if (!item.availableOffline) DropdownMenuItem(
-                            text = { Text(if (item.canDownload) "Descargar" else "Recuperar desde el conversor") },
-                            enabled = download !is MediaDownloadState.Downloading && download !is MediaDownloadState.Queued,
-                            onClick = { onDownload(); menu = false })
+                        MusicTrackActionItems(item.availableOffline, download,
+                            onAdd = { onAddToPlaylist(); menu = false },
+                            onDownload = { onDownload(); menu = false })
                     }
                 }
             }

@@ -1,10 +1,16 @@
 package com.ronaldcolocho.taskly.media
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import com.ronaldcolocho.taskly.domain.repository.IDownloadHistoryRepository
+import com.ronaldcolocho.taskly.util.DownloadedSongResolver
+import kotlinx.coroutines.CancellationException
 import androidx.compose.runtime.Stable
 import com.ronaldcolocho.taskly.domain.model.MediaDownloadState
 import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
 import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
+import com.ronaldcolocho.taskly.domain.model.MusicTrack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,7 +46,10 @@ private data class DownloadRequest(
 @Stable
 @Singleton
 class MediaDownloadManager @Inject constructor(
-    private val cache: IMediaCacheRepository
+    private val cache: IMediaCacheRepository,
+    private val musicStore: MusicDownloadStore,
+    private val history: IDownloadHistoryRepository,
+    @ApplicationContext private val context: Context
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val manualQueue = Channel<DownloadRequest>(Channel.UNLIMITED)
@@ -54,6 +63,9 @@ class MediaDownloadManager @Inject constructor(
     val states: StateFlow<Map<String, MediaDownloadState>> = _states.asStateFlow()
 
     init {
+        scope.launch {
+            withContext(Dispatchers.IO) { musicStore.pending() }.forEach(::downloadAudio)
+        }
         repeat(MAX_CONCURRENT_DOWNLOADS) {
             scope.launch { consumeDownloadQueue() }
         }
@@ -101,14 +113,37 @@ class MediaDownloadManager @Inject constructor(
     }
 
     /** Music downloads survive closing their screen and retain recovery metadata. */
+    fun downloadTracks(tracks: Collection<MusicTrack>) {
+        tracks.distinctBy { it.id }.forEach { track ->
+            downloadAudio(CachedAudioReference(track.id, track.url, track.name, track.sourceMessageId,
+                track.durationSeconds, System.currentTimeMillis(), track.artist, track.thumbnailUrl, track.sourceChannel))
+        }
+    }
+
     fun downloadAudio(reference: CachedAudioReference) {
+        if (reference.mediaId.isBlank() || reference.url.isBlank()) return
         scope.launch {
-            if (cache.refreshFile(reference.mediaId, MediaKind.AUDIO) != null) {
-                cache.registerDownloadedAudio(reference)
-                _states.update { it + (reference.mediaId to MediaDownloadState.Downloaded) }
-            } else {
+            try {
+                val local = withContext(Dispatchers.IO) {
+                    cache.refreshFile(reference.mediaId, MediaKind.AUDIO)
+                        ?: DownloadedSongResolver.resolveTrackFile(context, reference.url, trackId = reference.mediaId,
+                            downloadedSongs = history.getDownloadedSongs().first().filter { it.id == reference.mediaId })
+                }
+                if (local != null) {
+                    cache.registerDownloadedAudio(reference)
+                    musicStore.remove(reference.mediaId)
+                    _states.update { it + (reference.mediaId to MediaDownloadState.Downloaded) }
+                    return@launch
+                }
+                require(reference.url.startsWith("https://") || reference.url.startsWith("http://")) {
+                    "El archivo local no está disponible. Recupéralo desde el conversor."
+                }
+                withContext(Dispatchers.IO) { musicStore.put(reference) }
                 pendingAudioReferences[reference.mediaId] = reference
                 ensureDownloaded(reference.mediaId, reference.url, MediaKind.AUDIO)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                _states.update { it + (reference.mediaId to MediaDownloadState.Error(error.message ?: "No se pudo iniciar la descarga.")) }
             }
         }
     }
@@ -145,11 +180,11 @@ class MediaDownloadManager @Inject constructor(
                 return
             }
         } else {
-            automaticQueuedIds.remove(request.mediaId)
+            val promoted = automaticQueuedIds.remove(request.mediaId)
             if (!queuedIds.add(request.mediaId)) {
                 // A visible automatic item can be promoted by putting the same id
                 // in the manual queue; the stale automatic entry will be ignored.
-                manualQueue.trySend(request)
+                if (promoted) manualQueue.trySend(request)
                 return
             }
             manualQueue.trySend(request)
@@ -169,16 +204,22 @@ class MediaDownloadManager @Inject constructor(
             try {
                 cache.download(request.mediaId, request.url, request.kind).collect { state ->
                     if (state is MediaDownloadState.Downloaded) {
-                        pendingAudioReferences.remove(request.mediaId)?.let(cache::registerDownloadedAudio)
-                    } else if (state is MediaDownloadState.Error) {
-                        pendingAudioReferences.remove(request.mediaId)
+                        pendingAudioReferences[request.mediaId]?.let { reference ->
+                            cache.registerDownloadedAudio(reference)
+                            musicStore.remove(request.mediaId)
+                            pendingAudioReferences.remove(request.mediaId)
+                        }
                     }
                     _states.update { it + (request.mediaId to state) }
                 }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                _states.update { it + (request.mediaId to MediaDownloadState.Error(error.message ?: "Descarga interrumpida. Reintenta.")) }
             } finally {
                 activeIds.remove(request.mediaId)
                 val finalState = _states.value[request.mediaId]
-                if (finalState is MediaDownloadState.Downloaded || finalState is MediaDownloadState.Error) {
+                if (!pendingAudioReferences.containsKey(request.mediaId) &&
+                    (finalState is MediaDownloadState.Downloaded || finalState is MediaDownloadState.Error)) {
                     scope.launch {
                         delay(2_000)
                         _states.update { states ->

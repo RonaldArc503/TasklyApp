@@ -150,6 +150,8 @@ fun MusicScreen(
     onOpenPlayer: (String) -> Unit = {},
     viewModel: MusicViewModel = hiltViewModel(),
     libraryViewModel: MusicLibraryViewModel = hiltViewModel(),
+    trackActions: MusicTrackActionsViewModel = hiltViewModel(),
+    playlistActions: MusicPlaylistActionsViewModel = hiltViewModel(),
     onOpenConverter: () -> Unit = {}
 ) {
     if (selectedSection == MusicSection.DISCOVER) {
@@ -178,6 +180,12 @@ fun MusicScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    var selectedTrack by remember { mutableStateOf<MusicTrack?>(null) }
+    val trackNotice by trackActions.notice.collectAsStateWithLifecycle()
+    val playlistNotice by playlistActions.notice.collectAsStateWithLifecycle()
+    AddMusicToPlaylistDialog(selectedTrack, trackActions) { selectedTrack = null }
+    if (selectedTrack == null) MusicActionNotice(trackNotice, trackActions::clearNotice)
+    MusicActionNotice(playlistNotice, playlistActions::clearNotice)
     var showCreate by remember { mutableStateOf(false) }
     var showVisualEffectsSheet by remember { mutableStateOf(false) }
     val visualEffect by audioController.visualEffect.collectAsStateWithLifecycle()
@@ -431,6 +439,7 @@ fun MusicScreen(
                         },
                         onFavorite = { libraryViewModel.setFavorite(it.track, !it.favorite) },
                         onDownload = { libraryViewModel.download(it.track) },
+                        onAddToPlaylist = { selectedTrack = it.track },
                         onNext = { audioController.addToQueueNext(it.track.toAudioTrack()) },
                         onEnd = { audioController.addToQueueEnd(it.track.toAudioTrack()) },
                         onRecover = onOpenConverter
@@ -686,6 +695,7 @@ fun MusicScreen(
                                     onClick = { onOpenPlaylist(playlist.id) },
                                     onRename = { name -> viewModel.renamePlaylist(playlist.id, name) },
                                     onDelete = { viewModel.deletePlaylist(playlist.id) },
+                                    actions = playlistActions,
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -1120,6 +1130,7 @@ private fun PlaylistGridCard(
     onClick: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
+    actions: MusicPlaylistActionsViewModel,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -1214,7 +1225,8 @@ private fun PlaylistGridCard(
                         .background(surface)
                         .border(1.dp, secondary, RoundedCornerShape(16.dp))
                 ) {
-                    DropdownMenuItem(
+                    MusicPlaylistActionItems(playlist, actions) { showMenu = false }
+                    if (playlist.editable) DropdownMenuItem(
                         text = {
                             Text(
                                 "Renombrar",
@@ -2208,7 +2220,7 @@ internal fun previewTrack(controller: AudioPlayerController, track: MusicTrack) 
         track.name,
         track.sourceMessageId,
         track.durationSeconds,
-        track.thumbnailUrl, artist = track.artist
+        track.thumbnailUrl, artist = track.artist, sourceChannel = track.sourceChannel
     )
     controller.updatePlaylist(listOf(audioTrack))
     controller.toggleTrack(audioTrack)

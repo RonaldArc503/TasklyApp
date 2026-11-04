@@ -98,6 +98,7 @@ class RelatedPlaybackQueueDeviceTest {
                 player.prepare(); player.play()
             }
             await { calls.get() > beforePlaylist }
+            main { assertTrue(player.playlistMetadata.extras?.getBoolean("tasklyRadioLoading") == true) }
             main {
                 player.setMediaItem(b.copy(playlistId = "another-playlist").toPlaybackMediaItem(Uri.fromFile(wav)))
                 player.prepare(); player.play()
@@ -107,6 +108,8 @@ class RelatedPlaybackQueueDeviceTest {
             main {
                 assertEquals(1, player.mediaItemCount)
                 assertEquals("another-playlist", player.currentMediaItem!!.toAudioTrack().playlistId)
+                assertFalse(player.playlistMetadata.extras?.getBoolean("tasklyRadioLoading") == true)
+                assertNull(player.playlistMetadata.extras?.getString("tasklyRadioError"))
             }
 
             val beforeFailure = calls.get()
@@ -118,6 +121,10 @@ class RelatedPlaybackQueueDeviceTest {
             await { calls.get() == beforeFailure + 1 }
             await { player.playbackState == Player.STATE_ENDED }
             assertEquals(beforeFailure + 1, calls.get())
+            main {
+                assertEquals("No se pudieron cargar canciones similares.", player.playlistMetadata.extras?.getString("tasklyRadioError"))
+                assertFalse(player.playlistMetadata.extras?.getBoolean("tasklyRadioLoading") == true)
+            }
         } finally {
             main { scope.cancel(); if (::player.isInitialized) player.release() }
         }

@@ -184,11 +184,17 @@ fun MusicPlayerScreen(
     playlistName: String = "Mi lista",
     darkTheme: Boolean = androidx.compose.foundation.isSystemInDarkTheme(),
     onNavigateBack: () -> Unit = {},
-    lyricsViewModel: MusicLyricsViewModel = hiltViewModel()
+    lyricsViewModel: MusicLyricsViewModel = hiltViewModel(),
+    favoritesViewModel: MusicPlayerFavoritesViewModel = hiltViewModel(),
+    actionsViewModel: MusicTrackActionsViewModel = hiltViewModel()
 ) {
     val playerState by audioController.state.collectAsStateWithLifecycle()
     val showLyrics by lyricsViewModel.showing.collectAsStateWithLifecycle()
     val lyricsState by lyricsViewModel.state.collectAsStateWithLifecycle()
+    val favorites by favoritesViewModel.favorites.collectAsStateWithLifecycle()
+    val savingFavorite by favoritesViewModel.saving.collectAsStateWithLifecycle()
+    val favoriteNotice by favoritesViewModel.notice.collectAsStateWithLifecycle()
+    val isFavorite = playerState.currentTrack?.id in favorites.ids
     val lyricsLifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lyricsLifecycle, lyricsViewModel) {
         val observer = LifecycleEventObserver { _, _ ->
@@ -213,6 +219,14 @@ fun MusicPlayerScreen(
     }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    var favoritePulse by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    LaunchedEffect(favoriteNotice) {
+        favoriteNotice?.let { notice ->
+            feedbackMessage = notice.message
+            if (notice.favorite != null && notice.trackId == playerState.currentTrack?.id) favoritePulse++
+            favoritesViewModel.clearNotice()
+        }
+    }
     val changeColor: () -> Unit = {
         val selection = audioController.changeColor()
         val name = MAREA_PALETTES.firstOrNull { it.id == selection.paletteId }?.name.orEmpty()
@@ -311,6 +325,9 @@ fun MusicPlayerScreen(
                     }
                 }
             }
+            if (playerState.radioLoading || playerState.radioError != null) Text(
+                playerState.radioError ?: "Buscando canciones similares…", color = secondary, fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("music_radio_status"))
 
             // 2. Central stage (remaining space)
             BoxWithConstraints(
@@ -341,7 +358,9 @@ fun MusicPlayerScreen(
                     effect          = resolvedEffect,
                     onSwipeLeft     = { audioController.next() },
                     onSwipeRight    = { audioController.prev() },
-                    onDoubleTap     = { /* Favorito — placeholder: no existe isFavorite en el modelo */ },
+                    onDoubleTap     = { favoritesViewModel.toggle(playerState.currentTrack) },
+                    isFavorite      = isFavorite,
+                    favoritePulse   = favoritePulse,
                     onCyclePalette = changeColor,
                     modifier = Modifier.testTag("music_visual_stage")
                 )
@@ -373,7 +392,14 @@ fun MusicPlayerScreen(
                 secondary   = secondary,
                 accentColor = if (showLyrics) lyricsAccent else animPrimary,
                 showingLyrics = showLyrics,
-                onToggleLyrics = lyricsViewModel::toggle
+                onToggleLyrics = lyricsViewModel::toggle,
+                trackMenu = { MusicPlayerTrackMenu(playerState.currentTrack?.let {
+                    com.ronaldcolocho.taskly.domain.model.MusicTrack(it.id, it.url, it.name, it.msgId,
+                        it.durationSeconds, it.thumbnailUrl, artist = it.artist, sourceChannel = it.sourceChannel)
+                }, actionsViewModel) },
+                favorite = isFavorite,
+                favoriteEnabled = favorites.ready && savingFavorite == null,
+                onToggleFavorite = { favoritesViewModel.toggle(playerState.currentTrack) }
             )
 
             Spacer(Modifier.height(22.dp))
@@ -563,6 +589,8 @@ private fun MareaAlbumArt(
     onSwipeLeft    : () -> Unit,
     onSwipeRight   : () -> Unit,
     onDoubleTap    : () -> Unit,
+    isFavorite     : Boolean,
+    favoritePulse  : Int,
     onCyclePalette : () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -673,6 +701,7 @@ private fun MareaAlbumArt(
 
     // Double-tap heart animation
     var showHeart by remember { mutableStateOf(false) }
+    LaunchedEffect(favoritePulse) { if (favoritePulse > 0) showHeart = true }
     val heartScale  = remember { Animatable(0f) }
     val heartAlpha  = remember { Animatable(0f) }
 
@@ -823,7 +852,6 @@ private fun MareaAlbumArt(
                         },
                         onDoubleTap = {
                             currentOnDoubleTap()
-                            showHeart = true
                         },
                         onTap = {
                             currentOnCyclePalette()
@@ -896,7 +924,7 @@ private fun MareaAlbumArt(
 
         // 4. Double-tap heart overlay
         Icon(
-            imageVector        = Icons.Default.Favorite,
+            imageVector        = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
             contentDescription = null,
             tint               = MareaAccentWarm,
             modifier           = Modifier
@@ -2990,7 +3018,11 @@ private fun MareaSongInfo(
     secondary   : Color,
     accentColor : Color,
     showingLyrics: Boolean,
-    onToggleLyrics: () -> Unit
+    onToggleLyrics: () -> Unit,
+    trackMenu: @Composable () -> Unit,
+    favorite: Boolean,
+    favoriteEnabled: Boolean,
+    onToggleFavorite: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -3001,11 +3033,18 @@ private fun MareaSongInfo(
                 text = track?.name ?: "—", style = MareaTitleStyle, color = onSurface,
                 maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
             )
+            IconToggleButton(checked = favorite, onCheckedChange = { onToggleFavorite() },
+                enabled = track != null && favoriteEnabled, modifier = Modifier.size(48.dp).testTag("music_favorite_toggle")) {
+                Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    if (favorite) "Quitar de favoritas" else "Guardar en favoritas",
+                    tint = if (favorite) accentColor else secondary)
+            }
             IconToggleButton(checked = showingLyrics, onCheckedChange = { onToggleLyrics() },
                 enabled = track != null, modifier = Modifier.size(48.dp).testTag("music_lyrics_toggle")) {
                 Icon(Icons.Default.Lyrics, if (showingLyrics) "Mostrar animación" else "Mostrar letra",
                     tint = if (showingLyrics) accentColor else secondary)
             }
+            trackMenu()
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -3018,7 +3057,8 @@ private fun MareaSongInfo(
                     .background(accentColor)
             )
             Text(
-                text     = track?.artist?.ifBlank { "Taskly" } ?: "Taskly",
+                text     = track?.artist?.takeIf { it.isNotBlank() }
+                    ?: track?.sourceChannel?.takeIf { it.isNotBlank() }?.let { "Canal: $it" } ?: "Artista no disponible",
                 style    = MareaArtistStyle,
                 color    = secondary,
                 maxLines = 1,

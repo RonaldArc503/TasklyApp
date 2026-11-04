@@ -58,6 +58,9 @@ class MusicLyricsDeviceTest {
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 lateinit var lyrics: MusicLyricsViewModel
+                lateinit var favorites: MusicPlayerFavoritesViewModel
+                val favoriteRepository = PlayerFavoritesTestRepository()
+                val favoriteAccount = kotlinx.coroutines.flow.MutableStateFlow<String?>("test-user")
                 lateinit var media: MediaCacheRepositoryImpl
                 val busyCalls = AtomicInteger()
                 val persistentBusyCalls = AtomicInteger()
@@ -106,12 +109,48 @@ class MusicLyricsDeviceTest {
                         LyricsRepository(api, File(context.cacheDir, "lyrics-ui-${System.nanoTime()}"),
                             sourceOrder = listOf(LyricsSource.LRCLIB)))
                     activity.viewModelStore.put("lyrics-ui-test", lyrics)
+                    favorites = MusicPlayerFavoritesViewModel(favoriteRepository, favoriteAccount, favoriteAccount.value)
+                    activity.viewModelStore.put("favorites-ui-test", favorites)
                     controller!!.updatePlaylist(listOf(first, second))
                     controller!!.playWithQueue(first)
-                    activity.setContent { TasklyTheme { MusicPlayerScreen(controller!!, lyricsViewModel = lyrics) } }
+                    activity.setContent { TasklyTheme { MusicPlayerScreen(controller!!, lyricsViewModel = lyrics, favoritesViewModel = favorites) } }
                 }
                 compose.waitUntil(15_000) { controller!!.state.value.currentTrack?.id == first.id }
                 compose.onNodeWithTag("music_visual_stage").assertExists()
+                compose.onNodeWithContentDescription("Opciones de canción").performClick()
+                compose.onNodeWithText("Agregar a lista").assertExists()
+                compose.waitUntil(5000) {
+                    compose.onAllNodesWithText("Disponible sin conexión").fetchSemanticsNodes().isNotEmpty()
+                }
+                compose.onNodeWithText("Disponible sin conexión").assertIsNotEnabled()
+                instrumentation.uiAutomation.takeScreenshot().let { bitmap ->
+                    File(context.getExternalFilesDir(null), "music-track-menu-test.png").outputStream().use {
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                    }
+                }
+                instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+                compose.waitUntil(5000) { favorites.favorites.value.ready }
+                compose.onNodeWithTag("music_favorite_toggle").assertIsOff()
+                compose.onNodeWithTag("music_visual_stage").performTouchInput { doubleClick() }
+                compose.waitUntil(5000) { favoriteRepository.liked.value.any { it.id == first.id } && favorites.saving.value == null }
+                compose.onNodeWithTag("music_favorite_toggle").assertIsOn()
+                compose.onNodeWithText("Guardada en favoritas", substring = true).assertExists()
+                compose.onNodeWithTag("music_favorite_toggle").performClick()
+                compose.waitUntil(5000) { favoriteRepository.liked.value.isEmpty() && favorites.saving.value == null }
+                compose.onNodeWithTag("music_favorite_toggle").assertIsOff()
+                compose.onNodeWithText("Quitada de favoritas", substring = true).assertExists()
+                compose.runOnIdle { favoriteRepository.failNext = true }
+                compose.onNodeWithTag("music_favorite_toggle").performClick()
+                compose.waitUntil(5000) { favoriteRepository.writes == 3 && favorites.saving.value == null }
+                compose.onNodeWithTag("music_favorite_toggle").assertIsOff()
+                compose.onNodeWithText("No se pudo actualizar el favorito. Vuelve a intentarlo.").assertExists()
+                compose.runOnIdle { favoriteAccount.value = null }
+                compose.waitUntil(5000) { favorites.favorites.value.ready && favorites.favorites.value.userId == null }
+                compose.onNodeWithTag("music_favorite_toggle").performClick()
+                compose.onNodeWithText("Inicia sesión para guardar favoritas.").assertExists()
+                org.junit.Assert.assertEquals(3, favoriteRepository.writes)
+                compose.runOnIdle { favoriteAccount.value = "test-user" }
+                compose.waitUntil(5000) { favorites.favorites.value.ready && favorites.favorites.value.userId == "test-user" }
                 compose.onNodeWithTag("music_animation_cover").assertExists()
                 compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
                 compose.onNodeWithTag("music_animation_cover_toggle").assertIsOn().performClick().assertIsOff()
@@ -196,8 +235,19 @@ class MusicLyricsDeviceTest {
                 compose.waitUntil(10_000) { lyrics.state.value.retrySeconds == 0 }
                 compose.onNodeWithText("Reintentar").assertIsEnabled()
                 org.junit.Assert.assertEquals(1, rejectedCalls.get())
+                compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                val channelOnly = first.copy(id = "channel-only-fixture", name = "Channel fixture", artist = "", sourceChannel = "LETRAS4K")
+                runBlocking(Dispatchers.IO) { media.cacheLocalFile(channelOnly.id, wav, MediaKind.AUDIO) }
+                compose.runOnIdle { controller!!.updatePlaylist(listOf(channelOnly)); controller!!.playWithQueue(channelOnly) }
+                compose.waitUntil(10_000) { controller!!.state.value.currentTrack?.id == channelOnly.id }
+                compose.onNodeWithText("Canal: LETRAS4K").assertExists()
+                compose.onNodeWithTag("music_favorite_toggle").performClick()
+                compose.waitUntil(5000) { favoriteRepository.liked.value.any { it.id == channelOnly.id } && favorites.saving.value == null }
+                val stored = favoriteRepository.liked.value.single { it.id == channelOnly.id }
+                org.junit.Assert.assertEquals("", stored.artist)
+                org.junit.Assert.assertEquals("LETRAS4K", stored.sourceChannel)
                 if (InstrumentationRegistry.getArguments().getString("musicRadioLive") == "1") {
-                    compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                    if (lyrics.showing.value) compose.onNodeWithTag("music_lyrics_toggle").performClick()
                     val radioSeed = first.copy(id = "youtube:DXiXPhvYuNU", url = "https://www.youtube.com/watch?v=DXiXPhvYuNU",
                         name = "Necio", artist = "Romeo Santos", relatedAutoplay = true)
                     runBlocking(Dispatchers.IO) { media.cacheLocalFile(radioSeed.id, wav, MediaKind.AUDIO) }
@@ -206,7 +256,8 @@ class MusicLyricsDeviceTest {
                     scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED)
                     val beforeBackground = controller!!.state.value.currentTimeMs
                     compose.waitUntil(30_000) {
-                        controller!!.state.value.tracks.size > 1 && controller!!.state.value.currentTimeMs > beforeBackground + 400
+                        controller!!.state.value.tracks.size > 1 && !controller!!.state.value.radioLoading &&
+                            controller!!.state.value.currentTimeMs > beforeBackground + 400
                     }
                     val radio = controller!!.state.value
                     org.junit.Assert.assertEquals(radioSeed.id, radio.currentTrack?.id)
@@ -214,6 +265,9 @@ class MusicLyricsDeviceTest {
                     org.junit.Assert.assertTrue(radio.tracks.size in 2..6)
                     org.junit.Assert.assertEquals(radio.tracks.size, radio.tracks.map { it.id }.distinct().size)
                     org.junit.Assert.assertTrue(radio.tracks.all { it.relatedAutoplay && it.playlistId == null })
+                    org.junit.Assert.assertTrue(radio.tracks.drop(1).any { it.artist.isNotBlank() })
+                    org.junit.Assert.assertFalse(radio.radioLoading)
+                    org.junit.Assert.assertNull(radio.radioError)
                     android.util.Log.i("MusicRadioTest", "Radio en servicio con pantalla detenida: ${radio.tracks.size - 1} recomendaciones; reproducción activa")
                     scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
                 }

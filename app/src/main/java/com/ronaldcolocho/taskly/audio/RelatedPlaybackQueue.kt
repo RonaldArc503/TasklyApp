@@ -2,6 +2,7 @@ package com.ronaldcolocho.taskly.audio
 
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import android.os.Bundle
 import com.ronaldcolocho.taskly.domain.model.OnlineMusicSource
 import kotlinx.coroutines.*
 
@@ -16,11 +17,24 @@ internal class RelatedPlaybackQueue(
     private var job: Job? = null
     private val attempted = linkedSetOf<String>()
 
+    private fun status(loading: Boolean, error: String? = null) {
+        val previous = player.playlistMetadata
+        if ((previous.extras?.getBoolean("tasklyRadioLoading") ?: false) == loading &&
+            previous.extras?.getString("tasklyRadioError") == error) return
+        val extras = Bundle(previous.extras ?: Bundle()).apply {
+            putBoolean("tasklyRadioLoading", loading); putString("tasklyRadioError", error)
+        }
+        // Media3 ignores extras values in metadata equality; a meaningful subtitle publishes the change.
+        player.setPlaylistMetadata(previous.buildUpon()
+            .setSubtitle(if (loading) "Buscando canciones similares…" else error).setExtras(extras).build())
+    }
+
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
             generation++
             attempted.clear()
             job?.cancel()
+            status(false)
         }
     }
 
@@ -33,8 +47,14 @@ internal class RelatedPlaybackQueue(
 
     private fun update() {
         if (!scope.isActive) return
-        if (!eligible(player.currentMediaItem?.toAudioTrack()) || !player.playWhenReady || player.repeatMode == Player.REPEAT_MODE_ONE) {
+        if (!eligible(player.currentMediaItem?.toAudioTrack())) {
             job?.cancel()
+            status(false)
+            return
+        }
+        if (!player.playWhenReady || player.repeatMode == Player.REPEAT_MODE_ONE) {
+            job?.cancel()
+            status(false, player.playlistMetadata.extras?.getString("tasklyRadioError"))
             return
         }
         // A cancelled blocking extraction must finish before another network lookup starts.
@@ -45,7 +65,9 @@ internal class RelatedPlaybackQueue(
         if (attempted.size > 200) attempted.remove(attempted.first())
         val requestGeneration = generation
         val request = scope.launch(start = CoroutineStart.LAZY) {
+            var error: String? = null
             try {
+                status(true)
                 val recommendations = withTimeout(15_000) { load(seed) }
                 if (requestGeneration != generation || !eligible(player.currentMediaItem?.toAudioTrack()) ||
                     queue().map { it.mediaId } != snapshot.map { it.mediaId }) return@launch
@@ -59,15 +81,18 @@ internal class RelatedPlaybackQueue(
                     // Resume only if the song ended while its recommendations were still loading.
                     if (ended) { player.seekToDefaultPosition(nextIndex); player.prepare(); player.play() }
                     if (player.currentMediaItemIndex > 50) player.removeMediaItems(0, player.currentMediaItemIndex - 20)
-                }
+                } else error = "No hay canciones similares disponibles para continuar."
             } catch (_: TimeoutCancellationException) {
-                // One failed lookup per seed; a timeout must not start a retry loop.
+                error = "La consulta de canciones similares tardó demasiado."
             } catch (cancelled: CancellationException) {
                 if (requestGeneration == generation) attempted.remove(seed.id)
                 throw cancelled
-            } catch (_: Exception) {
-                // Keep the existing queue playable; never substitute unrelated search results.
+            } catch (failure: Exception) {
+                val httpStatus = Regex("HTTP (\\d{3})").find(failure.message.orEmpty())?.groupValues?.get(1).orEmpty()
+                android.util.Log.w("MusicRadio", "Related lookup failed: ${failure.javaClass.simpleName}; HTTP=$httpStatus")
+                error = "No se pudieron cargar canciones similares."
             } finally {
+                if (requestGeneration == generation) status(false, error)
                 job = null
             }
         }

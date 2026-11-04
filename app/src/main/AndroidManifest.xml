@@ -67,6 +67,24 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="taskly" android:host="reminders" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="taskly" android:host="playlist" />
+            </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="tasksv.web.app" android:pathPrefix="/musica/lista/" />
+            </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="tasksv.firebaseapp.com" android:pathPrefix="/musica/lista/" />
+            </intent-filter>
         </activity>
 
         <provider

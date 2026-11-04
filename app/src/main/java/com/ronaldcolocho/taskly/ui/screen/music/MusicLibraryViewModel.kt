@@ -81,7 +81,7 @@ class MusicLibraryViewModel @Inject constructor(
         }
         val cacheTracks = references.map {
             MusicTrack(it.mediaId, it.url, it.name, it.sourceMessageId, it.durationSeconds,
-                addedAt = it.downloadedAt, artist = it.artist, thumbnailUrl = it.thumbnailUrl)
+                addedAt = it.downloadedAt, artist = it.artist, thumbnailUrl = it.thumbnailUrl, sourceChannel = it.sourceChannel)
         }
         val sources = playlistTracks.map { it.first } + favorites + history + cacheTracks + localTracks
         val favoriteIds = favorites.mapTo(hashSetOf()) { it.id }
@@ -130,14 +130,9 @@ class MusicLibraryViewModel @Inject constructor(
     }
 
     fun download(track: MusicTrack) {
-        if (!track.url.startsWith("https://") && !track.url.startsWith("http://")) {
-            _error.value = "El archivo original ya no está disponible. Vuelve a descargarlo desde el conversor."
-            return
-        }
         val existing = downloadStates.value[track.id]
         if (existing is MediaDownloadState.Downloading || existing is MediaDownloadState.Queued) return
         if (auth.currentUser == null) return
-        mediaDownloads.downloadAudio(CachedAudioReference(track.id, track.url, track.name,
-            track.sourceMessageId, track.durationSeconds, System.currentTimeMillis(), track.artist, track.thumbnailUrl))
+        mediaDownloads.downloadTracks(listOf(track))
     }
 }

@@ -155,16 +155,27 @@ fun MareaPlaylistScreen(
     onNavigateBack: () -> Unit,
     onOpenPlayer: (String) -> Unit = {},
     viewModel: PlaylistDetailViewModel,
-    libraryViewModel: MusicLibraryViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    libraryViewModel: MusicLibraryViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
+    trackActions: MusicTrackActionsViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
+    playlistActions: MusicPlaylistActionsViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 ) {
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
-    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val downloadedTracks by viewModel.downloadedTracks.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val playerState by audioController.state.collectAsStateWithLifecycle()
     val library by libraryViewModel.library.collectAsStateWithLifecycle()
     val libraryError by libraryViewModel.error.collectAsStateWithLifecycle()
-    val playlist = playlists.firstOrNull { it.id == viewModel.selectedPlaylistId }
+    val playlist by viewModel.selectedPlaylist.collectAsStateWithLifecycle()
+    val saved by viewModel.saved.collectAsStateWithLifecycle()
+    val saving by viewModel.saving.collectAsStateWithLifecycle()
+    val savedNotice by viewModel.notice.collectAsStateWithLifecycle()
+    val downloadStates by trackActions.downloadStates.collectAsStateWithLifecycle()
+    val actionNotice by playlistActions.notice.collectAsStateWithLifecycle()
+    val trackNotice by trackActions.notice.collectAsStateWithLifecycle()
+    var selectedTrack by remember { mutableStateOf<MusicTrack?>(null) }
+    AddMusicToPlaylistDialog(selectedTrack, trackActions) { selectedTrack = null }
+    if (selectedTrack == null) MusicActionNotice(trackNotice, trackActions::clearNotice)
+    MusicActionNotice(actionNotice, playlistActions::clearNotice)
 
     val isPlayingFromThisPlaylist = playerState.currentTrack?.let { current ->
         tracks.any { it.id == current.id }
@@ -239,6 +250,10 @@ fun MareaPlaylistScreen(
         if (showAdd) viewModel.loadDownloadedTracks()
     }
 
+    LaunchedEffect(savedNotice) {
+        savedNotice?.let { feedbackMessage = it; feedbackColor = mint; viewModel.clearNotice() }
+    }
+
     // Floating feedback auto-dismiss
     LaunchedEffect(feedbackMessage) {
         if (feedbackMessage != null) {
@@ -284,6 +299,8 @@ fun MareaPlaylistScreen(
                             modifier = Modifier.size(24.dp)
                         )
                     }
+                    Spacer(Modifier.weight(1f))
+                    MusicPlaylistMenu(playlist, playlistActions)
                 }
             }
 
@@ -332,6 +349,12 @@ fun MareaPlaylistScreen(
                 )
             }
 
+            if (playlist?.editable == false && !saved) item {
+                TextButton(enabled = !saving, onClick = viewModel::saveShared) {
+                    Text(if (saving) "Guardando…" else "Guardar en mi biblioteca")
+                }
+            }
+
             // ── 2. Fila de Acciones Principales ──────────────────
             item {
                 Spacer(Modifier.height(16.dp))
@@ -372,6 +395,7 @@ fun MareaPlaylistScreen(
                     secondary       = secondary,
                     peach           = peach,
                     onAccent        = onAccent,
+                    canEdit         = playlist?.editable == true,
                     onAdd           = { showAdd = true },
                     onTimer         = {
                         val presets = listOf(15, 30, 45, 60, 90, 120)
@@ -416,7 +440,9 @@ fun MareaPlaylistScreen(
             }
 
             // ── 5. Lista de Canciones ─────────────────────────────
-            if (sortedTracks.isEmpty()) {
+            if (sortedTracks.isEmpty() && playlist?.editable == false) {
+                item { Text("Esta lista no tiene canciones.", color = secondary) }
+            } else if (sortedTracks.isEmpty()) {
                 item {
                     MareaEmptyPlaylist(
                         surface   = surface,
@@ -498,6 +524,11 @@ fun MareaPlaylistScreen(
                             feedbackMessage = "Agregada al final: ${track.name}"
                             feedbackColor = mint
                         },
+                        canRemove = playlist?.editable == true,
+                        offline = library.items.any { it.track.id == track.id && it.availableOffline },
+                        download = downloadStates[track.id],
+                        onAddToPlaylist = { selectedTrack = track },
+                        onDownload = { trackActions.download(track) },
                         onRemove = { viewModel.removeTrack(track) }
                     )
                 }
@@ -847,6 +878,7 @@ private fun MareaToolsRow(
     secondary       : Color,
     peach           : Color,
     onAccent        : Color,
+    canEdit         : Boolean,
     onAdd           : () -> Unit,
     onTimer         : () -> Unit
 ) {
@@ -856,7 +888,7 @@ private fun MareaToolsRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // "Agregar canciones" — Flexible width, 56dp high, 20dp corners, no fill, 1.5dp border at 35%
-        MareaScaleButton(
+        if (canEdit) MareaScaleButton(
             onClick   = onAdd,
             modifier  = Modifier
                 .weight(1f)
@@ -1096,7 +1128,12 @@ private fun MareaTrackRowItem(
     onSwipeFavorite   : () -> Unit,
     onSwipeQueue      : () -> Unit,
     onQueueEnd        : () -> Unit,
-    onRemove          : () -> Unit
+    onRemove          : () -> Unit,
+    canRemove         : Boolean,
+    offline           : Boolean,
+    download          : com.ronaldcolocho.taskly.domain.model.MediaDownloadState?,
+    onAddToPlaylist   : () -> Unit,
+    onDownload        : () -> Unit
 ) {
     val offsetX = remember { Animatable(0f) }
     val scope   = rememberCoroutineScope()
@@ -1249,6 +1286,8 @@ private fun MareaTrackRowItem(
                         )
                     }
                 }
+                MusicDownloadBadge(offline, download, track.name, onDownload,
+                    modifier = Modifier.align(Alignment.BottomEnd))
             }
 
             // Title & Artist
@@ -1354,7 +1393,10 @@ private fun MareaTrackRowItem(
                         onClick = { onQueueEnd(); showMenu = false },
                         leadingIcon = { Icon(Icons.Default.LibraryMusic, null, tint = lilac) }
                     )
-                    DropdownMenuItem(
+                    MusicTrackActionItems(offline, download,
+                        onAdd = { onAddToPlaylist(); showMenu = false },
+                        onDownload = { onDownload(); showMenu = false })
+                    if (canRemove) DropdownMenuItem(
                         text       = { Text("Quitar de la lista") },
                         onClick    = { onRemove(); showMenu = false },
                         leadingIcon = {

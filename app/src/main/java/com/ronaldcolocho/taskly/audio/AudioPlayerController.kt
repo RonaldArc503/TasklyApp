@@ -241,7 +241,7 @@ class AudioPlayerController @Inject constructor(
         p.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
                 if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
-                        Player.EVENT_MEDIA_METADATA_CHANGED)) syncStateWithPlayer(player)
+                        Player.EVENT_MEDIA_METADATA_CHANGED, Player.EVENT_PLAYLIST_METADATA_CHANGED)) syncStateWithPlayer(player)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -367,7 +367,9 @@ class AudioPlayerController @Inject constructor(
                 playing = isPlaying,
                 buffering = p.playbackState == Player.STATE_BUFFERING,
                 currentTimeMs = p.currentPosition.takeIf { pos -> pos >= 0 } ?: 0L,
-                durationMs = dur
+                durationMs = dur,
+                radioLoading = p.playlistMetadata.extras?.getBoolean("tasklyRadioLoading") ?: false,
+                radioError = p.playlistMetadata.extras?.getString("tasklyRadioError")
             )
         }
         if (isPlaying && tickerJob?.isActive != true) startTicker()
@@ -815,7 +817,7 @@ class AudioPlayerController @Inject constructor(
         }
         _state.update {
             it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0, durationMs = 0,
-                playing = false, buffering = false, error = null)
+                playing = false, buffering = false, error = null, radioLoading = false, radioError = null)
         }
         stopTicker()
     }
@@ -842,7 +844,7 @@ class AudioPlayerController @Inject constructor(
                     sourceMessageId = track.msgId,
                     durationSeconds = track.durationSeconds,
                     thumbnailUrl = track.thumbnailUrl,
-                    artist = track.artist
+                    artist = track.artist, sourceChannel = track.sourceChannel
                 )
             )
         }

@@ -22,9 +22,11 @@ class AudioSessionSnapshotTest {
     }
 
     @Test fun radioIntentSurvivesSessionRestoreAndOldSessionsStayFinite() {
-        val radio = a.copy(playlistId = null, relatedAutoplay = true)
+        val radio = a.copy(playlistId = null, relatedAutoplay = true, artist = "", sourceChannel = "Source channel")
         val json = AudioSessionCodec.encode(AudioSessionSnapshot(listOf(radio), radio.id, 0, AudioMode.QUEUE, AudioRepeatMode.OFF, false))
         assertTrue(AudioSessionCodec.decode(json)!!.tracks.single().relatedAutoplay)
+        assertEquals("Source channel", AudioSessionCodec.decode(json)!!.tracks.single().sourceChannel)
+        assertEquals("", AudioSessionCodec.decode(json)!!.tracks.single().artist)
         assertFalse(AudioSessionCodec.decode(json.replace(",\"relatedAutoplay\":true", ""))!!.tracks.single().relatedAutoplay)
     }
 

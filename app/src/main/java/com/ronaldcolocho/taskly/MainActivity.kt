@@ -41,8 +41,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        receiveSharedUrl(intent)
         playlistToOpen = playlistFromAudioIntent(intent)
+        receiveSharedUrl(intent)
         enableEdgeToEdge()
         setContent {
             val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
@@ -62,18 +62,24 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        receiveSharedUrl(intent)
         playlistToOpen = playlistFromAudioIntent(intent)
+        receiveSharedUrl(intent)
     }
 
     private fun receiveSharedUrl(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND || intent.type?.startsWith("text/plain") != true) return
-        SharedUrlParser.extract(intent.getCharSequenceExtra(Intent.EXTRA_TEXT))?.let(
-            sharedUrlViewModel::receive
-        )
+        val url = SharedUrlParser.extract(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)) ?: return
+        val token = com.ronaldcolocho.taskly.domain.model.MusicPlaylistLink.parse(url)
+        if (token != null) playlistToOpen = com.ronaldcolocho.taskly.domain.model.MusicPlaylistLink.savedPlaylistId(token)
+        else sharedUrlViewModel.receive(url)
     }
 
     private fun playlistFromAudioIntent(intent: Intent?): String? {
+        if (intent?.action == Intent.ACTION_VIEW) {
+            return com.ronaldcolocho.taskly.domain.model.MusicPlaylistLink.parse(intent.dataString)?.let {
+                com.ronaldcolocho.taskly.domain.model.MusicPlaylistLink.savedPlaylistId(it)
+            }
+        }
         if (intent?.action != ACTION_OPEN_CURRENT_AUDIO) return null
         return getSharedPreferences("audio_prefs", Context.MODE_PRIVATE)
             .getString("current_playlist_id", null)

@@ -39,7 +39,7 @@ object AudioSessionCodec {
                 AudioTrack(string("id"), string("url"), string("name"), string("msgId"),
                     item.get("durationSeconds")?.asInt?.coerceAtLeast(0) ?: 0,
                     string("thumbnailUrl"), string("playlistId").ifBlank { null }, string("artist"),
-                    item.get("relatedAutoplay")?.asBoolean ?: false)
+                    item.get("relatedAutoplay")?.asBoolean ?: false, string("sourceChannel"))
                     .takeIf { it.id.isNotBlank() && it.url.isNotBlank() }
             }.getOrNull()
         }.distinctBy { it.id }

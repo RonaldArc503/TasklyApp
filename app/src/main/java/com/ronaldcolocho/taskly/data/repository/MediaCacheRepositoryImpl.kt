@@ -179,6 +179,7 @@ class MediaCacheRepositoryImpl @Inject constructor(
                         put("sourceMessageId", item.sourceMessageId); put("durationSeconds", item.durationSeconds)
                         put("downloadedAt", item.downloadedAt)
                         put("artist", item.artist); put("thumbnailUrl", item.thumbnailUrl)
+                        put("sourceChannel", item.sourceChannel)
                     })
                 }
                 audioCatalog.edit().putString(KEY_AUDIO_CATALOG, array.toString()).apply()
@@ -202,7 +203,7 @@ class MediaCacheRepositoryImpl @Inject constructor(
                     mediaId = item.optString("mediaId"), url = item.optString("url"),
                     name = item.optString("name"), sourceMessageId = item.optString("sourceMessageId"),
                     durationSeconds = item.optInt("durationSeconds"), downloadedAt = item.optLong("downloadedAt"),
-                    artist = item.optString("artist"), thumbnailUrl = item.optString("thumbnailUrl")
+                    artist = item.optString("artist"), thumbnailUrl = item.optString("thumbnailUrl"), sourceChannel = item.optString("sourceChannel")
                 ))
             }
         }.filter { it.mediaId.isNotBlank() && it.url.isNotBlank() }

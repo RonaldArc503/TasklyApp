@@ -11,7 +11,8 @@ data class MusicTrack(
     val lastPlayedAt: Long = 0L,
     val addedAt: Long = 0L
     , val position: Long = 0L,
-    val artist: String = ""
+    val artist: String = "",
+    val sourceChannel: String = ""
 )
 
 data class MusicPlaylist(
@@ -21,8 +22,13 @@ data class MusicPlaylist(
     val createdAt: Long,
     val updatedAt: Long,
     val coverUrl: String = "",
-    val songCount: Int = 0
-)
+    val songCount: Int = 0,
+    val sharedOwnerId: String = "",
+    val sharedPlaylistId: String = "",
+    val shareId: String = ""
+) {
+    val editable: Boolean get() = sharedOwnerId.isBlank()
+}
 
 data class CachedAudioReference(
     val mediaId: String,
@@ -32,5 +38,12 @@ data class CachedAudioReference(
     val durationSeconds: Int,
     val downloadedAt: Long,
     val artist: String = "",
-    val thumbnailUrl: String = ""
+    val thumbnailUrl: String = "",
+    val sourceChannel: String = ""
 )
+
+fun selectMusicPlaylist(
+    owned: List<MusicPlaylist>, shared: MusicPlaylist?, userId: String?, requestedId: String
+): MusicPlaylist? = owned.firstOrNull { it.id == requestedId && it.editable }
+    ?: owned.firstOrNull { shared != null && shared.sharedOwnerId == userId && it.id == shared.sharedPlaylistId }
+    ?: shared ?: owned.firstOrNull { it.id == requestedId }

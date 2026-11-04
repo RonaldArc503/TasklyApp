@@ -54,7 +54,7 @@ class AudioPlaybackService : MediaSessionService() {
             withContext(Dispatchers.IO) {
                 onlineMusic.related(seed.url).map { track ->
                     AudioTrack(track.id, track.url, track.name, track.sourceMessageId, track.durationSeconds,
-                        track.thumbnailUrl, artist = track.artist, relatedAutoplay = true)
+                        track.thumbnailUrl, artist = track.artist, relatedAutoplay = true, sourceChannel = track.sourceChannel)
                 }
             }
         }))

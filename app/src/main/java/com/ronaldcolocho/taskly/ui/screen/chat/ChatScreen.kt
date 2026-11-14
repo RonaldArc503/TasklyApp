@@ -637,6 +637,7 @@ fun ChatScreen(
                     val handleOpenFile: (ChatAttachment, File) -> Unit = remember(context) { { att, file -> AttachmentActions.openLocalFile(context, file, att.mimeType) } }
                     val handleReplyClick: (String) -> Unit = remember { { msgId -> jumpToMessage(msgId) } }
                     val handleLinkClick: (String) -> Unit = remember(context) { { url -> AttachmentActions.openExternal(context, url) } }
+                    val memberDirectory = remember(state.conversation.members) { com.ronaldcolocho.taskly.domain.model.MemberDirectory(state.conversation.members) }
 
                     LazyColumn(
                         state = listState,
@@ -688,7 +689,7 @@ fun ChatScreen(
                                     message = message,
                                     isMe = message.senderId == state.currentUserId,
                                     currentUserId = state.currentUserId,
-                                    members = com.ronaldcolocho.taskly.domain.model.MemberDirectory(state.conversation.members),
+                                    members = memberDirectory,
                                     maxBubbleWidth = maxBubbleWidth,
                                     showAuthor = isGroup && message.senderId != state.currentUserId,
                                     authorName = state.conversation.members[message.senderId]?.displayName,

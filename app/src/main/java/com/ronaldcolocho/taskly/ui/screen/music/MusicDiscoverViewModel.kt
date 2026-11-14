@@ -1,5 +1,6 @@
 package com.ronaldcolocho.taskly.ui.screen.music
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,6 +13,7 @@ import com.ronaldcolocho.taskly.domain.repository.IMediaCacheRepository
 import com.ronaldcolocho.taskly.domain.repository.IMusicRepository
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,11 +24,25 @@ import org.schabi.newpipe.extractor.Page
 import java.io.IOException
 import javax.inject.Inject
 
+enum class MusicSearchCategory(val label: String) {
+    ALL("Todo"),
+    SONGS("Canciones"),
+    ARTISTS("Artistas"),
+    ALBUMS("Álbumes")
+}
+
 data class MusicDiscoverState(
-    val query: String = "", val searchedQuery: String = "",
-    val tracks: List<MusicTrack> = emptyList(), val loading: Boolean = false,
-    val hasMore: Boolean = false, val error: String? = null, val feedback: String? = null,
-    val savingIds: Set<String> = emptySet(), val downloadedIds: Set<String> = emptySet()
+    val query: String = "",
+    val searchedQuery: String = "",
+    val tracks: List<MusicTrack> = emptyList(),
+    val loading: Boolean = false,
+    val hasMore: Boolean = false,
+    val error: String? = null,
+    val feedback: String? = null,
+    val savingIds: Set<String> = emptySet(),
+    val downloadedIds: Set<String> = emptySet(),
+    val recentSearches: List<String> = emptyList(),
+    val selectedCategory: MusicSearchCategory = MusicSearchCategory.ALL
 )
 
 @HiltViewModel
@@ -36,9 +52,16 @@ class MusicDiscoverViewModel @Inject constructor(
     private val music: IMusicRepository,
     private val auth: FirebaseAuth,
     private val downloads: MediaDownloadManager,
-    private val cache: IMediaCacheRepository
+    private val cache: IMediaCacheRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
-    private val _state = MutableStateFlow(MusicDiscoverState(query = savedState["music_discover_query"] ?: ""))
+    private val prefs by lazy { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+    private val _state = MutableStateFlow(
+        MusicDiscoverState(
+            query = savedState["music_discover_query"] ?: "",
+            recentSearches = loadRecentSearches()
+        )
+    )
     val state = _state.asStateFlow()
     val downloadStates = downloads.states
     private val uid = auth.currentUser?.uid
@@ -65,6 +88,43 @@ class MusicDiscoverViewModel @Inject constructor(
         }
     }
 
+    private fun loadRecentSearches(): List<String> {
+        val raw = prefs.getString(KEY_RECENT_SEARCHES, null)
+        return if (raw.isNullOrBlank()) {
+            listOf("cumbia", "baladas románticas", "música para estudiar")
+        } else {
+            raw.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        }
+    }
+
+    private fun persistRecentSearches(list: List<String>) {
+        prefs.edit().putString(KEY_RECENT_SEARCHES, list.joinToString("\n")).apply()
+    }
+
+    fun addRecentSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return
+        val current = _state.value.recentSearches
+        val updated = (listOf(trimmed) + current.filterNot { it.equals(trimmed, ignoreCase = true) }).take(10)
+        persistRecentSearches(updated)
+        _state.update { it.copy(recentSearches = updated) }
+    }
+
+    fun removeRecentSearch(query: String) {
+        val updated = _state.value.recentSearches.filterNot { it.equals(query.trim(), ignoreCase = true) }
+        persistRecentSearches(updated)
+        _state.update { it.copy(recentSearches = updated) }
+    }
+
+    fun clearRecentSearches() {
+        persistRecentSearches(emptyList())
+        _state.update { it.copy(recentSearches = emptyList()) }
+    }
+
+    fun selectCategory(category: MusicSearchCategory) {
+        _state.update { it.copy(selectedCategory = category) }
+    }
+
     fun queryChanged(query: String) {
         savedState["music_discover_query"] = query
         generation++
@@ -72,9 +132,33 @@ class MusicDiscoverViewModel @Inject constructor(
         _state.update { it.copy(query = query, loading = false, error = null) }
     }
 
+    fun clearSearch() {
+        savedState["music_discover_query"] = ""
+        generation++
+        searchJob?.cancel()
+        _state.update {
+            it.copy(
+                query = "",
+                searchedQuery = "",
+                tracks = emptyList(),
+                loading = false,
+                error = null,
+                selectedCategory = MusicSearchCategory.ALL
+            )
+        }
+    }
+
+    fun searchDirect(query: String) {
+        queryChanged(query)
+        search()
+    }
+
     fun search(more: Boolean = false) {
         val query = state.value.query.trim()
         if (query.isBlank()) return
+        if (!more) {
+            addRecentSearch(query)
+        }
         val append = more && query == state.value.searchedQuery
         val page = if (append) nextPage ?: return else null
         searchJob?.cancel()
@@ -137,4 +221,9 @@ class MusicDiscoverViewModel @Inject constructor(
 
     fun feedback(message: String) { _state.update { it.copy(feedback = message) } }
     fun clearFeedback() { _state.update { it.copy(feedback = null) } }
+
+    private companion object {
+        const val PREFS_NAME = "taskly_music_discover"
+        const val KEY_RECENT_SEARCHES = "recent_searches"
+    }
 }

@@ -122,7 +122,9 @@ private fun StartupPermissionRequester(onPermissionsChanged: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
-        onPermissionsChanged()
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            onPermissionsChanged()
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(
                 context,

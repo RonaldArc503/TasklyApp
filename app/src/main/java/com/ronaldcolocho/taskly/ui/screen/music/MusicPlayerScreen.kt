@@ -25,6 +25,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -615,6 +616,7 @@ private fun MareaAlbumArt(
     // Continuous monotonic time driver — never resets, never loops, 100% seamless & organic
     var animTimeSec by remember { mutableFloatStateOf(0f) }
     val mareaV2Motion = remember { MareaV2Motion() }
+    val mareaGeometry = remember { MareaGeometry() }
     val mareaV2Geometry = remember { MareaV2Geometry() }
     val currentEffect by rememberUpdatedState(effect)
 
@@ -641,23 +643,23 @@ private fun MareaAlbumArt(
         }
     }
 
-    // V2 reads its clock in drawing/layer phases, without recomposing the album every frame.
-    val t = if (effect == PlayerVisualEffect.MAREA_V2) 0f else animTimeSec
 
-    // Multi-harmonic gentle oceanic sway (non-repeating natural drift between -5.5° and +5.5°)
-    val tiltAngle = if (animationsEnabled) {
-        sin(t * 0.42f) * 3.4f + cos(t * 0.23f) * 2.1f
-    } else 0f
 
-    // Organic biological breathing scale (non-repeating rhythm between 0.975 and 1.025)
-    val breatheScale = if (animationsEnabled) {
-        1.0f + sin(t * 0.68f) * 0.018f + cos(t * 0.39f) * 0.009f
-    } else 1.0f
 
-    // Soft atmospheric aura pulsation (alpha between 0.48 and 0.74)
-    val glowAlpha = if (animationsEnabled) {
-        0.58f + sin(t * 0.54f) * 0.14f + cos(t * 0.28f) * 0.05f
-    } else 0.55f
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     // Swipe state
     val swipeOffsetX = remember { Animatable(0f) }
@@ -725,55 +727,60 @@ private fun MareaAlbumArt(
                 .size(size * 1.10f)
                 .graphicsLayer {
                     translationY = (size * 0.04f).toPx()
-                    alpha        = if (animationsEnabled) glowAlpha else 0.55f
-                    scaleX       = if (animationsEnabled) breatheScale * 1.04f else 1f
-                    scaleY       = if (animationsEnabled) breatheScale * 1.04f else 1f
-                    if (animationsEnabled && effect == PlayerVisualEffect.MAREA_V2) {
-                        val layerTime = animTimeSec
-                        alpha = 0.58f + sin(layerTime * 0.54f) * 0.14f + cos(layerTime * 0.28f) * 0.05f
-                        val scale = (1f + sin(layerTime * 0.68f) * 0.018f + cos(layerTime * 0.39f) * 0.009f) * 1.04f
-                        scaleX = scale
-                        scaleY = scale
-                    }
+                    val layerTime = if (animationsEnabled) animTimeSec else 0f
+                    val layerGlowAlpha = if (animationsEnabled) {
+                        0.58f + sin(layerTime * 0.54f) * 0.14f + cos(layerTime * 0.28f) * 0.05f
+                    } else 0.55f
+                    val layerBreathe = if (animationsEnabled) {
+                        (1.0f + sin(layerTime * 0.68f) * 0.018f + cos(layerTime * 0.39f) * 0.009f) * 1.04f
+                    } else 1f
+                    alpha  = layerGlowAlpha
+                    scaleX = layerBreathe
+                    scaleY = layerBreathe
                 }
-                .blur(radius = 52.dp)
                 .background(
                     brush = Brush.radialGradient(
-                        colors = listOf(
-                            glow.copy(alpha = 0.88f),
-                            g1.copy(alpha = 0.45f),
-                            Color.Transparent
+                        colorStops = arrayOf(
+                            0.0f to glow.copy(alpha = 0.82f),
+                            0.35f to g1.copy(alpha = 0.45f),
+                            0.65f to g1.copy(alpha = 0.15f),
+                            1.0f to Color.Transparent
                         )
                     ),
                     shape = CircleShape
                 )
         )
 
+
         // 2. The living "Marea" (dual-layer fluid organic body)
         Box(
             modifier = Modifier
                 .size(size)
                 .graphicsLayer {
+                    val layerTime = if (animationsEnabled) animTimeSec else 0f
+                    val layerBreathe = if (animationsEnabled) {
+                        1.0f + sin(layerTime * 0.68f) * 0.018f + cos(layerTime * 0.39f) * 0.009f
+                    } else 1.0f
+                    val layerTilt = if (animationsEnabled && effect != PlayerVisualEffect.MAREA_V2) {
+                        sin(layerTime * 0.42f) * 3.4f + cos(layerTime * 0.23f) * 2.1f
+                    } else 0f
                     translationX = swipeOffsetX.value
                     alpha        = swipeAlpha.value
-                    scaleX       = swipeScale.value * if (animationsEnabled) breatheScale else 1f
-                    scaleY       = swipeScale.value * if (animationsEnabled) breatheScale else 1f
-                    if (animationsEnabled && effect == PlayerVisualEffect.MAREA_V2) {
-                        val layerTime = animTimeSec
-                        val scale = swipeScale.value * (1f + sin(layerTime * 0.68f) * 0.018f + cos(layerTime * 0.39f) * 0.009f)
-                        scaleX = scale
-                        scaleY = scale
-                    }
-                    if (animationsEnabled && effect != PlayerVisualEffect.MAREA_V2) {
-                        rotationZ = tiltAngle
+                    scaleX       = swipeScale.value * layerBreathe
+                    scaleY       = swipeScale.value * layerBreathe
+                    if (effect != PlayerVisualEffect.MAREA_V2) {
+                        rotationZ = layerTilt
                     }
                 }
                 .drawBehind {
                     val activeTime = if (animationsEnabled) animTimeSec else 0f
                     when (effect) {
                         PlayerVisualEffect.MAREA -> drawLivingMarea(
-                            timeSec = activeTime,
-                            g1 = g1, g2 = g2, g3 = g3
+                            timeSec  = activeTime,
+                            g1       = g1,
+                            g2       = g2,
+                            g3       = g3,
+                            geometry = mareaGeometry
                         )
                         PlayerVisualEffect.MAREA_V2 -> drawLivingMareaV2(
                             timeSec      = activeTime * 1.25f,
@@ -813,8 +820,11 @@ private fun MareaAlbumArt(
                             g1 = g1, g2 = g2, g3 = g3, glow = glow
                         )
                         PlayerVisualEffect.RANDOM -> drawLivingMarea(
-                            timeSec = activeTime,
-                            g1 = g1, g2 = g2, g3 = g3
+                            timeSec  = activeTime,
+                            g1       = g1,
+                            g2       = g2,
+                            g3       = g3,
+                            geometry = mareaGeometry
                         )
                     }
                 }
@@ -944,7 +954,8 @@ internal fun DrawScope.drawLivingMarea(
     timeSec : Float,
     g1      : Color,
     g2      : Color,
-    g3      : Color
+    g3      : Color,
+    geometry: MareaGeometry? = null
 ) {
     val w  = size.width
     val h  = size.height
@@ -957,7 +968,8 @@ internal fun DrawScope.drawLivingMarea(
         cy         = cy,
         baseRadius = minOf(cx, cy) * 0.96f,
         timeSec    = timeSec * 0.72f + 1.25f,
-        amplitude  = 1.35f
+        amplitude  = 1.35f,
+        targetPath = geometry?.underPath
     )
     val underAngleRad = (timeSec * 0.22f).toDouble()
     drawPath(
@@ -979,7 +991,8 @@ internal fun DrawScope.drawLivingMarea(
         cy         = cy,
         baseRadius = minOf(cx, cy) * 0.92f,
         timeSec    = timeSec,
-        amplitude  = 1.0f
+        amplitude  = 1.0f,
+        targetPath = geometry?.mainPath
     )
     val mainAngleRad = (timeSec * 0.38f).toDouble()
     drawPath(
@@ -1014,7 +1027,8 @@ internal fun DrawScope.drawLivingMarea(
             cy         = cy,
             baseRadius = minOf(cx, cy) * frac,
             timeSec    = rippleTime,
-            amplitude  = 0.40f
+            amplitude  = 0.40f,
+            targetPath = geometry?.ripplePaths?.getOrNull(idx)
         )
         drawPath(
             path  = ripplePath,
@@ -1027,6 +1041,13 @@ internal fun DrawScope.drawLivingMarea(
 // ── Living Marea v2 drawing — Interactive Hydrodynamic Fluid Physics ──────────
 
 /** Reused only by Marea V2; no point arrays or native paths allocated per frame. */
+/** Reused by Marea V1; avoids allocating Path instances on every frame. */
+internal class MareaGeometry {
+    val underPath = Path()
+    val mainPath = Path()
+    val ripplePaths = Array(3) { Path() }
+}
+
 internal class MareaV2Contour(val count: Int) {
     val path = Path()
     val x = FloatArray(count)
@@ -1541,58 +1562,107 @@ internal fun DrawScope.drawLivingMareaV2(
  * to create an organic, ever-evolving, non-repeating liquid tide
  * that flows 100% seamlessly without any restart or snap.
  */
+private val harmonicLocalPointsX = ThreadLocal.withInitial { FloatArray(32) }
+private val harmonicLocalPointsY = ThreadLocal.withInitial { FloatArray(32) }
+
 internal fun createHarmonicTidePath(
     cx         : Float,
     cy         : Float,
     baseRadius : Float,
     timeSec    : Float,
     amplitude  : Float = 1f,
-    pointCount : Int = 10
+    pointCount : Int = 10,
+    targetPath : Path? = null
 ): Path {
     val t = timeSec
-    // Organic wave modulation envelopes (slow, incommensurate frequencies)
-    // Ensures movements are NOT fixed and continuously morph/change
     val swell1 = 0.078f + 0.022f * sin(t * 0.23f)
     val swell2 = 0.050f + 0.018f * cos(t * 0.17f)
     val swell3 = 0.025f + 0.010f * sin(t * 0.31f)
 
-    val points = Array(pointCount) { i ->
+    val pointsX = if (pointCount <= 32) harmonicLocalPointsX.get() else FloatArray(pointCount)
+    val pointsY = if (pointCount <= 32) harmonicLocalPointsY.get() else FloatArray(pointCount)
+
+    for (i in 0 until pointCount) {
         val theta = (i * 2.0 * Math.PI / pointCount).toFloat()
-        // Superposition of fluid harmonics with evolving phases
         val h1 = sin(2f * theta + t * 0.88f) * swell1 * amplitude
         val h2 = cos(3f * theta - t * 0.62f + sin(t * 0.19f)) * swell2 * amplitude
         val h3 = sin(5f * theta + t * 1.15f + cos(t * 0.27f)) * swell3 * amplitude
         val r  = baseRadius * (1f + h1 + h2 + h3)
-        Offset(
-            cx + r * cos(theta),
-            cy + r * sin(theta)
-        )
+        pointsX[i] = cx + r * cos(theta)
+        pointsY[i] = cy + r * sin(theta)
     }
 
-    val path = Path()
-    path.moveTo(points[0].x, points[0].y)
+    val path = targetPath ?: Path()
+    path.reset()
+    path.moveTo(pointsX[0], pointsY[0])
 
-    // Catmull-Rom to Cubic Bézier conversion
     for (i in 0 until pointCount) {
-        val p0 = points[(i - 1 + pointCount) % pointCount]
-        val p1 = points[i]
-        val p2 = points[(i + 1) % pointCount]
-        val p3 = points[(i + 2) % pointCount]
+        val i0 = (i - 1 + pointCount) % pointCount
+        val i1 = i
+        val i2 = (i + 1) % pointCount
+        val i3 = (i + 2) % pointCount
 
-        val cp1 = Offset(
-            p1.x + (p2.x - p0.x) / 6f,
-            p1.y + (p2.y - p0.y) / 6f
-        )
-        val cp2 = Offset(
-            p2.x - (p3.x - p1.x) / 6f,
-            p2.y - (p3.y - p1.y) / 6f
-        )
+        val cp1x = pointsX[i1] + (pointsX[i2] - pointsX[i0]) / 6f
+        val cp1y = pointsY[i1] + (pointsY[i2] - pointsY[i0]) / 6f
+        val cp2x = pointsX[i2] - (pointsX[i3] - pointsX[i1]) / 6f
+        val cp2y = pointsY[i2] - (pointsY[i3] - pointsY[i1]) / 6f
 
-        path.cubicTo(cp1.x, cp1.y, cp2.x, cp2.y, p2.x, p2.y)
+        path.cubicTo(cp1x, cp1y, cp2x, cp2y, pointsX[i2], pointsY[i2])
     }
     path.close()
     return path
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * Simulates a musical beat envelope (BPM beat breathing).
@@ -3150,26 +3220,33 @@ private fun MareaWaveformSeekBar(
                 },
             contentAlignment = Alignment.Center
         ) {
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(BAR_GAP_DP.dp)
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(uniformBarHeight)
             ) {
+                val totalWidth = size.width
+                val barGapPx = BAR_GAP_DP.dp.toPx()
+                val totalGapWidth = barGapPx * (BAR_COUNT - 1)
+                val barWidth = ((totalWidth - totalGapWidth) / BAR_COUNT).coerceAtLeast(1f)
+                val barHeight = size.height
+                val cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f, barWidth / 2f)
+                val inactiveColor = secondary.copy(alpha = 0.22f)
+
                 for (index in 0 until BAR_COUNT) {
                     val isPast = index < currentBarIndex
                     val isCurrent = index == currentBarIndex
                     val barColor = when {
                         isCurrent -> thumbColor
                         isPast    -> activeColor
-                        else      -> secondary.copy(alpha = 0.22f)
+                        else      -> inactiveColor
                     }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(uniformBarHeight)
-                            .clip(RoundedCornerShape(50))
-                            .background(barColor)
+                    val left = index * (barWidth + barGapPx)
+                    drawRoundRect(
+                        color = barColor,
+                        topLeft = Offset(left, 0f),
+                        size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                        cornerRadius = cornerRadius
                     )
                 }
             }

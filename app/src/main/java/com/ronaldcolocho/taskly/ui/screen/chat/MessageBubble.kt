@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -134,7 +135,7 @@ fun MessageBubble(
         .fillMaxWidth()
         .heightIn(min = 48.dp)
         .clip(blockShape)
-        .background(blockColor)
+        .drawBehind { if (blockColor.alpha > 0.001f) drawRect(blockColor) }
         .then(
             if (menuSelected) Modifier.border(1.dp, ChatAccent.copy(alpha = 0.42f), blockShape)
             else Modifier

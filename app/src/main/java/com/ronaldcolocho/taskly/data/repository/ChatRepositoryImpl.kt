@@ -226,8 +226,10 @@ class ChatRepositoryImpl @Inject constructor(
             val messages = cached?.documents?.mapNotNull { doc ->
                 doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
             }.orEmpty()
-            emitted = true
-            trySend(messages)
+            if (!emitted) {
+                emitted = true
+                trySend(messages)
+            }
         }
 
         val listener = query.addSnapshotListener { snapshot, error ->
@@ -236,6 +238,7 @@ class ChatRepositoryImpl @Inject constructor(
                 return@addSnapshotListener
             }
             if (snapshot != null) {
+                emitted = true
                 launch(kotlinx.coroutines.Dispatchers.Default) {
                     val messages = snapshot.documents.mapNotNull { doc ->
                         doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
@@ -247,6 +250,9 @@ class ChatRepositoryImpl @Inject constructor(
         }
         awaitClose { listener.remove() }
     }
+
+    override fun observeMessagesByIds(convId: String, currentUserId: String, ids: Set<String>): Flow<Map<String, ChatMessage?>> =
+        observeChatMessageUpdates(firestore, convId, currentUserId, ids)
 
     override suspend fun getChatInfoMessages(convId: String, currentUserId: String, limit: Long): List<ChatMessage> {
         return try {
@@ -608,6 +614,7 @@ class ChatRepositoryImpl @Inject constructor(
         }
         val existingIds = refsByConversationId.values.map { it.id }.chunked(FIRESTORE_IN_LIMIT).flatMap { ids ->
             firestore.collection(CONVERSATION_SEARCH_COLLECTION)
+                .whereEqualTo("userId", userId)
                 .whereIn(FieldPath.documentId(), ids)
                 .get(Source.DEFAULT)
                 .await()
@@ -679,13 +686,6 @@ class ChatRepositoryImpl @Inject constructor(
             .digest("$userId|$conversationId".toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
         return "cs_$digest"
-    }
-
-    private fun globalSearchIndexId(userId: String, conversationId: String, messageId: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$userId|$conversationId|$messageId".toByteArray(Charsets.UTF_8))
-            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
-        return "gcs_$digest"
     }
 
     private fun globalSearchData(
@@ -803,12 +803,15 @@ class ChatRepositoryImpl @Inject constructor(
         val convRef = firestore.collection("conversations").document(convId)
         val messageRef = convRef.collection("messages").document(message.id)
         var participantsForPostSend = emptyList<String>()
+        var sentAt = message.createdAt
 
         firestore.runTransaction { transaction ->
             val snapshot = transaction.get(convRef)
             val participantIds = snapshot.get("participantIds") as? List<String> ?: emptyList()
-            participantsForPostSend = participantIds
-            if (transaction.get(messageRef).exists()) return@runTransaction
+            participantsForPostSend = participantIds.drop(POST_SEND_PARTICIPANT_BATCH)
+            val existingMessage = transaction.get(messageRef)
+            sentAt = existingMessage.getLong("createdAt") ?: maxOf(message.createdAt, (snapshot.getLong("lastMessageAt") ?: 0L) + 1L)
+            if (existingMessage.exists()) return@runTransaction
             val rootRef = message.threadRootId?.takeIf(String::isNotBlank)
                 ?.let { convRef.collection("messages").document(it) }
             val rootSnapshot = rootRef?.let(transaction::get)
@@ -836,7 +839,7 @@ class ChatRepositoryImpl @Inject constructor(
                     convRef,
                     mapOf(
                         "lastMessage" to preview,
-                        "lastMessageAt" to message.createdAt,
+                        "lastMessageAt" to sentAt,
                         "unread" to newUnread
                     )
                 )
@@ -849,7 +852,7 @@ class ChatRepositoryImpl @Inject constructor(
                 "id" to message.id,
                 "senderId" to message.senderId,
                 "text" to message.text,
-                "createdAt" to message.createdAt,
+                "createdAt" to sentAt,
                 "conversationId" to convId,
                 "searchTerms" to messageSearchTerms(message),
                 "contentKinds" to messageContentKinds(message)
@@ -865,13 +868,21 @@ class ChatRepositoryImpl @Inject constructor(
             message.forwardedFrom?.let { messageMap["forwardedFrom"] = it.toDto() }
 
             transaction.set(messageRef, messageMap)
+            participantIds.take(POST_SEND_PARTICIPANT_BATCH).forEach { participantId ->
+                transaction.set(firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)
+                    .document(globalSearchIndexId(participantId, convId, message.id)),
+                    globalSearchData(participantId, convId, message.copy(createdAt = sentAt)))
+                if (participantId != currentUserId) transaction.set(
+                    firestore.collection("users").document(participantId).collection(CHAT_STATES_COLLECTION).document(convId),
+                    mapOf("archived" to false, "archivedAt" to 0L), SetOptions.merge())
+            }
         }.await()
         runCatching {
             updatePostSendIndexes(
                 conversationId = convId,
                 senderId = currentUserId,
                 participants = participantsForPostSend,
-                message = message
+                message = message.copy(createdAt = sentAt)
             )
         }
         Unit
@@ -1069,9 +1080,12 @@ class ChatRepositoryImpl @Inject constructor(
             val attachmentNames = (msgData?.get("attachments") as? List<Map<String, Any>>)
                 .orEmpty().mapNotNull { it["name"] as? String }
             val updatedTerms = ChatSearchNormalizer.prefixes(listOf(clean) + attachmentNames)
+            val updatedMessage = checkNotNull(msgSnap.toObject(ChatMessageDto::class.java))
+                .copy(id = msgId).toDomain(msgSnap.getString("senderId").orEmpty()).copy(text = clean)
 
             tx.update(msgRef, mapOf(
                 "text" to clean,
+                "formatting" to FieldValue.delete(),
                 "edited" to true,
                 "editedAt" to System.currentTimeMillis(),
                 "searchTerms" to updatedTerms
@@ -1081,72 +1095,25 @@ class ChatRepositoryImpl @Inject constructor(
                 tx.set(
                     firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)
                         .document(globalSearchIndexId(participantId, convId, msgId)),
-                    mapOf("searchTerms" to updatedTerms, "updatedAt" to System.currentTimeMillis()),
-                    SetOptions.merge()
+                    globalSearchData(participantId, convId, updatedMessage) +
+                        mapOf("updatedAt" to System.currentTimeMillis())
                 )
             }
 
-            val lastMessage = convSnap.data?.get("lastMessage") as? String
+            val pinned = (convSnap.get("pinnedMessages") as? List<Map<String, Any>>).orEmpty()
+            if (pinned.any { it["id"] == msgId }) tx.update(convRef, "pinnedMessages",
+                pinned.map { if (it["id"] == msgId) it + ("text" to clean) else it })
+
             val lastMessageAt = (convSnap.data?.get("lastMessageAt") as? Number)?.toLong()
-            val msgText = msgData?.get("text") as? String
             val msgCreatedAt = (msgData?.get("createdAt") as? Number)?.toLong()
-            if (lastMessage != null && lastMessageAt == msgCreatedAt && lastMessage == msgText) {
+            if (lastMessageAt == msgCreatedAt) {
                 tx.update(convRef, mapOf("lastMessage" to clean))
             }
         }.await()
     }
 
     override suspend fun deleteMessage(convId: String, msgId: String): Result<Unit> = runCatching {
-        val msgRef = firestore.collection("conversations").document(convId).collection("messages").document(msgId)
-        val target = msgRef.get().await()
-        if (!target.exists()) return@runCatching
-        val convRef = firestore.collection("conversations").document(convId)
-        val participants = convRef.get(Source.DEFAULT).await().get("participantIds") as? List<String> ?: emptyList()
-        val deleteBatch = firestore.batch().delete(msgRef)
-        target.getString("threadRootId")?.takeIf(String::isNotBlank)?.let { rootId ->
-            val rootRef = convRef.collection("messages").document(rootId)
-            val root = runCatching { rootRef.get(Source.DEFAULT).await() }.getOrNull()
-            if (root?.exists() == true && (root?.getLong("replyCount") ?: 0L) > 0L) {
-                deleteBatch.update(rootRef, "replyCount", FieldValue.increment(-1L))
-            }
-        }
-        participants.forEach { participantId ->
-            deleteBatch.delete(
-                firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)
-                    .document(globalSearchIndexId(participantId, convId, msgId))
-            )
-        }
-        deleteBatch.commit().await()
-
-        val latest = firestore.collection("conversations")
-            .document(convId)
-            .collection("messages")
-            .orderBy("createdAt", Query.Direction.DESCENDING)
-            .limit(1)
-            .get()
-            .await()
-
-        if (latest.isEmpty) {
-            convRef.update(mapOf("lastMessage" to "", "lastMessageAt" to 0L)).await()
-            return@runCatching
-        }
-
-        val m = latest.documents.first().data
-        val text = m?.get("text") as? String ?: ""
-        val attachments = m?.get("attachments") as? List<Map<String, Any>> ?: emptyList()
-        val preview = if (text.trim().isEmpty() && attachments.isNotEmpty()) {
-            val name = (attachments.first()["name"] as? String) ?: "Adjunto"
-            val extra = if (attachments.size > 1) " (+${attachments.size - 1})" else ""
-            "📎 $name$extra"
-        } else {
-            text
-        }
-        convRef.update(
-            mapOf(
-                "lastMessage" to preview,
-                "lastMessageAt" to ((m?.get("createdAt") as? Number)?.toLong() ?: 0L)
-            )
-        ).await()
+        deleteChatMessage(firestore, convId, msgId)
     }
 
     override suspend fun pinMessage(convId: String, pinned: PinnedMessage): Result<Unit> = runCatching {

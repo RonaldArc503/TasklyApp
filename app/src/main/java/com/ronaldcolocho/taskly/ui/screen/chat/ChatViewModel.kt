@@ -136,6 +136,7 @@ data class VoiceNoteSendState(
 )
 
 @HiltViewModel
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ChatViewModel @Inject constructor(
     private val savedStateHandle: SavedStateHandle,
     private val getCurrentUserIdUseCase: GetCurrentUserIdUseCase,
@@ -143,6 +144,7 @@ class ChatViewModel @Inject constructor(
     private val getConversationUseCase: GetConversationUseCase,
     private val getRecentConversationsUseCase: GetRecentConversationsUseCase,
     private val getRecentMessagesUseCase: GetRecentMessagesUseCase,
+    private val observeMessageUpdatesUseCase: com.ronaldcolocho.taskly.domain.usecase.chat.ObserveMessageUpdatesUseCase,
     private val getOlderMessagesUseCase: GetOlderMessagesUseCase,
     private val getNewerMessagesUseCase: GetNewerMessagesUseCase,
     private val getThreadMessagesUseCase: GetThreadMessagesUseCase,
@@ -301,6 +303,19 @@ class ChatViewModel @Inject constructor(
                     _receipts.value = receipts
                     lastReadAtSent = maxOf(lastReadAtSent, receipts[id]?.lastReadAt ?: 0L)
                     lastDeliveredAtSent = maxOf(lastDeliveredAtSent, receipts[id]?.lastDeliveredAt ?: 0L)
+                }
+        }
+
+        viewModelScope.launch {
+            combine(_historyMessages, _threadRoot) { history, root ->
+                history.map(ChatMessage::id).toSet() + listOfNotNull(root?.id)
+            }.distinctUntilChanged().flatMapLatest { ids -> observeMessageUpdatesUseCase(convId, id, ids) }
+                .catch { _sendError.value = "No se pudieron sincronizar los mensajes anteriores." }
+                .collect { updates ->
+                    _historyMessages.update { history -> history.mapNotNull { message ->
+                        if (updates.containsKey(message.id)) updates[message.id] else message
+                    } }
+                    _threadRoot.update { root -> root?.let { if (updates.containsKey(it.id)) updates[it.id] else it } }
                 }
         }
 
@@ -1013,9 +1028,6 @@ class ChatViewModel @Inject constructor(
 
     fun deleteMessage(message: ChatMessage) {
         viewModelScope.launch {
-            val pinned = (_uiState.value as? ChatUiState.Success)
-                ?.conversation?.pinnedMessages?.any { it.id == message.id } == true
-            if (pinned) unpinMessageUseCase(convId, message.id)
             deleteMessageUseCase(convId, message.id)
                 .onFailure { _sendError.value = it.message ?: "No se pudo eliminar el mensaje" }
         }

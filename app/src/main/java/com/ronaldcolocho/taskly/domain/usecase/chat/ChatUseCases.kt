@@ -238,3 +238,8 @@ class SubscribeTypingUseCase @Inject constructor(
 ) {
     operator fun invoke(convId: String): Flow<Map<String, Long>> = repository.subscribeTyping(convId)
 }
+
+class ObserveMessageUpdatesUseCase @Inject constructor(private val repository: IChatRepository) {
+    operator fun invoke(convId: String, userId: String, ids: Set<String>): Flow<Map<String, ChatMessage?>> =
+        repository.observeMessagesByIds(convId, userId, ids)
+}

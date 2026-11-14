@@ -50,7 +50,7 @@ service cloud.firestore {
     function authorEditsOwnMessage() {
       return request.auth.uid == resource.data.senderId &&
         request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['text', 'edited', 'editedAt', 'searchTerms', 'contentKinds']);
+          .hasOnly(['text', 'formatting', 'edited', 'editedAt', 'searchTerms', 'contentKinds']);
     }
 
     // El cliente ajusta el contador del mensaje original en la misma
@@ -66,25 +66,22 @@ service cloud.firestore {
             request.resource.data.replyCount == previousCount - 1));
     }
 
-   function validConversationUpdate() {
-  return request.resource.data.participantIds == resource.data.participantIds &&
-    request.resource.data.createdAt == resource.data.createdAt &&
-    (!('kind' in resource.data) ||
-      request.resource.data.kind == resource.data.kind) &&
-    (!('directKey' in resource.data) ||
-      request.resource.data.directKey == resource.data.directKey) &&
-    request.resource.data.members.diff(resource.data.members).affectedKeys()
-      .hasOnly([request.auth.uid]) &&
-    request.resource.data.diff(resource.data).affectedKeys()
-      .hasOnly([
-        'unread',
-        'lastMessage',
-        'lastMessageAt',
-        'pinnedMessages',
-        'name',
-        'members'
-      ]);
-}
+    function validConversationUpdate() {
+      let previous = resource.data;
+      let next = request.resource.data;
+      let group = previous.get('kind', 'dm') == 'group';
+      return next.get('createdAt', 0) == previous.get('createdAt', 0) &&
+        next.get('kind', 'dm') == previous.get('kind', 'dm') &&
+        next.get('directKey', '') == previous.get('directKey', '') &&
+        next.participantIds is list &&
+        (group || (next.participantIds == previous.participantIds &&
+          next.get('members', {}).diff(previous.get('members', {}))
+            .affectedKeys().hasOnly([request.auth.uid]))) &&
+        next.diff(previous).affectedKeys().hasOnly([
+          'unread', 'lastMessage', 'lastMessageAt', 'pinnedMessages',
+          'name', 'members', 'participantIds'
+        ]);
+    }
 
     // Datos privados: tareas, recordatorios, guardados, etc.
     match /users/{uid}/{document=**} {
@@ -121,12 +118,14 @@ service cloud.firestore {
       allow read: if own(uid);
       allow create: if own(uid) || (
         participant(conversationId) &&
+        conversationParticipantTarget(conversationId, uid) &&
         request.resource.data.keys().hasOnly(['archived', 'archivedAt']) &&
         request.resource.data.archived == false &&
         request.resource.data.archivedAt == 0
       );
       allow update: if own(uid) || (
         participant(conversationId) &&
+        conversationParticipantTarget(conversationId, uid) &&
         request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['archived', 'archivedAt']) &&
         request.resource.data.archived == false &&
@@ -155,8 +154,9 @@ service cloud.firestore {
     }
 
     match /conversations/{conversationId} {
-      allow read: if signedIn() &&
-        request.auth.uid in resource.data.participantIds;
+      allow get: if signedIn() && (resource == null ||
+        request.auth.uid in resource.data.participantIds);
+      allow list: if signedIn() && request.auth.uid in resource.data.participantIds;
 
       allow create: if signedIn() &&
         request.auth.uid in request.resource.data.participantIds;
@@ -164,14 +164,17 @@ service cloud.firestore {
       allow update: if participant(conversationId) &&
         validConversationUpdate();
 
-      allow delete: if participant(conversationId);
+      allow delete: if false;
 
       match /messages/{messageId} {
         allow read: if participant(conversationId);
 
         allow create: if participant(conversationId) &&
           request.resource.data.senderId == request.auth.uid &&
-          request.resource.data.conversationId == conversationId;
+          request.resource.data.get('conversationId', conversationId) == conversationId &&
+          (!('attachments' in request.resource.data) ||
+            (request.resource.data.attachments is list &&
+              request.resource.data.attachments.size() <= 30));
 
         // Reacciones de participantes, índices de migración y edición del autor.
         allow update: if participant(conversationId) && (
@@ -220,7 +223,9 @@ service cloud.firestore {
           resource.data.userId
         );
 
-      allow delete: if participant(resource.data.conversationId);
+      // Removing an absent index is idempotent and cannot change user data.
+      allow delete: if signedIn() && (resource == null ||
+        participant(resource.data.conversationId));
     }
 
     match /globalChatSearch/{indexId} {
@@ -240,7 +245,35 @@ service cloud.firestore {
           resource.data.userId
         );
 
-      allow delete: if participant(resource.data.conversationId);
+      // Removing an absent index is idempotent and cannot change user data.
+      allow delete: if signedIn() && (resource == null ||
+        participant(resource.data.conversationId));
     }
+    // El servicio valida identidad y permisos; la web solo observa sus proyectos.
+    function agentProjectOwner(projectId) {
+      return signedIn() && get(/databases/$(database)/documents/agentWorkspaces/$(projectId)).data.ownerUid == request.auth.uid;
+    }
+    match /agentWorkspaces/{projectId} {
+      allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow write: if false;
+      match /agents/{agentId} {
+        allow read: if agentProjectOwner(projectId);
+        allow write: if false;
+      }
+      match /messages/{messageId} {
+        allow read: if agentProjectOwner(projectId);
+        allow write: if false;
+      }
+      match /contexts/{key} {
+        allow read: if agentProjectOwner(projectId);
+        allow write: if false;
+        match /revisions/{version} {
+          allow read: if agentProjectOwner(projectId);
+          allow write: if false;
+        }
+      }
+    }
+    match /agentCredentials/{credentialId} { allow read, write: if false; }
+    match /agentRequests/{requestId} { allow read, write: if false; }
   }
 }

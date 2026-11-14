@@ -32,7 +32,7 @@ object CoilModule {
                     .build()
             )
             .memoryCache(
-                MemoryCache.Builder(context).maxSizePercent(0.25).build()
+                MemoryCache.Builder(context).maxSizePercent(0.15).build()
             )
             .crossfade(false)
             .build()

@@ -78,6 +78,11 @@ class PlayerColorPolicy(
         return remember(changed, if (mode == PlayerColorMode.ORIGINAL) original(state.trackId) else chooseDifferent(state))
     }
 
+    fun selectPalette(state: PlayerColorState, paletteId: String): PlayerColorState {
+        val target = byId[paletteId] ?: return state
+        return remember(state.copy(mode = PlayerColorMode.AUTOMATIC), target)
+    }
+
     fun changeColor(state: PlayerColorState): PlayerColorState {
         if (state.trackId == null) return state
         // Manual changes resume automatic variety for subsequent songs.

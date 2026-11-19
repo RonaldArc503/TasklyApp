@@ -250,6 +250,7 @@ fun MusicPlayerScreen(
     // ── Visual effects state ──────────────────────────────────
     val currentEffect by audioController.visualEffect.collectAsStateWithLifecycle()
     val showAnimationCover by audioController.showAnimationCover.collectAsStateWithLifecycle()
+    val lyricsAnimation by audioController.lyricsAnimation.collectAsStateWithLifecycle()
     val resolvedEffect = remember(trackId, currentEffect) {
         if (currentEffect == PlayerVisualEffect.RANDOM) {
             val nonRandomStyles = listOf(
@@ -343,7 +344,7 @@ fun MusicPlayerScreen(
                     androidx.compose.runtime.key(trackId) {
                         MusicLyricsPane(
                             state = if (lyricsState.trackId == trackId) lyricsState else MusicLyricsState(trackId, loading = true),
-                            positionMs = playerState.currentTimeMs, onSurface = onSurface, secondary = secondary,
+                            positionMs = playerState.currentTimeMs, isPlaying = playerState.playing, animationMode = lyricsAnimation, onSurface = onSurface, secondary = secondary,
                             accent = lyricsAccent, onRetry = lyricsViewModel::retry
                         )
                     }
@@ -481,17 +482,27 @@ fun MusicPlayerScreen(
             currentEffect  = currentEffect,
             onSelectEffect = { effect ->
                 audioController.setVisualEffect(effect)
-                showEffectsSheet = false
                 feedbackMessage = "Efecto: ${effect.title}"
             },
             onDismiss      = { showEffectsSheet = false },
             showAnimationCover = showAnimationCover,
             onShowAnimationCoverChange = audioController::setShowAnimationCover,
             accentColor    = animPrimary,
+            currentLyricsAnimation = lyricsAnimation,
+            onSelectLyricsAnimation = { mode ->
+                audioController.setLyricsAnimation(mode)
+                feedbackMessage = "Letra: ${mode.title}"
+            },
             currentPaletteName = trackPalette.name,
             activePalettePrimary = trackPalette.primary,
+            activePaletteId = colors.paletteId,
             colorMode = colors.mode,
             onChangeColor = changeColor,
+            onSelectPalette = { paletteId ->
+                audioController.selectPalette(paletteId)
+                val name = MAREA_PALETTES.firstOrNull { it.id == paletteId }?.name.orEmpty()
+                if (name.isNotBlank()) feedbackMessage = "Color: $name"
+            },
             onSetColorMode = { mode ->
                 audioController.setColorMode(mode)
                 feedbackMessage = if (mode == PlayerColorMode.ORIGINAL) "Color original de la canción" else "Automático variado activado"

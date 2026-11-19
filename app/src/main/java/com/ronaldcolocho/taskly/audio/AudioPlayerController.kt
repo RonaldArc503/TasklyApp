@@ -107,6 +107,16 @@ class AudioPlayerController @Inject constructor(
         prefs.edit().putBoolean("player_show_animation_cover", show).apply()
     }
 
+    private val _lyricsAnimation = MutableStateFlow(
+        LyricsAnimationMode.fromId(prefs.getString("lyrics_animation_mode", LyricsAnimationMode.STATIC.id))
+    )
+    val lyricsAnimation: StateFlow<LyricsAnimationMode> = _lyricsAnimation.asStateFlow()
+
+    fun setLyricsAnimation(mode: LyricsAnimationMode) {
+        _lyricsAnimation.value = mode
+        prefs.edit().putString("lyrics_animation_mode", mode.id).apply()
+    }
+
     val colorState: StateFlow<PlayerColorState> = playerColors.state
 
     init {
@@ -117,6 +127,7 @@ class AudioPlayerController @Inject constructor(
     }
 
     fun setColorMode(mode: PlayerColorMode) = playerColors.setMode(mode)
+    fun selectPalette(paletteId: String): PlayerColorState = playerColors.selectPalette(paletteId)
     fun changeColor(): PlayerColorState = playerColors.changeColor()
 
     /** Modo de reproducción: cambia con poca frecuencia (solo al cambiar de modo). */

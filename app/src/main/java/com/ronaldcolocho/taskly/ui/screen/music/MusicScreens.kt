@@ -190,6 +190,7 @@ fun MusicScreen(
     var showVisualEffectsSheet by remember { mutableStateOf(false) }
     val visualEffect by audioController.visualEffect.collectAsStateWithLifecycle()
     val showAnimationCover by audioController.showAnimationCover.collectAsStateWithLifecycle()
+    val lyricsAnimation by audioController.lyricsAnimation.collectAsStateWithLifecycle()
     var playlistQuery by rememberSaveable { mutableStateOf("") }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var playlistOrder by rememberSaveable { mutableStateOf("Recientes") }
@@ -739,7 +740,9 @@ fun MusicScreen(
             onDismiss = { showVisualEffectsSheet = false },
             showAnimationCover = showAnimationCover,
             onShowAnimationCoverChange = audioController::setShowAnimationCover,
-            accentColor = mint
+            accentColor = mint,
+            currentLyricsAnimation = lyricsAnimation,
+            onSelectLyricsAnimation = audioController::setLyricsAnimation
         )
     }
 }

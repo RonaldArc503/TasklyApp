@@ -182,4 +182,24 @@ class PlayerColorPolicyTest {
         assertEquals(10f, hueDistance(355f, 5f), 0.001f)
         assertEquals(180f, hueDistance(0f, 180f), 0.001f)
     }
+    @Test fun selectPaletteAppliesTargetPaletteAndEnablesAutomaticMode() {
+        val policy = policy()
+        val original = policy.setMode(policy.onTrackChanged(PlayerColorState(), "song"), PlayerColorMode.ORIGINAL)
+        val selected = policy.selectPalette(original, "golden_dune")
+        assertEquals("golden_dune", selected.paletteId)
+        assertEquals(PlayerColorMode.AUTOMATIC, selected.mode)
+        assertEquals("golden_dune", selected.recentPaletteIds.last())
+    }
+
+    @Test fun presetColorsExistInCatalogAndHaveExactNamesAndHexColors() {
+        assertEquals(6, PRESET_PLAYER_COLORS.size)
+        PRESET_PLAYER_COLORS.forEach { preset ->
+            val palette = PLAYER_PALETTES.firstOrNull { it.id == preset.id }
+            assertNotNull("Preset ${preset.id} not found in PLAYER_PALETTES", palette)
+            assertEquals(preset.name, palette!!.name)
+            val primaryLong = 0xFF000000L or palette.primary.toLong()
+            val expectedLong = 0xFF000000L or (preset.colorHex and 0xFFFFFFL)
+            assertEquals("Color mismatch for ${preset.name}", expectedLong, primaryLong)
+        }
+    }
 }

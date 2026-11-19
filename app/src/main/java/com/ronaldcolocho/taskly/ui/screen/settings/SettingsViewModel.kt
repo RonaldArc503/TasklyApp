@@ -2,6 +2,8 @@ package com.ronaldcolocho.taskly.ui.screen.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ronaldcolocho.taskly.audio.AudioPlayerController
+import com.ronaldcolocho.taskly.audio.LyricsAnimationMode
 import com.ronaldcolocho.taskly.domain.repository.ISettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
@@ -10,9 +12,11 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val settingsRepository: ISettingsRepository
+    private val settingsRepository: ISettingsRepository,
+    private val audioPlayerController: AudioPlayerController
 ) : ViewModel() {
     val settings: StateFlow<com.ronaldcolocho.taskly.domain.model.AppSettings> = settingsRepository.settings
+    val lyricsAnimation: StateFlow<LyricsAnimationMode> = audioPlayerController.lyricsAnimation
 
     fun setDarkTheme(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setDarkTheme(enabled) }
@@ -20,5 +24,9 @@ class SettingsViewModel @Inject constructor(
 
     fun setAutomaticDownloadsEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setAutomaticDownloadsEnabled(enabled) }
+    }
+
+    fun setLyricsAnimation(mode: LyricsAnimationMode) {
+        audioPlayerController.setLyricsAnimation(mode)
     }
 }

@@ -56,14 +56,14 @@ val PLAYER_PALETTES = listOf(
         tertiary  = 0x00C9A7,
         glow      = 0x80FFD0
     ),
-    // 7. Turquesa Polar
+    // 7. Hielo Polar
     PlayerPalette(
-        id        = "polar_turquoise",
-        name      = "Turquesa Polar",
-        primary   = 0x00E8C6,
-        secondary = 0x0F4C81,
-        tertiary  = 0x1B998B,
-        glow      = 0x85FFF0
+        id        = "polar_ice",
+        name      = "Hielo Polar",
+        primary   = 0x7FC8D9,
+        secondary = 0x1A3840,
+        tertiary  = 0xA2DFEC,
+        glow      = 0xC8F0F7
     ),
     // 8. Cobalto Real
     PlayerPalette(
@@ -83,14 +83,14 @@ val PLAYER_PALETTES = listOf(
         tertiary  = 0x818CF8,
         glow      = 0x67E8F9
     ),
-    // 10. Zafiro Profundo
+    // 10. Océano Profundo
     PlayerPalette(
-        id        = "deep_sapphire",
-        name      = "Zafiro Profundo",
-        primary   = 0x0F52BA,
-        secondary = 0x001858,
-        tertiary  = 0x3A86FF,
-        glow      = 0x6EA8FE
+        id        = "deep_ocean",
+        name      = "Océano Profundo",
+        primary   = 0x2F7FBF,
+        secondary = 0x0A2840,
+        tertiary  = 0x58A6E4,
+        glow      = 0x8AC8F8
     ),
     // 11. Cielo Ultramar
     PlayerPalette(
@@ -146,14 +146,14 @@ val PLAYER_PALETTES = listOf(
         tertiary  = 0xC4B5FD,
         glow      = 0xDDD6FE
     ),
-    // 17. Violeta Cósmico
+    // 17. Aurora Violeta
     PlayerPalette(
-        id        = "cosmic_violet",
-        name      = "Violeta Cósmico",
-        primary   = 0x7C3AED,
-        secondary = 0x4C1D95,
-        tertiary  = 0xA78BFA,
-        glow      = 0xC084FC
+        id        = "violet_aurora",
+        name      = "Aurora Violeta",
+        primary   = 0x8E6CD1,
+        secondary = 0x2C1A4D,
+        tertiary  = 0xB295EB,
+        glow      = 0xD4C2F7
     ),
     // 18. Lavanda Astral
     PlayerPalette(
@@ -263,14 +263,14 @@ val PLAYER_PALETTES = listOf(
         tertiary  = 0xFDA4AF,
         glow      = 0xFFE4E6
     ),
-    // 30. Coral Eléctrico
+    // 30. Coral Vivo
     PlayerPalette(
-        id        = "hot_coral",
-        name      = "Coral Eléctrico",
-        primary   = 0xFF477E,
-        secondary = 0x7F055F,
-        tertiary  = 0xFF70A6,
-        glow      = 0xFFA8C5
+        id        = "living_coral",
+        name      = "Coral Vivo",
+        primary   = 0xE4616B,
+        secondary = 0x4A1218,
+        tertiary  = 0xF58C94,
+        glow      = 0xFBBEC2
     ),
     // 31. Rubí Sangre
     PlayerPalette(
@@ -438,7 +438,7 @@ val PLAYER_PALETTES = listOf(
     PlayerPalette(
         id        = "golden_dune",
         name      = "Duna Dorada",
-        primary   = 0xD97706,
+        primary   = 0xF28C28,
         secondary = 0x451A03,
         tertiary  = 0xFCD34D,
         glow      = 0xFDE68A
@@ -515,14 +515,14 @@ val PLAYER_PALETTES = listOf(
         tertiary  = 0x00F5D4,
         glow      = 0x80FFB0
     ),
-    // 58. Laguna Esmeralda
+    // 58. Bosque Noche
     PlayerPalette(
-        id        = "emerald_lagoon",
-        name      = "Laguna Esmeralda",
-        primary   = 0x10B981,
-        secondary = 0x064E3B,
-        tertiary  = 0x34D399,
-        glow      = 0xA7F3D0
+        id        = "night_forest",
+        name      = "Bosque Noche",
+        primary   = 0x3E9B6E,
+        secondary = 0x0F3320,
+        tertiary  = 0x62BE90,
+        glow      = 0x93DCB6
     ),
     // 59. Esmeralda Sublime
     PlayerPalette(
@@ -542,4 +542,19 @@ val PLAYER_PALETTES = listOf(
         tertiary  = 0x4ADE80,
         glow      = 0xBBF7D0
     )
+)
+
+data class PlayerPresetColor(
+    val id: String,
+    val name: String,
+    val colorHex: Long
+)
+
+val PRESET_PLAYER_COLORS = listOf(
+    PlayerPresetColor("golden_dune", "Duna Dorada", 0xFFF28C28L),
+    PlayerPresetColor("deep_ocean", "Océano Profundo", 0xFF2F7FBFL),
+    PlayerPresetColor("night_forest", "Bosque Noche", 0xFF3E9B6EL),
+    PlayerPresetColor("violet_aurora", "Aurora Violeta", 0xFF8E6CD1L),
+    PlayerPresetColor("living_coral", "Coral Vivo", 0xFFE4616BL),
+    PlayerPresetColor("polar_ice", "Hielo Polar", 0xFF7FC8D9L)
 )

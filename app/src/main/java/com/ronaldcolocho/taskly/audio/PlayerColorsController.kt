@@ -22,6 +22,10 @@ class PlayerColorsController @Inject constructor(@ApplicationContext context: Co
 
     fun onTrackChanged(trackId: String?) = update(policy.onTrackChanged(_state.value, trackId))
     fun setMode(mode: PlayerColorMode) = update(policy.setMode(_state.value, mode))
+    fun selectPalette(paletteId: String): PlayerColorState {
+        update(policy.selectPalette(_state.value, paletteId))
+        return _state.value
+    }
     fun changeColor(): PlayerColorState {
         update(policy.changeColor(_state.value))
         return _state.value

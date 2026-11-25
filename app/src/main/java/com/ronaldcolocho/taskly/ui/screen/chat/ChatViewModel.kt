@@ -22,6 +22,7 @@ import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.model.MusicPlaylist
 import com.ronaldcolocho.taskly.domain.model.MusicTrack
 import com.ronaldcolocho.taskly.domain.model.UserProfile
+import com.ronaldcolocho.taskly.domain.model.referenceIn
 import com.ronaldcolocho.taskly.domain.usecase.chat.ClearTypingUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.DeleteMessageUseCase
 import com.ronaldcolocho.taskly.domain.usecase.chat.EditMessageUseCase
@@ -95,7 +96,8 @@ data class AttachmentDraft(
 private data class DraftSendContext(
     val text: String,
     val replyTo: ReplyInfo?,
-    val mentions: List<String>
+    val mentions: List<String>,
+    val draftIds: Set<String>
 )
 
 enum class DraftStatus { READY, UPLOADING, DONE, ERROR }
@@ -169,6 +171,7 @@ class ChatViewModel @Inject constructor(
     private val mediaDownloadManager: MediaDownloadManager,
     private val settingsRepository: ISettingsRepository,
     private val musicRepository: IMusicRepository,
+    private val chatRepository: com.ronaldcolocho.taskly.domain.repository.IChatRepository,
     private val getDeletedMessageIdsUseCase: com.ronaldcolocho.taskly.domain.usecase.GetDeletedMessageIdsUseCase,
     private val deleteMessageForMeUseCase: com.ronaldcolocho.taskly.domain.usecase.DeleteMessageForMeUseCase,
     @ApplicationContext private val context: Context
@@ -176,6 +179,13 @@ class ChatViewModel @Inject constructor(
 
     private val convId: String = checkNotNull(savedStateHandle["convId"])
     private val uid: String? = getCurrentUserIdUseCase()
+    val profileAction = savedStateHandle.getStateFlow("chatProfileAction", "")
+    private val _deletingChat = MutableStateFlow(false)
+    val deletingChat = _deletingChat.asStateFlow()
+    private val _deleteChatError = MutableStateFlow<String?>(null)
+    val deleteChatError = _deleteChatError.asStateFlow()
+    private val _chatDeleted = MutableStateFlow(false)
+    val chatDeleted = _chatDeleted.asStateFlow()
 
     private val _historyMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     private val _localPendingMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -339,7 +349,9 @@ class ChatViewModel @Inject constructor(
             _localPendingMessages,
             getDeletedMessageIdsUseCase()
         ) { conv, recent, history, pending, deletedIds ->
+            val cutoff = conv.historyCutoff
             conv to mergeVisibleMessages(recent, history, pending, deletedIds)
+                .filter { cutoff == null || it.createdAt > cutoff }
         }.combine(_receipts) { (conversation, messages), receipts ->
             conversation to applyReceiptStatuses(conversation, messages, receipts, id)
         }.onEach { (conversation, messages) ->
@@ -690,6 +702,8 @@ class ChatViewModel @Inject constructor(
 
     fun sendWithDrafts(text: String) {
         val id = uid ?: return
+        val draftIds = _drafts.value.mapTo(hashSetOf()) { it.id }
+        if (draftIds.isEmpty() || draftSendJob?.isActive == true) return
         clearTyping()
         val clean = text.trim()
         val state = _uiState.value as? ChatUiState.Success ?: return
@@ -697,11 +711,15 @@ class ChatViewModel @Inject constructor(
         val reply = activeReplyInfo()
         startDraftSend(
             senderId = id,
-            sendContext = DraftSendContext(text = clean, replyTo = reply, mentions = mentions)
+            sendContext = DraftSendContext(text = clean, replyTo = reply, mentions = mentions, draftIds = draftIds)
         )
     }
 
+    private var draftSendJob: Job? = null
+
     private fun startDraftSend(senderId: String, sendContext: DraftSendContext) {
+        val uploadDrafts = _drafts.value.filter { it.id in sendContext.draftIds }
+        if (uploadDrafts.isEmpty() || draftSendJob?.isActive == true) return
         val clean = sendContext.text
         val mentions = sendContext.mentions
         val reply = sendContext.replyTo
@@ -718,15 +736,15 @@ class ChatViewModel @Inject constructor(
         )
         _localPendingMessages.value += newMessage
 
-        viewModelScope.launch {
+        draftSendJob = viewModelScope.launch {
             val attachments = mutableListOf<ChatAttachment>()
             var failed = false
 
-            _drafts.value.filter { it.status == DraftStatus.DONE && it.attach != null }
-                .forEach { attachments += it.attach!! }
-
-            val toUpload = _drafts.value.filter { it.status != DraftStatus.DONE }
-            for (d in toUpload) {
+            for (d in uploadDrafts) {
+                if (d.status == DraftStatus.DONE && d.attach != null) {
+                    attachments += d.attach
+                    continue
+                }
                 if (d.error != null) {
                     failed = true
                     continue
@@ -776,22 +794,17 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
 
-            // Images and audio are sent individually; other attachment types keep their grouping.
-            val attachmentGroups = mutableListOf<List<ChatAttachment>>()
-            val pendingNonMediaGroup = mutableListOf<ChatAttachment>()
+            val attachmentGroups = mutableListOf<MutableList<ChatAttachment>>()
             attachments.forEach { attachment ->
-                if (attachment.kind == AttachmentKind.IMAGE || attachment.kind == AttachmentKind.AUDIO) {
-                    if (pendingNonMediaGroup.isNotEmpty()) {
-                        attachmentGroups += pendingNonMediaGroup.toList()
-                        pendingNonMediaGroup.clear()
-                    }
-                    attachmentGroups += listOf(attachment)
+                val previous = attachmentGroups.lastOrNull()
+                val previousKind = previous?.first()?.kind
+                if (previous == null || attachment.kind.isStandaloneMedia() || previousKind?.isStandaloneMedia() == true ||
+                    (attachment.kind == AttachmentKind.IMAGE) != (previousKind == AttachmentKind.IMAGE)
+                ) {
+                    attachmentGroups += mutableListOf(attachment)
                 } else {
-                    pendingNonMediaGroup += attachment
+                    previous += attachment
                 }
-            }
-            if (pendingNonMediaGroup.isNotEmpty()) {
-                attachmentGroups += pendingNonMediaGroup.toList()
             }
 
             val finalMessages = attachmentGroups.mapIndexed { index, group ->
@@ -809,7 +822,8 @@ class ChatViewModel @Inject constructor(
                     if (pending.id == newMessage.id) finalMessages else listOf(pending)
                 }
             }
-            _drafts.value = emptyList()
+            val sentIds = uploadDrafts.mapTo(hashSetOf()) { it.id }
+            _drafts.update { drafts -> drafts.filterNot { it.id in sentIds } }
             failedDraftSends.remove(newMessage.id)
             // Preserve the selected order on the server as well.
             for (message in finalMessages) {
@@ -818,10 +832,14 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private fun AttachmentKind.isStandaloneMedia(): Boolean =
+        this == AttachmentKind.AUDIO || this == AttachmentKind.VIDEO
+
     fun addDrafts(uris: List<Uri>) {
         val current = _drafts.value
         if (current.size >= MAX_ATTACHMENTS_PER_MESSAGE) return
-        val toAdd = uris.take(MAX_ATTACHMENTS_PER_MESSAGE - current.size)
+        val selected = current.mapTo(hashSetOf()) { it.uri }
+        val toAdd = uris.distinct().filterNot { it in selected }.take(MAX_ATTACHMENTS_PER_MESSAGE - current.size)
         viewModelScope.launch {
             // Queries de contentResolver (binder/IO) fuera del hilo principal.
             val drafts = withContext(Dispatchers.IO) {
@@ -843,7 +861,10 @@ class ChatViewModel @Inject constructor(
                     )
                 }
             }
-            _drafts.value += drafts
+            _drafts.update { latest ->
+                val latestUris = latest.mapTo(hashSetOf()) { it.uri }
+                latest + drafts.filterNot { it.uri in latestUris }.take(MAX_ATTACHMENTS_PER_MESSAGE - latest.size)
+            }
         }
     }
 
@@ -890,10 +911,16 @@ class ChatViewModel @Inject constructor(
     }
 
     fun retryMessage(message: ChatMessage) {
-        val failedDraft = failedDraftSends.remove(message.id)
+        val failedDraft = failedDraftSends[message.id]
         if (failedDraft != null) {
-            _localPendingMessages.update { messages -> messages.filterNot { it.id == message.id } }
             val currentUserId = uid ?: return
+            if (draftSendJob?.isActive == true) return
+            if (_drafts.value.none { it.id in failedDraft.draftIds }) {
+                _sendError.value = "Ya no hay adjuntos para reintentar."
+                return
+            }
+            failedDraftSends.remove(message.id)
+            _localPendingMessages.update { messages -> messages.filterNot { it.id == message.id } }
             clearTyping()
             startDraftSend(currentUserId, failedDraft)
             return
@@ -1033,6 +1060,71 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun consumeProfileAction() {
+        savedStateHandle["chatProfileAction"] = ""
+    }
+
+    fun toggleConversationPinned() {
+        val id = uid ?: return
+        val conversation = (_uiState.value as? ChatUiState.Success)?.conversation ?: return
+        viewModelScope.launch {
+            chatRepository.setConversationPinned(id, convId, !conversation.isPinned)
+                .onFailure { _sendError.value = "No se pudo actualizar el chat fijado." }
+        }
+    }
+
+    fun toggleConversationMuted() {
+        val id = uid ?: return
+        val conversation = (_uiState.value as? ChatUiState.Success)?.conversation ?: return
+        viewModelScope.launch {
+            chatRepository.setConversationMuted(id, convId, !conversation.isMuted)
+                .onFailure { _sendError.value = "No se pudo cambiar el silencio del chat." }
+        }
+    }
+
+    fun leaveGroup() {
+        val id = uid ?: return
+        if (_deletingChat.value || _chatDeleted.value) return
+        _deletingChat.value = true
+        _deleteChatError.value = null
+        viewModelScope.launch {
+            try {
+                chatRepository.leaveGroup(id, convId)
+                    .onSuccess { _chatDeleted.value = true }
+                    .onFailure { _deleteChatError.value = "No se pudo salir del grupo. Inténtalo de nuevo." }
+            } finally {
+                _deletingChat.value = false
+            }
+        }
+    }
+
+    fun deleteMedia(message: ChatMessage, attachment: ChatAttachment, forEveryone: Boolean) {
+        val id = uid ?: return
+        viewModelScope.launch {
+            chatRepository.deleteAttachments(convId, id, setOf(attachment.referenceIn(message.id)), forEveryone)
+                .onFailure { _sendError.value = "No se pudo eliminar el archivo." }
+        }
+    }
+
+    fun deleteConversation(forEveryone: Boolean) {
+        val id = uid ?: return
+        if (_deletingChat.value || _chatDeleted.value) return
+        _deletingChat.value = true
+        _deleteChatError.value = null
+        viewModelScope.launch {
+            try {
+                val result = if (forEveryone) chatRepository.deleteConversationForEveryone(id, convId)
+                else chatRepository.deleteConversationForMe(id, convId)
+                result.onSuccess { _chatDeleted.value = true }
+                    .onFailure { _deleteChatError.value = "No se pudo vaciar el chat. Inténtalo de nuevo." }
+            } finally {
+                _deletingChat.value = false
+            }
+        }
+    }
+
+    fun clearDeleteChatError() { _deleteChatError.value = null }
+
     fun deleteMessageForMe(message: ChatMessage) {
         _localPendingMessages.value = _localPendingMessages.value.filter { it.id != message.id }
         _historyMessages.value = _historyMessages.value.filter { it.id != message.id }
@@ -1094,7 +1186,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun saveMessage(message: ChatMessage) {
+    fun saveMessage(message: ChatMessage, onSaved: () -> Unit = {}) {
         val id = uid ?: return
         val state = _uiState.value as? ChatUiState.Success ?: return
         val text = message.text.trim()
@@ -1128,6 +1220,7 @@ class ChatViewModel @Inject constructor(
         )
         viewModelScope.launch {
             saveMessageUseCase(id, item)
+                .onSuccess { onSaved() }
                 .onFailure { _sendError.value = it.message ?: "No se pudo guardar el mensaje" }
         }
     }

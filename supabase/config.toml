@@ -1,0 +1,5 @@
+project_id = "taskly"
+
+[functions.taskly-media-cleanup]
+verify_jwt = false
+entrypoint = "./functions/taskly-media-cleanup/index.mjs"

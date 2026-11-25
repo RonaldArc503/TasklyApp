@@ -2,17 +2,23 @@ package com.ronaldcolocho.taskly.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
+import com.ronaldcolocho.taskly.domain.model.ChatAttachmentRef
 import com.ronaldcolocho.taskly.domain.repository.IDeletedMessagesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
+
+internal fun ChatAttachmentRef.storageKey(): String = "${Uri.encode(messageId)}|${Uri.encode(attachmentKey)}"
 
 @Singleton
 class DeletedMessagesRepositoryImpl @Inject constructor(
@@ -28,6 +34,31 @@ class DeletedMessagesRepositoryImpl @Inject constructor(
     }
 
     override fun getDeletedMessageIds(): Flow<Set<String>> = deletedIdsFlow.asStateFlow()
+
+    override fun hiddenAttachments(userId: String, conversationId: String): Set<String> =
+        prefs.getStringSet(attachmentScope(userId, conversationId), emptySet()).orEmpty()
+
+    override fun observeHiddenAttachments(userId: String, conversationId: String): Flow<Set<String>> = callbackFlow {
+        val scope = attachmentScope(userId, conversationId)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == scope) trySend(hiddenAttachments(userId, conversationId))
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(hiddenAttachments(userId, conversationId))
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    override suspend fun hideAttachments(userId: String, conversationId: String, attachments: Set<ChatAttachmentRef>) {
+        withContext(Dispatchers.IO) {
+            writeMutex.withLock {
+                val hidden = hiddenAttachments(userId, conversationId) + attachments.map { it.storageKey() }
+                check(prefs.edit().putStringSet(attachmentScope(userId, conversationId), hidden).commit())
+            }
+        }
+    }
+
+    private fun attachmentScope(userId: String, conversationId: String): String =
+        "hidden_attachments/${Uri.encode(userId)}/${Uri.encode(conversationId)}"
 
     override suspend fun markAsDeletedForMe(messageId: String) {
         val active = withContext(Dispatchers.IO) {

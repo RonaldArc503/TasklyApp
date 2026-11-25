@@ -4,6 +4,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
@@ -12,28 +13,40 @@ import com.ronaldcolocho.taskly.data.mapper.toDto
 import com.ronaldcolocho.taskly.data.model.ChatConversationDto
 import com.ronaldcolocho.taskly.data.model.ChatMessageDto
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
+import com.ronaldcolocho.taskly.domain.model.ChatAttachmentRef
+import com.ronaldcolocho.taskly.domain.model.referenceIn
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
+import com.ronaldcolocho.taskly.domain.model.ChatSearchHit
 import com.ronaldcolocho.taskly.domain.model.ConversationUserState
 import com.ronaldcolocho.taskly.domain.model.ConversationReceipt
 import com.ronaldcolocho.taskly.domain.model.PinnedMessage
 import com.ronaldcolocho.taskly.domain.model.UserProfile
 import com.ronaldcolocho.taskly.domain.repository.IChatRepository
+import com.ronaldcolocho.taskly.domain.repository.IDeletedMessagesRepository
 import com.ronaldcolocho.taskly.domain.util.ChatSearchNormalizer
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.MessageDigest
 import javax.inject.Inject
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatRepositoryImpl @Inject constructor(
-    private val firestore: FirebaseFirestore
+    private val firestore: FirebaseFirestore,
+    private val deletedMessages: IDeletedMessagesRepository
 ) : IChatRepository {
 
     override fun getConversations(userId: String): Flow<List<ChatConversation>> = callbackFlow {
@@ -168,7 +181,29 @@ class ChatRepositoryImpl @Inject constructor(
             .take(limit.toInt())
     }
 
-    override fun getConversation(convId: String, currentUserId: String): Flow<ChatConversation?> = callbackFlow {
+    override fun getConversation(convId: String, currentUserId: String): Flow<ChatConversation?> =
+        combine(observeConversation(convId, currentUserId), observeUserState(convId, currentUserId)) { conversation, state ->
+            conversation?.withUserState(state)
+        }.mapLatest { conversation ->
+            val cutoff = conversation?.deletedThrough
+            when {
+                conversation == null -> null
+                conversation.isDeletedForMe -> conversation.copy(pinnedMessages = emptyList(), unreadCount = 0, lastMessage = "")
+                cutoff == null || conversation.pinnedMessages.isEmpty() -> conversation
+                else -> coroutineScope {
+                    val messages = firestore.collection("conversations").document(convId).collection("messages")
+                    val pins = conversation.pinnedMessages.map { pin ->
+                        async {
+                            val createdAt = runCatching { messages.document(pin.id).get().await().getLong("createdAt") }.getOrNull()
+                            pin.takeIf { createdAt != null && createdAt > cutoff }
+                        }
+                    }.awaitAll().filterNotNull()
+                    conversation.copy(pinnedMessages = pins)
+                }
+            }
+        }
+
+    private fun observeConversation(convId: String, currentUserId: String): Flow<ChatConversation?> = callbackFlow {
         var emitted = false
 
         launch(kotlinx.coroutines.Dispatchers.Default) {
@@ -179,6 +214,7 @@ class ChatRepositoryImpl @Inject constructor(
                         .await()
                 }.getOrNull()
             }
+            if (emitted) return@launch
             if (cached != null && cached.exists()) {
                 val conv = cached.toObject(ChatConversationDto::class.java)?.copy(id = cached.id)?.toDomain(currentUserId)
                 emitted = true
@@ -191,18 +227,21 @@ class ChatRepositoryImpl @Inject constructor(
         }
 
         val listener = firestore.collection("conversations").document(convId)
-            .addSnapshotListener { snapshot, error ->
+            .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                 if (error != null) {
                     if (!emitted) close(error)
                     return@addSnapshotListener
                 }
                 if (snapshot != null && snapshot.exists()) {
+                    emitted = true
                     launch(kotlinx.coroutines.Dispatchers.Default) {
                         val conv = snapshot.toObject(ChatConversationDto::class.java)?.copy(id = snapshot.id)?.toDomain(currentUserId)
-                        emitted = true
                         trySend(conv)
                     }
-                } else {
+                } else if (snapshot?.metadata?.isFromCache == false) {
+                    emitted = true
+                    trySend(null)
+                } else if (!emitted) {
                     emitted = true
                     trySend(fallbackConversation(convId, currentUserId))
                 }
@@ -210,14 +249,23 @@ class ChatRepositoryImpl @Inject constructor(
         awaitClose { listener.remove() }
     }
 
-    override fun getRecentMessages(convId: String, currentUserId: String): Flow<List<ChatMessage>> = callbackFlow {
+    override fun getRecentMessages(convId: String, currentUserId: String): Flow<List<ChatMessage>> =
+        observeHistoryCutoff(convId, currentUserId)
+            .combine(deletedMessages.observeHiddenAttachments(currentUserId, convId)) { cutoff, hidden -> cutoff to hidden }
+            .flatMapLatest { (cutoff, hidden) ->
+                observeRecentMessages(convId, currentUserId, cutoff, 30L + hidden.size)
+                    .map { messages -> messages.mapNotNull { it.withoutHiddenAttachments(hidden) }.take(30) }
+            }
+
+    private fun observeRecentMessages(convId: String, currentUserId: String, cutoff: Long?, limit: Long): Flow<List<ChatMessage>> = callbackFlow {
         var emitted = false
 
         val query = firestore.collection("conversations")
             .document(convId)
             .collection("messages")
             .orderBy("createdAt", Query.Direction.DESCENDING)
-            .limit(30)
+            .afterDeletion(cutoff)
+            .limit(limit)
 
         launch(kotlinx.coroutines.Dispatchers.Default) {
             val cached = withTimeoutOrNull(3000) {
@@ -252,32 +300,40 @@ class ChatRepositoryImpl @Inject constructor(
     }
 
     override fun observeMessagesByIds(convId: String, currentUserId: String, ids: Set<String>): Flow<Map<String, ChatMessage?>> =
-        observeChatMessageUpdates(firestore, convId, currentUserId, ids)
+        if (ids.isEmpty()) flowOf(emptyMap()) else combine(
+            observeChatMessageUpdates(firestore, convId, currentUserId, ids),
+            observeHistoryCutoff(convId, currentUserId),
+            deletedMessages.observeHiddenAttachments(currentUserId, convId)
+        ) { messages, cutoff, hidden ->
+            messages.mapValues { (_, message) ->
+                message?.takeIf { cutoff == null || it.createdAt > cutoff }?.withoutHiddenAttachments(hidden)
+            }
+        }
 
     override suspend fun getChatInfoMessages(convId: String, currentUserId: String, limit: Long): List<ChatMessage> {
-        return try {
-            val snapshot = firestore.collection("conversations")
-                .document(convId)
-                .collection("messages")
-                .orderBy("createdAt", Query.Direction.DESCENDING)
-                .limit(limit)
-                .get(Source.CACHE)
-                .await()
-            snapshot.documents.mapNotNull { doc ->
+        val cutoff = historyCutoff(convId, currentUserId)
+        return firestore.collection("conversations").document(convId).collection("messages")
+            .orderBy("createdAt", Query.Direction.DESCENDING)
+            .afterDeletion(cutoff)
+            .limit(limit + deletedMessages.hiddenAttachments(currentUserId, convId).size)
+            .get(Source.DEFAULT)
+            .await()
+            .documents.mapNotNull { doc ->
                 doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
             }
-        } catch (e: Exception) {
-            emptyList()
-        }
+            .visibleAttachments(convId, currentUserId).take(limit.toInt())
     }
 
     override suspend fun getOlderMessages(convId: String, currentUserId: String, beforeTimestamp: Long, limit: Long): List<ChatMessage> {
+        val cutoff = historyCutoff(convId, currentUserId)
+        if (cutoff != null && beforeTimestamp <= cutoff) return emptyList()
         val query = firestore.collection("conversations")
             .document(convId)
             .collection("messages")
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .whereLessThan("createdAt", beforeTimestamp)
-            .limit(limit)
+            .afterDeletion(cutoff)
+            .limit(limit + deletedMessages.hiddenAttachments(currentUserId, convId).size)
 
         val snapshot = try {
             query.get(Source.DEFAULT).await()
@@ -290,7 +346,7 @@ class ChatRepositoryImpl @Inject constructor(
 
         return snapshot.documents.mapNotNull { doc ->
             doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
-        }
+        }.visibleAttachments(convId, currentUserId).take(limit.toInt())
     }
 
     override suspend fun getNewerMessages(convId: String, currentUserId: String, afterTimestamp: Long, limit: Long): List<ChatMessage> {
@@ -298,8 +354,8 @@ class ChatRepositoryImpl @Inject constructor(
             .document(convId)
             .collection("messages")
             .orderBy("createdAt", Query.Direction.ASCENDING)
-            .whereGreaterThan("createdAt", afterTimestamp)
-            .limit(limit)
+            .whereGreaterThan("createdAt", maxOf(afterTimestamp, historyCutoff(convId, currentUserId) ?: Long.MIN_VALUE))
+            .limit(limit + deletedMessages.hiddenAttachments(currentUserId, convId).size)
 
         val snapshot = try {
             query.get(Source.DEFAULT).await()
@@ -311,7 +367,7 @@ class ChatRepositoryImpl @Inject constructor(
 
         return snapshot.documents.mapNotNull { doc ->
             doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
-        }
+        }.visibleAttachments(convId, currentUserId).take(limit.toInt())
     }
 
     override suspend fun getThreadMessages(
@@ -322,6 +378,10 @@ class ChatRepositoryImpl @Inject constructor(
     ): List<ChatMessage> {
         if (threadRootId.isBlank()) return emptyList()
         val messages = firestore.collection("conversations").document(convId).collection("messages")
+        val cutoff = historyCutoff(convId, currentUserId)
+        if (cutoff != null && (messages.document(threadRootId).get().await().getLong("createdAt") ?: 0L) <= cutoff) {
+            return emptyList()
+        }
 
         suspend fun fetch(field: String) = runCatching {
             messages.whereEqualTo(field, threadRootId).limit(limit).get(Source.DEFAULT).await()
@@ -333,10 +393,12 @@ class ChatRepositoryImpl @Inject constructor(
         // replyTo.id preserves threads created before threadRootId was introduced.
         return (fetch("threadRootId") + fetch("replyTo.id"))
             .distinctBy { it.id }
+            .filter { cutoff == null || (it.getLong("createdAt") ?: 0L) > cutoff }
             .mapNotNull { doc ->
                 doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
             }
             .sortedByDescending(ChatMessage::createdAt)
+            .visibleAttachments(convId, currentUserId)
     }
 
     override suspend fun getMessageWindowById(
@@ -346,6 +408,7 @@ class ChatRepositoryImpl @Inject constructor(
         windowSize: Long
     ): List<ChatMessage> {
         if (messageId.isBlank() || windowSize <= 0L) return emptyList()
+        val cutoff = historyCutoff(convId, currentUserId)
         val messages = firestore.collection("conversations").document(convId).collection("messages")
         val targetRef = messages.document(messageId)
         val target = runCatching { targetRef.get(Source.DEFAULT).await() }
@@ -353,6 +416,7 @@ class ChatRepositoryImpl @Inject constructor(
             ?.takeIf { it.exists() }
             ?: return emptyList()
         val timestamp = target.getLong("createdAt") ?: return emptyList()
+        if (cutoff != null && timestamp <= cutoff) return emptyList()
         val sideLimit = (windowSize / 2L).coerceAtLeast(1L)
 
         suspend fun fetch(query: Query) = runCatching { query.get(Source.DEFAULT).await() }
@@ -362,6 +426,7 @@ class ChatRepositoryImpl @Inject constructor(
         val olderIncludingTarget = fetch(
             messages.orderBy("createdAt", Query.Direction.DESCENDING)
                 .whereLessThanOrEqualTo("createdAt", timestamp)
+                .afterDeletion(cutoff)
                 .limit(sideLimit + 1L)
         )
         val newer = fetch(
@@ -376,6 +441,7 @@ class ChatRepositoryImpl @Inject constructor(
                 doc.toObject(ChatMessageDto::class.java)?.copy(id = doc.id)?.toDomain(currentUserId)
             }
             .sortedByDescending { it.createdAt }
+            .visibleAttachments(convId, currentUserId)
     }
 
     override suspend fun findOrCreateDirectConversation(
@@ -599,7 +665,7 @@ class ChatRepositoryImpl @Inject constructor(
             userId
         )
         val states = loadConversationStates(userId, conversations.map(ChatConversation::id))
-        return conversations.map { it.withUserState(states[it.id]) }
+        return conversations.map { it.withUserState(states[it.id]) }.filterNot(ChatConversation::isDeletedForMe)
     }
 
     override suspend fun ensureConversationSearchIndexes(
@@ -656,6 +722,28 @@ class ChatRepositoryImpl @Inject constructor(
             ).await()
     }
 
+    override suspend fun setConversationMuted(userId: String, conversationId: String, muted: Boolean): Result<Unit> =
+        runCatching {
+            chatStateDocument(conversationId, userId).set(mapOf("muted" to muted), SetOptions.merge()).await()
+            Unit
+        }
+
+    override suspend fun leaveGroup(userId: String, conversationId: String): Result<Unit> = runCatching {
+        val group = firestore.collection("conversations").document(conversationId)
+        firestore.runTransaction { transaction ->
+            val snapshot = transaction.get(group)
+            require(snapshot.getString("kind") == "group")
+            require(userId in (snapshot.get("participantIds") as? List<*>).orEmpty())
+            transaction.update(group,
+                FieldPath.of("participantIds"), FieldValue.arrayRemove(userId),
+                FieldPath.of("members", userId), FieldValue.delete(),
+                FieldPath.of("unread", userId), FieldValue.delete()
+            )
+            transaction.delete(chatStateDocument(conversationId, userId))
+        }.await()
+        Unit
+    }
+
     override suspend fun setConversationArchived(
         userId: String,
         conversationId: String,
@@ -673,6 +761,97 @@ class ChatRepositoryImpl @Inject constructor(
                 SetOptions.merge()
             ).await()
     }
+
+    override suspend fun deleteConversationForMe(userId: String, conversationId: String): Result<Unit> = runCatching {
+        val chat = firestore.collection("conversations").document(conversationId)
+        val userState = chatStateDocument(conversationId, userId)
+        firestore.runTransaction { transaction ->
+            val snapshot = transaction.get(chat)
+            require(userId in (snapshot.get("participantIds") as? List<*>).orEmpty())
+            val previousCutoff = transaction.get(userState).getLong("deletedThrough") ?: 0L
+            val cutoff = maxOf(previousCutoff, snapshot.getLong("lastMessageAt") ?: 0L)
+            transaction.set(userState, deletedChatState(cutoff), SetOptions.merge())
+            transaction.update(chat, FieldPath.of("unread", userId), 0L)
+        }.await()
+        Unit
+    }
+
+    override suspend fun deleteConversationForEveryone(userId: String, conversationId: String): Result<Unit> = runCatching {
+        val chat = firestore.collection("conversations").document(conversationId)
+        val (cutoff, participants) = firestore.runTransaction { transaction ->
+            val snapshot = transaction.get(chat)
+            val participants = (snapshot.get("participantIds") as? List<*>).orEmpty().filterIsInstance<String>().distinct()
+            require(userId in participants)
+            val cutoff = maxOf(snapshot.getLong("lastMessageAt") ?: 0L, snapshot.getLong("sharedDeletedThrough") ?: 0L)
+            val userState = chatStateDocument(conversationId, userId)
+            val privateCutoff = transaction.get(userState).getLong("deletedThrough") ?: 0L
+            transaction.update(chat, mapOf(
+                "sharedDeletedThrough" to cutoff,
+                "lastMessage" to "",
+                "unread" to participants.associateWith { 0L },
+                "pinnedMessages" to emptyList<Any>()
+            ))
+            transaction.set(userState, deletedChatState(maxOf(privateCutoff, cutoff)), SetOptions.merge())
+            cutoff to participants
+        }.await()
+
+        // The committed cutoff hides the history while the documents are removed in retryable batches.
+        val messages = chat.collection("messages").whereLessThanOrEqualTo("createdAt", cutoff).limit(50)
+        while (true) {
+            val page = messages.get(Source.SERVER).await().documents
+            if (page.isEmpty()) break
+            val indexRefs = page.flatMap { message ->
+                participants.map { participant ->
+                    firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)
+                        .document(globalSearchIndexId(participant, conversationId, message.id))
+                }
+            }
+            indexRefs.chunked(400).forEach { references ->
+                val batch = firestore.batch()
+                references.forEach { batch.delete(it) }
+                batch.commit().await()
+            }
+            // The rules read each original and its post-transaction state to verify the removal record.
+            page.chunked(8).forEach { chunk ->
+                firestore.runTransaction { transaction ->
+                    val current = chunk.map { transaction.get(it.reference) }
+                    current.filter { it.exists() }.forEach { message ->
+                        transaction.recordRemovedMedia(message, (message.get("attachments") as? List<*>).orEmpty())
+                        transaction.delete(message.reference)
+                    }
+                }.await()
+            }
+        }
+    }
+
+    private fun deletedChatState(cutoff: Long) = mapOf(
+        "deletedThrough" to cutoff,
+        "pinned" to false,
+        "pinnedAt" to 0L,
+        "archived" to false,
+        "archivedAt" to 0L
+    )
+
+    private fun chatStateDocument(convId: String, userId: String) =
+        firestore.collection("users").document(userId).collection(CHAT_STATES_COLLECTION).document(convId)
+
+    private fun observeUserState(convId: String, userId: String): Flow<ConversationUserState?> =
+        subscribeConversationStates(userId, setOf(convId)).map { it[convId] }.distinctUntilChanged()
+
+    private fun observeHistoryCutoff(convId: String, userId: String): Flow<Long?> =
+        combine(observeConversation(convId, userId), observeUserState(convId, userId)) { conversation, state ->
+            conversation?.withUserState(state)?.historyCutoff
+        }.distinctUntilChanged()
+
+    private suspend fun historyCutoff(convId: String, userId: String): Long? = coroutineScope {
+        val privateState = async { loadConversationStates(userId, listOf(convId))[convId]?.deletedThrough }
+        val sharedState = firestore.collection("conversations").document(convId)
+            .get(Source.DEFAULT).await().getLong("sharedDeletedThrough")
+        listOfNotNull(privateState.await(), sharedState).maxOrNull()
+    }
+
+    private fun Query.afterDeletion(cutoff: Long?): Query =
+        if (cutoff == null) this else whereGreaterThan("createdAt", cutoff)
 
     private fun deterministicDirectConversationId(participantIds: List<String>): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -735,6 +914,7 @@ class ChatRepositoryImpl @Inject constructor(
     ): List<ChatConversation> = conversationIds.distinct().chunked(FIRESTORE_IN_LIMIT).flatMap { chunk ->
         if (chunk.isEmpty()) return@flatMap emptyList()
         firestore.collection("conversations")
+            .whereArrayContains("participantIds", currentUserId)
             .whereIn(FieldPath.documentId(), chunk)
             .get(Source.DEFAULT)
             .await()
@@ -761,14 +941,18 @@ class ChatRepositoryImpl @Inject constructor(
         pinned = getBoolean("pinned") ?: false,
         pinnedAt = getLong("pinnedAt") ?: 0L,
         archived = getBoolean("archived") ?: false,
-        archivedAt = getLong("archivedAt") ?: 0L
+        archivedAt = getLong("archivedAt") ?: 0L,
+        deletedThrough = getLong("deletedThrough"),
+        muted = getBoolean("muted") == true
     )
 
     private fun ChatConversation.withUserState(state: ConversationUserState?): ChatConversation = copy(
         isPinned = state?.pinned == true,
         pinnedAt = state?.pinnedAt ?: 0L,
         isArchived = state?.archived == true,
-        archivedAt = state?.archivedAt ?: 0L
+        archivedAt = state?.archivedAt ?: 0L,
+        deletedThrough = state?.deletedThrough,
+        isMuted = state?.muted == true
     )
 
     private fun conversationSearchValues(conversation: ChatConversation, userId: String): List<String> = buildList {
@@ -810,7 +994,11 @@ class ChatRepositoryImpl @Inject constructor(
             val participantIds = snapshot.get("participantIds") as? List<String> ?: emptyList()
             participantsForPostSend = participantIds.drop(POST_SEND_PARTICIPANT_BATCH)
             val existingMessage = transaction.get(messageRef)
-            sentAt = existingMessage.getLong("createdAt") ?: maxOf(message.createdAt, (snapshot.getLong("lastMessageAt") ?: 0L) + 1L)
+            sentAt = existingMessage.getLong("createdAt") ?: maxOf(
+                message.createdAt,
+                (snapshot.getLong("lastMessageAt") ?: 0L) + 1L,
+                (snapshot.getLong("sharedDeletedThrough") ?: 0L) + 1L
+            )
             if (existingMessage.exists()) return@runTransaction
             val rootRef = message.threadRootId?.takeIf(String::isNotBlank)
                 ?.let { convRef.collection("messages").document(it) }
@@ -898,12 +1086,13 @@ class ChatRepositoryImpl @Inject constructor(
         return firestore.collection("conversations").document(convId).collection("messages")
             .whereArrayContains("searchTerms", normalizedPrefix.take(MAX_SEARCH_PREFIX_LENGTH))
             .orderBy("createdAt", Query.Direction.DESCENDING)
+            .afterDeletion(historyCutoff(convId, currentUserId))
             .limit(limit)
             .get(Source.DEFAULT)
             .await()
             .documents.mapNotNull { document ->
                 document.toObject(ChatMessageDto::class.java)?.copy(id = document.id)?.toDomain(currentUserId)
-            }
+            }.mapNotNull { visibleSearchMessage(it, currentUserId, convId, normalizedPrefix) }
     }
 
     override suspend fun ensureMessageSearchIndexes(
@@ -938,33 +1127,52 @@ class ChatRepositoryImpl @Inject constructor(
         batch.commit().await()
     }
 
-    override suspend fun searchGlobalMessages(
+    override suspend fun searchGlobalMessageHits(
         userId: String,
         normalizedPrefix: String,
         limit: Long
-    ): List<ChatMessage> {
+    ): List<ChatSearchHit> {
         if (normalizedPrefix.length < 2) return emptyList()
-        val indexes = firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)
+        val query = firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION)
             .whereEqualTo("userId", userId)
             .whereArrayContains("searchTerms", normalizedPrefix.take(MAX_SEARCH_PREFIX_LENGTH))
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .limit(limit)
-            .get(Source.DEFAULT).await().documents
-        return coroutineScope {
-            indexes.mapNotNull { index ->
-                val conversationId = index.getString("conversationId") ?: return@mapNotNull null
-                val messageId = index.getString("messageId") ?: return@mapNotNull null
-                async {
-                    firestore.collection("conversations").document(conversationId)
-                        .collection("messages").document(messageId)
-                        .get(Source.DEFAULT).await()
-                        .takeIf { it.exists() }
-                        ?.toObject(ChatMessageDto::class.java)
-                        ?.copy(id = messageId, conversationId = conversationId)
-                        ?.toDomain(userId)
-                }
-            }.awaitAll().filterNotNull()
+        val results = mutableListOf<ChatSearchHit>()
+        val chatsById = mutableMapOf<String, ChatConversation>()
+        var page = query
+        while (results.size < limit) {
+            val indexes = page.get(Source.DEFAULT).await().documents
+            val conversationIds = indexes.mapNotNull { it.getString("conversationId") }.distinct()
+                .filterNot(chatsById::containsKey)
+            val states = loadConversationStates(userId, conversationIds)
+            val conversations = loadConversationsByIds(conversationIds, userId)
+            conversations.forEach { chat -> chatsById[chat.id] = chat.withUserState(states[chat.id]) }
+            val visible = coroutineScope {
+                indexes.mapNotNull { index ->
+                    val conversationId = index.getString("conversationId") ?: return@mapNotNull null
+                    val messageId = index.getString("messageId") ?: return@mapNotNull null
+                    val chat = chatsById[conversationId] ?: return@mapNotNull null
+                    val cutoff = chat.historyCutoff
+                    if (cutoff != null && (index.getLong("createdAt") ?: 0L) <= cutoff) return@mapNotNull null
+                    async {
+                        firestore.collection("conversations").document(conversationId)
+                            .collection("messages").document(messageId)
+                            .get(Source.DEFAULT).await()
+                            .takeIf { it.exists() && (cutoff == null || (it.getLong("createdAt") ?: 0L) > cutoff) }
+                            ?.toObject(ChatMessageDto::class.java)
+                            ?.copy(id = messageId, conversationId = conversationId)
+                            ?.toDomain(userId)
+                            ?.let { visibleSearchMessage(it, userId, conversationId, normalizedPrefix) }
+                            ?.let { ChatSearchHit(it, chat) }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            results += visible
+            if (indexes.size < limit) break
+            page = query.startAfter(indexes.last())
         }
+        return results.take(limit.toInt())
     }
 
     override fun subscribeConversationReceipts(convId: String): Flow<Map<String, ConversationReceipt>> = callbackFlow {
@@ -1114,6 +1322,74 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun deleteMessage(convId: String, msgId: String): Result<Unit> = runCatching {
         deleteChatMessage(firestore, convId, msgId)
+    }
+
+    private fun List<ChatMessage>.visibleAttachments(convId: String, userId: String): List<ChatMessage> {
+        val hidden = deletedMessages.hiddenAttachments(userId, convId)
+        return if (hidden.isEmpty()) this else mapNotNull { it.withoutHiddenAttachments(hidden) }
+    }
+
+    private fun ChatMessage.withoutHiddenAttachments(hidden: Set<String>): ChatMessage? {
+        if (hidden.isEmpty() || attachments.isEmpty()) return this
+        val visible = attachments.filterNot { it.referenceIn(id).storageKey() in hidden }
+        return when {
+            visible.size == attachments.size -> this
+            visible.isEmpty() && !hasContentApartFromAttachments() -> null
+            else -> copy(attachments = visible, isSearchIndexed = true)
+        }
+    }
+
+    private fun ChatMessage.hasContentApartFromAttachments() =
+        text.isNotBlank() || replyCount > 0 || reactions.isNotEmpty()
+
+    private fun visibleSearchMessage(message: ChatMessage, userId: String, convId: String, query: String): ChatMessage? {
+        val visible = message.withoutHiddenAttachments(deletedMessages.hiddenAttachments(userId, convId)) ?: return null
+        return visible.takeIf { it === message || query.take(MAX_SEARCH_PREFIX_LENGTH) in messageSearchTerms(it) }
+    }
+
+    override suspend fun deleteAttachments(
+        convId: String,
+        userId: String,
+        attachments: Set<ChatAttachmentRef>,
+        forEveryone: Boolean
+    ): Result<Unit> = runCatching {
+        if (attachments.isEmpty()) return@runCatching
+        if (!forEveryone) {
+            deletedMessages.hideAttachments(userId, convId, attachments)
+            return@runCatching
+        }
+        attachments.groupBy { it.messageId }.forEach { (messageId, selected) ->
+            val keys = selected.mapTo(hashSetOf()) { it.attachmentKey }
+            deleteChatMessage(firestore, convId, messageId) { tx, target, conversation ->
+                val raw = (target.get("attachments") as? List<*>).orEmpty()
+                val remaining = raw.filterNot { entry ->
+                    val file = entry as? Map<*, *> ?: return@filterNot false
+                    val url = file["url"] as? String
+                    (url?.takeIf(String::isNotBlank) ?: file["publicId"] as? String) in keys
+                }
+                if (remaining.size == raw.size) return@deleteChatMessage true
+                val original = checkNotNull(target.toObject(ChatMessageDto::class.java)).copy(id = messageId).toDomain(userId)
+                if (remaining.isEmpty() && !original.hasContentApartFromAttachments()) return@deleteChatMessage false
+                tx.recordRemovedMedia(target, raw.filterNot { it in remaining })
+                val updated = original.copy(attachments = original.attachments.filterNot { it.referenceIn(messageId).attachmentKey in keys })
+                tx.update(target.reference, mapOf(
+                    "attachments" to remaining,
+                    "searchTerms" to messageSearchTerms(updated),
+                    "contentKinds" to messageContentKinds(updated)
+                ))
+                (conversation.get("participantIds") as? List<*>).orEmpty().filterIsInstance<String>().distinct().forEach { uid ->
+                    tx.set(firestore.collection(GLOBAL_CHAT_SEARCH_COLLECTION).document(globalSearchIndexId(uid, convId, messageId)),
+                        globalSearchData(uid, convId, updated))
+                }
+                if (conversation.getLong("lastMessageAt") == original.createdAt && original.text.isBlank()) {
+                    val files = updated.attachments
+                    val suffix = if (files.size > 1) " (+${files.size - 1})" else ""
+                    val preview = files.firstOrNull()?.let { "📎 ${it.name}$suffix" }.orEmpty()
+                    tx.update(conversation.reference, "lastMessage", preview)
+                }
+                true
+            }
+        }
     }
 
     override suspend fun pinMessage(convId: String, pinned: PinnedMessage): Result<Unit> = runCatching {

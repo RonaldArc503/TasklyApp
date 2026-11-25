@@ -1,16 +1,20 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -24,9 +28,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,17 +54,15 @@ import com.ronaldcolocho.taskly.domain.model.CachedAudioReference
 import com.ronaldcolocho.taskly.domain.util.formatBytes
 import com.ronaldcolocho.taskly.domain.util.formatDuration
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
-import com.ronaldcolocho.taskly.ui.theme.Emerald500
 import com.ronaldcolocho.taskly.ui.theme.ChatAccent as Indigo600
 import com.ronaldcolocho.taskly.ui.theme.ChatAccentContainer
-import com.ronaldcolocho.taskly.ui.theme.ChatDivider
+import com.ronaldcolocho.taskly.ui.theme.ChatActionGradient
 import com.ronaldcolocho.taskly.ui.theme.ChatMuted
 import com.ronaldcolocho.taskly.ui.theme.ChatOutgoing
 import com.ronaldcolocho.taskly.ui.theme.ChatSurfaceRaised
 import com.ronaldcolocho.taskly.ui.theme.ChatText
 
 private val Slate100 = ChatSurfaceRaised
-private val Slate300 = ChatDivider
 private val Slate500 = ChatMuted
 private val Slate800 = ChatText
 
@@ -61,7 +71,10 @@ fun AudioCard(
     att: ChatAttachment,
     isMe: Boolean,
     controller: AudioPlayerController,
-    mediaManager: MediaDownloadManager
+    mediaManager: MediaDownloadManager,
+    onSelectionClick: (() -> Unit)? = null,
+    onSelectionLongClick: (() -> Unit)? = null,
+    trailingStatus: (@Composable () -> Unit)? = null
 ) {
     val mediaId = att.publicId
     // Estado de descarga limitado a este mediaId: otras descargas no re-componen esta tarjeta.
@@ -129,122 +142,131 @@ fun AudioCard(
         }
     }
 
-    val bg = if (isMe) Color.White.copy(alpha = 0.15f) else Slate100
-    val btnBg = if (isMe) Color.White else Indigo600
-    val btnTint = if (isMe) ChatOutgoing else Color(0xFF102B35)
-    val subColor = if (isMe) Color.White.copy(alpha = 0.8f) else Slate500
-    val trackColor = if (isMe) Color.White.copy(alpha = 0.25f) else Slate300
-    val fillColor = if (isMe) Color.White else Emerald500
+    val downloaded = downloadState is MediaDownloadState.Downloaded
 
-    Row(
-        modifier = Modifier
-            .widthIn(max = 256.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(bg)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        modifier = if (trailingStatus != null) Modifier.fillMaxWidth()
+        else Modifier.widthIn(max = 310.dp).clip(RoundedCornerShape(16.dp))
+            .background(if (isMe) ChatOutgoing else Slate100)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
-        AudioPlayButton(
-            downloadState = downloadState,
-            isPlaying = isPlaying,
-            btnBg = btnBg,
-            btnTint = btnTint,
-            onClick = ::onPlayClick
-        )
-
-        Spacer(modifier = Modifier.width(10.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = att.name,
-                color = if (isMe) Color.White else Slate800,
-                fontSize = MaterialTheme.typography.bodySmall.fontSize,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            AudioStatusLabel(
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AudioPlayButton(
                 downloadState = downloadState,
-                isCurrent = isCurrent,
-                nowMs = nowMs,
-                durMs = durMs,
-                isMe = isMe,
-                sizeBytes = att.size
+                isPlaying = isPlaying,
+                onClick = onSelectionClick ?: ::onPlayClick,
+                onLongClick = onSelectionLongClick
             )
-            ThinSeekBar(
-                pct = pct,
-                enabled = downloadState is MediaDownloadState.Downloaded && isCurrent,
-                trackColor = trackColor,
-                fillColor = fillColor,
-                onSeek = { ratio -> controller.seek((ratio * durMs).toLong()) }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = att.name,
+                    color = if (isMe) Color.White else Slate800,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                AudioProgressBars(
+                    pct = pct,
+                    enabled = downloaded && isCurrent && durMs > 0,
+                    onSeek = { ratio -> controller.seek((ratio * durMs).toLong()) }
+                )
+            }
+
+            if (downloaded) AudioModeMenu(
+                controller = controller,
+                track = track,
+                isMe = isMe,
+                isCurrent = isCurrent
             )
         }
-
-        AudioModeMenu(
-            controller = controller,
-            track = track,
-            isMe = isMe,
-            isCurrent = isCurrent,
-            enabled = downloadState is MediaDownloadState.Downloaded
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 54.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            AudioStatusLabel(downloadState, isCurrent, nowMs, durMs, att.size, Modifier.weight(1f))
+            trailingStatus?.invoke()
+        }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AudioPlayButton(
     downloadState: MediaDownloadState,
     isPlaying: Boolean,
-    btnBg: Color,
-    btnTint: Color,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?
 ) {
+    val downloaded = downloadState is MediaDownloadState.Downloaded
+    val btnTint = if (downloaded) Color(0xFF102B35) else Indigo600
+    val label = when (downloadState) {
+        is MediaDownloadState.Downloaded -> if (isPlaying) "Pausar audio" else "Reproducir audio"
+        is MediaDownloadState.NotDownloaded -> "Descargar audio"
+        is MediaDownloadState.Queued -> "Audio en cola"
+        is MediaDownloadState.Downloading -> "Descargando audio"
+        is MediaDownloadState.Error -> "Reintentar descarga de audio"
+    }
     Box(
         modifier = Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(btnBg)
-            .clickable(onClick = onClick),
+            .size(44.dp)
+            .combinedClickable(role = Role.Button, onClickLabel = label, onClick = onClick, onLongClick = onLongClick)
+            .semantics { contentDescription = label },
         contentAlignment = Alignment.Center
     ) {
-        when (downloadState) {
-            is MediaDownloadState.Downloaded -> {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pausar audio" else "Reproducir audio",
-                    tint = btnTint,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            is MediaDownloadState.NotDownloaded -> {
-                Icon(
-                    imageVector = Icons.Default.Download,
-                    contentDescription = "Preparando descarga",
-                    tint = btnTint,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            is MediaDownloadState.Queued -> {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    color = btnTint,
-                    strokeWidth = 2.dp
-                )
-            }
-            is MediaDownloadState.Downloading -> {
-                CircularProgressIndicator(
-                    progress = { downloadState.progress },
-                    modifier = Modifier.size(18.dp),
-                    color = btnTint,
-                    strokeWidth = 2.dp
-                )
-            }
-            is MediaDownloadState.Error -> {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = "Reintentar audio",
-                    tint = btnTint,
-                    modifier = Modifier.size(18.dp)
-                )
+        Box(
+            modifier = Modifier.size(42.dp).clip(CircleShape).then(
+                if (downloaded) Modifier.background(ChatActionGradient)
+                else Modifier.border(1.dp, Indigo600, CircleShape)
+            ),
+            contentAlignment = Alignment.Center
+        ) {
+            when (downloadState) {
+                is MediaDownloadState.Downloaded -> {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = btnTint,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                is MediaDownloadState.NotDownloaded -> {
+                    Icon(
+                        imageVector = Icons.Outlined.FileDownload,
+                        contentDescription = null,
+                        tint = btnTint,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                is MediaDownloadState.Queued -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = btnTint,
+                        strokeWidth = 2.dp
+                    )
+                }
+                is MediaDownloadState.Downloading -> {
+                    CircularProgressIndicator(
+                        progress = { downloadState.progress },
+                        modifier = Modifier.size(18.dp),
+                        color = btnTint,
+                        strokeWidth = 2.dp
+                    )
+                }
+                is MediaDownloadState.Error -> {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = btnTint,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -256,23 +278,23 @@ private fun AudioStatusLabel(
     isCurrent: Boolean,
     nowMs: Long,
     durMs: Long,
-    isMe: Boolean,
-    sizeBytes: Long
+    sizeBytes: Long,
+    modifier: Modifier
 ) {
-    val subColor = if (isMe) Color.White.copy(alpha = 0.8f) else Slate500
     val text = when (downloadState) {
         is MediaDownloadState.Downloading -> "Descargando ${(downloadState.progress * 100).toInt()}%"
         is MediaDownloadState.Error -> downloadState.message
         is MediaDownloadState.Queued -> "En cola"
-        is MediaDownloadState.NotDownloaded -> "Preparando descarga"
+        is MediaDownloadState.NotDownloaded -> formatBytes(sizeBytes)
         is MediaDownloadState.Downloaded ->
             if (isCurrent) "${formatDuration(nowMs)} / ${formatDuration(durMs)}"
-            else formatBytes(sizeBytes)
+            else if (durMs > 0) formatDuration(durMs) else formatBytes(sizeBytes)
     }
     Text(
         text = text,
-        color = if (downloadState is MediaDownloadState.Error) MaterialTheme.colorScheme.error else subColor,
-        style = MaterialTheme.typography.labelSmall,
+        modifier = modifier,
+        color = if (downloadState is MediaDownloadState.Error) MaterialTheme.colorScheme.error else Slate500,
+        fontSize = 12.sp,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis
     )
@@ -283,8 +305,7 @@ private fun AudioModeMenu(
     controller: AudioPlayerController,
     track: AudioTrack,
     isMe: Boolean,
-    isCurrent: Boolean,
-    enabled: Boolean
+    isCurrent: Boolean
 ) {
     val mode by controller.modeState.collectAsStateWithLifecycle()
     var expanded by remember { mutableStateOf(false) }
@@ -292,8 +313,7 @@ private fun AudioModeMenu(
     Box {
         IconButton(
             onClick = { expanded = true },
-            modifier = Modifier.size(28.dp),
-            enabled = enabled
+            modifier = Modifier.size(44.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.MoreVert,
@@ -430,57 +450,54 @@ private fun ModeRow(
 }
 
 @Composable
-private fun ThinSeekBar(
+private fun AudioProgressBars(
     pct: Float,
     enabled: Boolean,
-    trackColor: Color,
-    fillColor: Color,
     onSeek: (Float) -> Unit
 ) {
-    BoxWithConstraints(
+    val seek by rememberUpdatedState(onSeek)
+    Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(18.dp)
+            .height(24.dp)
+            .then(if (enabled) Modifier.semantics {
+                contentDescription = "Progreso del audio"
+                progressBarRangeInfo = ProgressBarRangeInfo(pct, 0f..1f)
+                setProgress { value ->
+                    seek(value.coerceIn(0f, 1f))
+                    true
+                }
+            } else Modifier)
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectTapGestures { offset ->
-                    onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
+                    seek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
                 }
             }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
-                detectDragGestures(
-                    onDragStart = { offset -> onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f)) },
-                    onDrag = { change, _ ->
-                        onSeek((change.position.x / size.width.toFloat()).coerceIn(0f, 1f))
-                        change.consume()
-                    }
-                )
-            },
-        contentAlignment = Alignment.CenterStart
+                detectHorizontalDragGestures { change, _ ->
+                    seek((change.position.x / size.width.toFloat()).coerceIn(0f, 1f))
+                }
+            }
     ) {
-        val maxW = maxWidth
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(trackColor)
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(pct)
-                .height(3.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(fillColor)
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .offset(x = maxW * pct - 5.dp)
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(fillColor)
-        )
+        val step = size.width / AudioBarHeights.size
+        val stroke = 3.dp.toPx().coerceAtMost(step * 0.65f)
+        AudioBarHeights.forEachIndexed { index, height ->
+            val x = (index + 0.5f) * step
+            val half = height.dp.toPx() / 2
+            drawLine(
+                color = if (x <= size.width * pct) Indigo600 else Color(0xFF3A4558),
+                start = Offset(x, center.y - half),
+                end = Offset(x, center.y + half),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+        }
     }
 }
+
+private val AudioBarHeights = intArrayOf(
+    5, 16, 6, 8, 10, 17, 13, 7, 5, 6, 18, 6, 13, 5, 12, 8,
+    16, 10, 6, 8, 9, 18, 8, 6, 11, 15, 8, 17, 10, 6, 13, 11
+)

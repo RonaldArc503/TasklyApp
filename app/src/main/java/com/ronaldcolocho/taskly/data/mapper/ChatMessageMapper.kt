@@ -33,7 +33,8 @@ fun ChatConversationDto.toDomain(currentUserId: String): ChatConversation = Chat
     createdAt = this.createdAt,
     isGroup = this.kind == "group" || this.name != null,
     name = this.name,
-    pinnedMessages = this.pinnedMessages?.map { it.toDomain() } ?: emptyList()
+    pinnedMessages = this.pinnedMessages?.map { it.toDomain() } ?: emptyList(),
+    sharedDeletedThrough = this.sharedDeletedThrough
 )
 
 fun ChatAttachmentDto.toDomain(): ChatAttachment = ChatAttachment(

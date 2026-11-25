@@ -62,6 +62,7 @@ import com.ronaldcolocho.taskly.ui.screen.profile.ProfileScreen
 import com.ronaldcolocho.taskly.ui.screen.tasks.TasksScreen
 import com.ronaldcolocho.taskly.ui.state.AuthState
 import com.ronaldcolocho.taskly.ui.theme.ChatColorScheme
+import com.ronaldcolocho.taskly.ui.theme.ChatTypography
 import com.ronaldcolocho.taskly.ui.screen.music.MusicNavigationChrome
 import com.ronaldcolocho.taskly.ui.screen.music.MusicSection
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -87,8 +88,8 @@ sealed class Route(val route: String, val navigationRoute: String = route) {
             "chat_thread/${android.net.Uri.encode(convId)}/${android.net.Uri.encode(threadRootId)}"
     }
     object GlobalChatSearch : Route("chat_search")
-    object ChatInfo : Route("chat_info/{convId}") {
-        fun createRoute(convId: String) = "chat_info/$convId"
+    object ChatInfo : Route("chat_info/{convId}?media={media}") {
+        fun createRoute(convId: String, media: Boolean = false) = "chat_info/${android.net.Uri.encode(convId)}?media=$media"
     }
     object Reminders : Route("reminders")
     object Saved : Route("saved")
@@ -245,7 +246,13 @@ private fun MainScaffold(
             isAppearanceLightNavigationBars = darkIcons
         }
     }
-    MaterialTheme(colorScheme = activeColorScheme) {
+    val isChatList = currentDestination?.route == Route.ChatList.route
+    val useChatTypography = isChatList || currentDestination?.route == Route.GlobalChatSearch.route ||
+        currentDestination?.route == Route.ChatDetail.route || currentDestination?.route == Route.ChatThread.route
+    MaterialTheme(
+        colorScheme = activeColorScheme,
+        typography = if (useChatTypography) ChatTypography else MaterialTheme.typography
+    ) {
     Scaffold(
         bottomBar = {
             if (isMusicBrowseRoute) {
@@ -255,6 +262,8 @@ private fun MainScaffold(
                     onSelect = selectMusicSection,
                     onOpenPlayer = { navController.navigate(Route.MusicPlayer.createRoute("Música")) }
                 )
+            } else if (isChatList) {
+                ChatDirectoryBottomBar(navigateToTopLevel)
             } else if (isBottomBarVisible) {
                 NavigationBar {
                     val items = listOf(
@@ -361,6 +370,7 @@ private fun MainScaffold(
                     ChatScreen(
                         onNavigateBack = { navController.popBackStack() },
                         onNavigateToInfo = { convId -> navController.navigate(Route.ChatInfo.createRoute(convId)) },
+                        onNavigateToMedia = { convId -> navController.navigate(Route.ChatInfo.createRoute(convId, media = true)) },
                         onNavigateToThread = { convId, rootId ->
                             navController.navigate(Route.ChatThread.createRoute(convId, rootId))
                         }
@@ -381,7 +391,10 @@ private fun MainScaffold(
                 }
                 composable(
                     route = Route.ChatInfo.route,
-                    arguments = listOf(navArgument("convId") { type = NavType.StringType }),
+                    arguments = listOf(
+                        navArgument("convId") { type = NavType.StringType },
+                        navArgument("media") { type = NavType.BoolType; defaultValue = false }
+                    ),
                     enterTransition = {
                         androidx.compose.animation.slideInVertically(
                             initialOffsetY = { fullHeight -> -fullHeight },
@@ -402,7 +415,12 @@ private fun MainScaffold(
                     }
                 ) {
                     com.ronaldcolocho.taskly.ui.screen.chatinfo.ChatInfoScreen(
+                        openMedia = it.arguments?.getBoolean("media") == true,
                         onNavigateBack = { navController.popBackStack() },
+                        onChatAction = { action ->
+                            navController.previousBackStackEntry?.savedStateHandle?.set("chatProfileAction", action)
+                            navController.popBackStack()
+                        },
                         audioController = audioController,
                         mediaManager = mediaManager
                     )

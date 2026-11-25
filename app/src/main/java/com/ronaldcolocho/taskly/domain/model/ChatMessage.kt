@@ -25,6 +25,10 @@ data class ChatAttachment(
     val pages: Int? = null
 )
 
+data class ChatAttachmentRef(val messageId: String, val attachmentKey: String)
+
+fun ChatAttachment.referenceIn(messageId: String) = ChatAttachmentRef(messageId, url.ifBlank { publicId })
+
 @Immutable
 data class ForwardedFrom(
     val uid: String,
@@ -100,8 +104,14 @@ data class ChatConversation(
     val isPinned: Boolean = false,
     val pinnedAt: Long = 0L,
     val isArchived: Boolean = false,
-    val archivedAt: Long = 0L
-)
+    val archivedAt: Long = 0L,
+    val deletedThrough: Long? = null,
+    val sharedDeletedThrough: Long? = null,
+    val isMuted: Boolean = false
+) {
+    val historyCutoff: Long? get() = deletedThrough?.let { maxOf(it, sharedDeletedThrough ?: it) } ?: sharedDeletedThrough
+    val isDeletedForMe: Boolean get() = historyCutoff?.let { lastMessageAt <= it } == true
+}
 
 @Immutable
 data class ConversationUserState(
@@ -109,5 +119,9 @@ data class ConversationUserState(
     val pinned: Boolean = false,
     val pinnedAt: Long = 0L,
     val archived: Boolean = false,
-    val archivedAt: Long = 0L
+    val archivedAt: Long = 0L,
+    val deletedThrough: Long? = null,
+    val muted: Boolean = false
 )
+
+data class ChatSearchHit(val message: ChatMessage, val conversation: ChatConversation)

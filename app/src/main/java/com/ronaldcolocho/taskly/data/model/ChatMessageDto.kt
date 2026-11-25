@@ -25,7 +25,8 @@ data class ChatConversationDto(
     val createdAt: Long = 0L,
     val kind: String = "dm",
     val name: String? = null,
-    val pinnedMessages: List<PinnedMessageDto>? = null
+    val pinnedMessages: List<PinnedMessageDto>? = null,
+    val sharedDeletedThrough: Long? = null
 )
 
 data class ChatAttachmentDto(

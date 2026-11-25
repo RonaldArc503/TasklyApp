@@ -123,7 +123,7 @@ class ChatListViewModel @Inject constructor(
                 }
                 .launchIn(viewModelScope)
 
-            getRecentConversationsUseCase(uid, PAGE_SIZE)
+            getRecentConversationsUseCase(uid, PAGE_SIZE, includeDeleted = true)
                 .onEach { recentConversations.value = it }
                 .catch { error -> if (_uiState.value !is ChatListUiState.Success) _uiState.value = ChatListUiState.Error(error.message ?: "Error") }
                 .launchIn(viewModelScope)
@@ -132,8 +132,8 @@ class ChatListViewModel @Inject constructor(
                 .onEach { isOffline.value = !it }
                 .launchIn(viewModelScope)
 
-            combine(recentConversations, olderConversations) { recent, older ->
-                (recent + older).map(ChatConversation::id).toSet()
+            combine(recentConversations, olderConversations, archivedConversations, remoteSearchResults) { recent, older, archived, remote ->
+                (recent + older + archived + remote).map(ChatConversation::id).toSet()
             }
                 .flatMapLatest { ids -> subscribeConversationStatesUseCase(uid, ids) }
                 .catch { emit(emptyMap()) }
@@ -162,16 +162,18 @@ class ChatListViewModel @Inject constructor(
                 conversationStates,
                 pinnedConversations
             ) { recent, older, states, pinned ->
-                val loaded = (recent + older).associateBy(ChatConversation::id).values.map { conversation ->
+                val loaded = (older + recent).associateBy(ChatConversation::id).values.map { conversation ->
                     val userState = states[conversation.id]
                     conversation.copy(
                         isPinned = userState?.pinned == true,
                         pinnedAt = userState?.pinnedAt ?: 0L,
                         isArchived = userState?.archived == true,
-                        archivedAt = userState?.archivedAt ?: 0L
+                        archivedAt = userState?.archivedAt ?: 0L,
+                        deletedThrough = userState?.deletedThrough,
+                        isMuted = userState?.muted == true
                     )
                 }
-                Pair(loaded, pinned)
+                Triple(loaded, pinned, states)
             }
             val presentationInputs = combine(
                 listSearchQuery,
@@ -188,13 +190,16 @@ class ChatListViewModel @Inject constructor(
             }
 
             combine(dataInputs, presentationInputs, operationInputs) { data, presentation, operations ->
-                val (loaded, pinned) = data
+                val (loaded, pinned, states) = data
+                val loadedById = loaded.associateBy(ChatConversation::id)
+                fun currentChat(chat: ChatConversation): ChatConversation =
+                    loadedById[chat.id] ?: chat.copy(deletedThrough = states[chat.id]?.deletedThrough ?: chat.deletedThrough)
                 val (offline, loadingMore, canLoadMore) = operations
                 val source = if (presentation.showingArchived) {
-                    presentation.archivedItems
+                    presentation.archivedItems.map(::currentChat)
                 } else {
-                    (loaded + pinned).associateBy(ChatConversation::id).values.filterNot(ChatConversation::isArchived)
-                }
+                    (pinned + loaded).associateBy(ChatConversation::id).values.filterNot(ChatConversation::isArchived)
+                }.filterNot(ChatConversation::isDeletedForMe)
                 val normalizedQuery = ChatSearchNormalizer.normalize(presentation.query)
                 val localMatches = if (normalizedQuery.isBlank()) source else source.filter { conversation ->
                     conversationSearchValues(conversation).any { ChatSearchNormalizer.matches(it, normalizedQuery) }
@@ -202,8 +207,8 @@ class ChatListViewModel @Inject constructor(
                 val conversations = if (normalizedQuery.isBlank() || presentation.showingArchived) {
                     localMatches
                 } else {
-                    (localMatches + presentation.remoteResults).associateBy(ChatConversation::id).values
-                        .filterNot(ChatConversation::isArchived)
+                    (localMatches + presentation.remoteResults.map(::currentChat)).associateBy(ChatConversation::id).values
+                        .filterNot { it.isArchived || it.isDeletedForMe }
                 }.sortedWith(
                     compareByDescending<ChatConversation> { !presentation.showingArchived && it.isPinned }
                         .thenByDescending { if (presentation.showingArchived) it.archivedAt else it.pinnedAt }
@@ -240,7 +245,10 @@ class ChatListViewModel @Inject constructor(
                     _uiState.value = ChatListUiState.Error(e.message ?: "Error")
                 }
             }
-            .onEach { _uiState.value = it }
+            .onEach { state ->
+                _uiState.value = state
+                if (state == ChatListUiState.Empty && listSearchQuery.value.isBlank()) loadMore()
+            }
             .launchIn(viewModelScope)
         } else {
             _uiState.value = ChatListUiState.Error("No session")
@@ -386,8 +394,8 @@ class ChatListViewModel @Inject constructor(
         }
         val uid = getCurrentUserIdUseCase() ?: return
         if (isLoadingMore.value || !hasMore.value) return
-        val current = (uiState.value as? ChatListUiState.Success)?.conversations.orEmpty()
-        val oldest = current.minOfOrNull { it.lastMessageAt } ?: return
+        val oldest = (recentConversations.value + olderConversations.value)
+            .minOfOrNull(ChatConversation::lastMessageAt) ?: return
         if (oldest <= 0L) {
             hasMore.value = false
             return
@@ -398,6 +406,10 @@ class ChatListViewModel @Inject constructor(
                 val page = getOlderConversationsUseCase(uid, oldest, PAGE_SIZE)
                 olderConversations.value = (olderConversations.value + page).associateBy { it.id }.values.toList()
                 hasMore.value = page.size == PAGE_SIZE.toInt()
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                hasMore.value = false
             } finally {
                 isLoadingMore.value = false
             }

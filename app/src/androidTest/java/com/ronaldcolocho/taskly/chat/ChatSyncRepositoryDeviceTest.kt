@@ -8,6 +8,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.ronaldcolocho.taskly.data.repository.ChatRepositoryImpl
+import com.ronaldcolocho.taskly.data.repository.DeletedMessagesRepositoryImpl
 import com.ronaldcolocho.taskly.domain.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -39,8 +40,9 @@ class ChatSyncRepositoryDeviceTest {
             try {
                 val (_, alice, aliceDb) = clients[0]
                 val (_, bob, bobDb) = clients[1]
-                val owner = ChatRepositoryImpl(aliceDb)
-                val reader = ChatRepositoryImpl(bobDb)
+                val deletedMessages = DeletedMessagesRepositoryImpl(context)
+                val owner = ChatRepositoryImpl(aliceDb, deletedMessages)
+                val reader = ChatRepositoryImpl(bobDb, deletedMessages)
                 val me = UserProfile(alice, "Alice", phone = "")
                 val peer = UserProfile(bob, "Bob", phone = "")
                 val ids = coroutineScope { listOf(async { owner.findOrCreateDirectConversation(me, peer).getOrThrow() },
@@ -102,6 +104,59 @@ class ChatSyncRepositoryDeviceTest {
                 val files = List(30) { i -> ChatAttachment(AttachmentKind.PDF, "raw", "https://example.invalid/$i", "file-$i", "$i.pdf", 1, "application/pdf") }
                 owner.sendMessage(id, alice, newest.copy(id = "30-files", attachments = files)).getOrThrow()
                 assertEquals(30, (chat.collection("messages").document("30-files").get().await().get("attachments") as List<*>).size)
+
+                reader.deleteConversationForMe(bob, id).getOrThrow()
+                assertTrue(reader.getRecentMessages(id, bob).first().isEmpty())
+                assertTrue(reader.getChatInfoMessages(id, bob, 50).isEmpty())
+                assertTrue(reader.getOlderMessages(id, bob, Long.MAX_VALUE, 50).isEmpty())
+                assertTrue(reader.getMessageWindowById(id, bob, newest.id, 30).isEmpty())
+                assertTrue(reader.searchMessages(id, bob, "keep", 10).isEmpty())
+                assertTrue(reader.searchGlobalMessages(bob, "keep", 1).isEmpty())
+                assertTrue(reader.getConversation(id, bob).first { it?.isDeletedForMe == true }!!.isDeletedForMe)
+                assertTrue(owner.getRecentMessages(id, alice).first { it.isNotEmpty() }.any { it.id == newest.id })
+
+                val incoming = newest.copy(id = "after-private-delete", createdAt = 600)
+                owner.sendMessage(id, alice, incoming).getOrThrow()
+                assertEquals(listOf(incoming.id), reader.getRecentMessages(id, bob).first { it.isNotEmpty() }.map { it.id })
+                assertEquals(listOf(incoming.id), reader.searchGlobalMessages(bob, "keep", 10).map { it.id })
+                assertFalse(reader.getConversation(id, bob).first { it?.lastMessageAt == 600L }!!.isDeletedForMe)
+
+                // More than one cleanup page, including messages written by the other participant.
+                val oldMessages = aliceDb.batch()
+                repeat(51) { i ->
+                    oldMessages.set(chat.collection("messages").document("older-page-$i"),
+                        mapOf("senderId" to alice, "text" to "Old page", "createdAt" to 400L + i))
+                }
+                oldMessages.commit().await()
+                reader.deleteConversationForEveryone(bob, id).getOrThrow()
+                assertTrue(chat.collection("messages").get().await().isEmpty)
+                assertTrue(owner.getChatInfoMessages(id, alice, 50).isEmpty())
+                assertTrue(owner.getConversation(id, alice).first { it?.isDeletedForMe == true }!!.isDeletedForMe)
+                assertFalse(chat.collection("messages").document(incoming.id).get().await().exists())
+
+                val next = newest.copy(id = "after-shared-delete", createdAt = 700)
+                owner.sendMessage(id, alice, next).getOrThrow()
+                assertEquals(listOf(next.id), reader.getRecentMessages(id, bob).first { it.isNotEmpty() }.map { it.id })
+
+                val attachmentMessage = next.copy(id = "attachment-selection", createdAt = 800, attachments = files.take(4))
+                owner.sendMessage(id, alice, attachmentMessage).getOrThrow()
+                val privateFile = files[0].referenceIn(attachmentMessage.id)
+                val sharedFiles = setOf(files[1], files[3]).mapTo(linkedSetOf()) { it.referenceIn(attachmentMessage.id) }
+                reader.deleteAttachments(id, bob, setOf(privateFile), forEveryone = false).getOrThrow()
+                assertEquals(files.subList(1, 4), reader.getChatInfoMessages(id, bob, 10).first().attachments)
+                val reopened = ChatRepositoryImpl(bobDb, DeletedMessagesRepositoryImpl(context))
+                assertEquals(files.subList(1, 4), reopened.getChatInfoMessages(id, bob, 10).first().attachments)
+                assertEquals(files.take(4), owner.getChatInfoMessages(id, alice, 10).first().attachments)
+                reader.deleteAttachments(id, bob, sharedFiles, forEveryone = true).getOrThrow()
+                val retained = owner.getChatInfoMessages(id, alice, 10).first()
+                assertEquals(listOf(files[0], files[2]), retained.attachments)
+                assertEquals(attachmentMessage.text, retained.text)
+                assertEquals(listOf(files[2]), reader.getChatInfoMessages(id, bob, 10).first().attachments)
+
+                val fileOnly = next.copy(id = "file-only", text = "", createdAt = 900, attachments = files.take(1))
+                owner.sendMessage(id, alice, fileOnly).getOrThrow()
+                reader.deleteAttachments(id, bob, setOf(files.first().referenceIn(fileOnly.id)), forEveryone = true).getOrThrow()
+                assertFalse(chat.collection("messages").document(fileOnly.id).get().await().exists())
             } finally {
                 scope.cancel()
                 clients.forEach { (app, _, db) -> db.terminate().await(); app.delete() }

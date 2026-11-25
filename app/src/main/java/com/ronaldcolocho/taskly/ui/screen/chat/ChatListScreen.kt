@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,14 +15,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -29,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -41,12 +46,10 @@ import coil.compose.AsyncImage
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.UserProfile
 import com.ronaldcolocho.taskly.ui.theme.ChatAccent
-import com.ronaldcolocho.taskly.ui.theme.ChatDivider
-import com.ronaldcolocho.taskly.ui.theme.ChatGreen
+import com.ronaldcolocho.taskly.ui.theme.ChatActionGradient
+import com.ronaldcolocho.taskly.ui.theme.ChatMuted
+import com.ronaldcolocho.taskly.ui.theme.ChatText
 import kotlinx.coroutines.flow.distinctUntilChanged
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 private val AvatarPalette = listOf(
     Color(0xFF6366F1), // Indigo-500
@@ -73,9 +76,15 @@ private fun initialsFromName(name: String): String {
     }
 }
 
-private fun formatTime(epochMs: Long): String {
-    val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-    return fmt.format(Date(epochMs))
+private enum class ChatListFilter(val label: String) {
+    ALL("Todos"), UNREAD("No leídos"), GROUPS("Grupos"), PERSONAL("Personales");
+
+    fun includes(chat: ChatConversation) = when (this) {
+        ALL -> true
+        UNREAD -> chat.unreadCount > 0
+        GROUPS -> chat.isGroup
+        PERSONAL -> !chat.isGroup
+    }
 }
 
 @Composable
@@ -89,6 +98,7 @@ fun ChatListScreen(
     val openConversation by viewModel.openConversation.collectAsStateWithLifecycle()
     val currentUserId = viewModel.currentUserId
     var showNewConversation by rememberSaveable { mutableStateOf(false) }
+    var filter by rememberSaveable { mutableStateOf(ChatListFilter.ALL) }
     val showingArchived = (uiState as? ChatListUiState.Success)?.showingArchived == true
 
     LaunchedEffect(openConversation) {
@@ -98,41 +108,45 @@ fun ChatListScreen(
         viewModel.consumeOpenConversation(conversationId)
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // Header
-        Surface(color = MaterialTheme.colorScheme.surface) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (showingArchived) "Archivados" else "Chats",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                if (showingArchived) {
-                    IconButton(onClick = { viewModel.showArchived(false) }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Volver a chats")
-                    }
-                } else {
-                    IconButton(onClick = onNavigateToGlobalSearch) {
-                        Icon(Icons.Default.Search, contentDescription = "Busqueda global")
-                    }
-                    IconButton(onClick = { viewModel.showArchived(true) }) {
-                        Icon(Icons.Default.Archive, contentDescription = "Ver archivados")
-                    }
-                    IconButton(onClick = { showNewConversation = true }) {
-                        Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "Nueva conversacion",
-                            tint = ChatAccent
-                        )
-                    }
+    Column(modifier = Modifier.fillMaxSize().chatDirectoryBackground()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (showingArchived) "Archivados" else "Chats",
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+                color = ChatText,
+                modifier = Modifier.weight(1f)
+            )
+            if (showingArchived) {
+                IconButton(onClick = { viewModel.showArchived(false) }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver a chats")
+                }
+            } else {
+                IconButton(onClick = onNavigateToGlobalSearch) {
+                    Icon(Icons.Outlined.Search, contentDescription = "Búsqueda global", tint = ChatText)
+                }
+                IconButton(onClick = { viewModel.showArchived(true) }) {
+                    Icon(Icons.Outlined.Archive, contentDescription = "Ver archivados", tint = ChatText)
+                }
+                IconButton(
+                    onClick = { showNewConversation = true },
+                    modifier = Modifier.padding(start = 4.dp).size(46.dp).clip(CircleShape).background(ChatActionGradient)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Edit,
+                        contentDescription = "Nueva conversación",
+                        tint = MaterialTheme.colorScheme.onPrimary
+                    )
                 }
             }
+        }
+        if (!showingArchived) {
+            ChatDirectoryFilters(ChatListFilter.entries, filter, ChatListFilter::label) { filter = it }
         }
 
         when (val state = uiState) {
@@ -147,47 +161,27 @@ fun ChatListScreen(
                 }
             }
             is ChatListUiState.Success -> {
-                val listState = rememberLazyListState()
+                val activeFilter = if (showingArchived) ChatListFilter.ALL else filter
+                val visible = remember(state.conversations, activeFilter) { state.conversations.filter(activeFilter::includes) }
+                val listState = key(activeFilter, showingArchived) { rememberLazyListState() }
 
-                if (state.conversations.isEmpty()) {
+                if (visible.isEmpty()) {
+                    LaunchedEffect(activeFilter, state.conversations.size, state.isLoadingMore, state.hasMore) {
+                        if (state.hasMore && !state.isLoadingMore) viewModel.loadMore()
+                    }
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(
-                                        ChatAccent.copy(alpha = 0.12f)
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Add,
-                                    contentDescription = null,
-                                    tint = ChatAccent,
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
+                        if (state.isLoadingMore || state.hasMore) {
+                            CircularProgressIndicator(color = ChatAccent)
+                        } else {
                             Text(
                                 text = when {
                                     state.searchQuery.isNotBlank() -> "Sin resultados"
                                     state.showingArchived -> "Sin conversaciones archivadas"
+                                    activeFilter != ChatListFilter.ALL -> "Sin chats en este filtro"
                                     else -> "Sin conversaciones"
                                 },
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = when {
-                                    state.searchQuery.isNotBlank() -> "Prueba con otro nombre o telefono."
-                                    state.showingArchived -> "Los chats que archives apareceran aqui."
-                                    else -> "Toca el lapiz arriba para contactar a alguien."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = ChatMuted,
+                                fontSize = 14.sp
                             )
                         }
                     }
@@ -195,10 +189,10 @@ fun ChatListScreen(
                     val conversationsById = remember(state.conversations) {
                         state.conversations.associateBy(ChatConversation::id)
                     }
-                    val shouldLoadMore by remember(listState, state.conversations.size) {
+                    val shouldLoadMore by remember(listState, visible.size) {
                         derivedStateOf {
                             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                            lastVisible >= state.conversations.lastIndex - 4
+                            lastVisible >= visible.lastIndex - 4
                         }
                     }
                     LaunchedEffect(shouldLoadMore, state.hasMore, state.isLoadingMore) {
@@ -219,19 +213,17 @@ fun ChatListScreen(
                         onDispose { viewModel.setVisiblePresenceUserIds(emptySet()) }
                     }
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                        items(state.conversations, key = { it.id }) { conv ->
+                        items(visible, key = { it.id }) { conv ->
                             val otherUserId = conv.participantIds.firstOrNull { it != currentUserId }
                             ConversationItem(
                                 conv = conv,
                                 currentUserId = currentUserId,
                                 isOnline = otherUserId != null &&
                                     state.presenceByUserId[otherUserId]?.isOnlineNow() == true,
-                                isSelected = false,
                                 onClick = { onNavigateToChat(conv.id) },
                                 onTogglePinned = { viewModel.togglePinned(conv) },
                                 onToggleArchived = { viewModel.toggleArchived(conv) }
                             )
-                            HorizontalDivider(color = ChatDivider.copy(alpha = 0.6f))
                         }
                         if (state.isLoadingMore) {
                             item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
@@ -382,186 +374,83 @@ private fun ProfileSearchResult(profile: UserProfile, onClick: () -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationItem(
     conv: ChatConversation,
     currentUserId: String,
     isOnline: Boolean,
-    isSelected: Boolean,
     onClick: () -> Unit,
     onTogglePinned: () -> Unit,
     onToggleArchived: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    val isGroup = conv.isGroup
-    val isSelf = !isGroup && (conv.participantIds.size == 1 ||
-            (conv.participantIds.size == 2 && conv.participantIds.all { it == currentUserId }))
-
-    val otherId = if (isSelf) currentUserId
-    else conv.participantIds.firstOrNull { it != currentUserId } ?: currentUserId
-
-    val displayName = when {
-        isGroup -> conv.name?.takeIf { it.isNotBlank() } ?: "Grupo"
-        isSelf -> "Mensajes guardados"
-        else -> conv.members[otherId]?.displayName ?: "Usuario"
+    val unread = conv.unreadCount > 0 && !conv.isMuted
+    val attachmentName = conv.lastMessage.takeIf { it.startsWith("📎 ") }?.removePrefix("📎 ")
+    val voice = attachmentName?.startsWith("voice_", ignoreCase = true) == true
+    val preview = when {
+        voice -> "Nota de voz"
+        attachmentName != null -> attachmentName
+        conv.lastMessage.isNotBlank() -> conv.lastMessage
+        conv.isGroup -> "${conv.participantIds.size} miembros"
+        conv.isSelfChat(currentUserId) -> "Escríbete a ti mismo"
+        else -> ""
     }
 
-    val photoUrl = if (isGroup || isSelf) null
-    else conv.members[otherId]?.photoURL?.takeIf { it.isNotBlank() }
-
-    val subtitle = when {
-        isGroup -> {
-            val memberCount = "${conv.members.size} miembros"
-            if (conv.lastMessage.isBlank()) memberCount
-            else "$memberCount · ${conv.lastMessage}"
-        }
-        isSelf && conv.lastMessage.isBlank() -> "Escribete a ti mismo"
-        else -> conv.lastMessage
-    }
-
-    val rowBg = if (isSelected) ChatAccent.copy(alpha = 0.10f) else Color.Transparent
-    val timeLabel = remember(conv.lastMessageAt) {
-        conv.lastMessageAt.takeIf { it > 0 }?.let(::formatTime)
-    }
-    val initials = remember(displayName) { initialsFromName(displayName) }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(rowBg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Avatar (+11% more: 46dp)
-        Box(modifier = Modifier.size(46.dp)) {
-            if (!photoUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = photoUrl,
-                    contentDescription = displayName,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape)
-                        .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                )
-            } else {
-                val bgColor = avatarColor(if (isGroup) conv.id else otherId)
-                Box(
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape)
-                        .background(bgColor),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (isGroup) (conv.name ?: "G").take(1).uppercase()
-                        else initials,
-                        color = Color.White,
-                        fontSize = 15.5.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+    Box {
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .combinedClickable(role = Role.Button, onClick = onClick, onLongClickLabel = "Acciones del chat",
+                    onLongClick = { showMenu = true })
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            ChatDirectoryAvatar(conv, currentUserId, 54.dp, online = isOnline)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(conv.chatTitle(currentUserId), Modifier.weight(1f, fill = false), color = ChatText,
+                        fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (conv.isMuted) Icon(Icons.Outlined.NotificationsOff, "Chat silenciado", Modifier.size(14.dp), tint = ChatMuted)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    if (attachmentName != null) {
+                        Icon(if (voice) Icons.Outlined.Mic else Icons.Outlined.AttachFile, null, Modifier.size(16.dp), tint = ChatMuted)
+                    }
+                    if (preview.isNotBlank()) {
+                        Text(preview, color = ChatMuted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
-
-            // Online dot (bottom-right)
-            if (!isSelf && !isGroup && isOnline) {
-                Box(
-                    modifier = Modifier
-                        .size(14.dp)
-                        .align(Alignment.BottomEnd)
-                        .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                        .clip(CircleShape)
-                        .background(ChatGreen)
-                )
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                val time = chatDirectoryTime(conv.lastMessageAt)
+                if (time.isNotEmpty()) Text(time, color = if (unread) ChatAccent else ChatMuted,
+                    fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                if (unread) {
+                    Box(Modifier.defaultMinSize(minWidth = 22.dp, minHeight = 22.dp).background(ChatAccent, CircleShape)
+                        .padding(horizontal = 5.dp), contentAlignment = Alignment.Center) {
+                        Text(if (conv.unreadCount > 99) "99+" else conv.unreadCount.toString(),
+                            color = MaterialTheme.colorScheme.onPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                } else if (time.isNotEmpty()) {
+                    Spacer(Modifier.height(22.dp))
+                }
             }
         }
-
-        // Text column
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                if (timeLabel != null) {
-                    Text(
-                        text = timeLabel,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Box {
-                    IconButton(onClick = { showMenu = true }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Acciones de conversacion")
-                    }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        if (!conv.isArchived) {
-                            DropdownMenuItem(
-                                text = { Text(if (conv.isPinned) "Desfijar" else "Fijar") },
-                                onClick = { showMenu = false; onTogglePinned() }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text(if (conv.isArchived) "Desarchivar" else "Archivar") },
-                            leadingIcon = {
-                                Icon(
-                                    if (conv.isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = { showMenu = false; onToggleArchived() }
-                        )
-                    }
-                }
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            if (!conv.isArchived) {
+                DropdownMenuItem(text = { Text(if (conv.isPinned) "Desfijar" else "Fijar") }, onClick = {
+                    showMenu = false
+                    onTogglePinned()
+                })
             }
-            Spacer(modifier = Modifier.height(2.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = subtitle,
-                    fontSize = 12.sp,
-                    color = if (conv.unreadCount > 0)
-                        MaterialTheme.colorScheme.onSurface
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = if (conv.unreadCount > 0) FontWeight.Bold else FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                if (conv.unreadCount > 0) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
-                            .clip(CircleShape)
-                            .background(ChatAccent),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (conv.unreadCount > 99) "99+" else conv.unreadCount.toString(),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 5.dp)
-                        )
-                    }
-                }
-            }
+            DropdownMenuItem(
+                text = { Text(if (conv.isArchived) "Desarchivar" else "Archivar") },
+                leadingIcon = {
+                    Icon(if (conv.isArchived) Icons.Default.Unarchive else Icons.Default.Archive, contentDescription = null)
+                },
+                onClick = { showMenu = false; onToggleArchived() }
+            )
         }
     }
 }

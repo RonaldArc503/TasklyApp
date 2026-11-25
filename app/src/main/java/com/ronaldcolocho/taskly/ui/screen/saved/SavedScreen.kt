@@ -41,6 +41,7 @@ import com.ronaldcolocho.taskly.domain.model.AttachmentKind
 import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import com.ronaldcolocho.taskly.ui.screen.chat.AttachmentLightbox
+import com.ronaldcolocho.taskly.ui.screen.chat.ChatVideoDialog
 import com.ronaldcolocho.taskly.ui.screen.chat.LightboxItem
 import com.ronaldcolocho.taskly.ui.screen.chat.rememberMediaDownloadManager
 import com.ronaldcolocho.taskly.ui.theme.*
@@ -61,6 +62,8 @@ fun SavedScreen(
     val scope = rememberCoroutineScope()
     val mediaManager = rememberMediaDownloadManager()
     var lightboxItems by remember { mutableStateOf<List<LightboxItem>?>(null) }
+    var lightboxIndex by remember { mutableStateOf(0) }
+    var videoItem by remember { mutableStateOf<LightboxItem?>(null) }
     var showSortMenu by remember { mutableStateOf(false) }
 
     fun openOriginal(item: SavedItem) {
@@ -69,7 +72,12 @@ fun SavedScreen(
 
     fun openAttachment(item: SavedItem, attachment: ChatAttachment) {
         when (attachment.kind) {
-            AttachmentKind.IMAGE -> lightboxItems = listOf(LightboxItem(attachment, item.text))
+            AttachmentKind.IMAGE -> {
+                val photos = item.attachments.filter { it.kind == AttachmentKind.IMAGE }
+                lightboxIndex = photos.indexOf(attachment).coerceAtLeast(0)
+                lightboxItems = photos.map { LightboxItem(it, item.text, item.senderName, createdAt = item.createdAt) }
+            }
+            AttachmentKind.VIDEO -> videoItem = LightboxItem(attachment, item.text, item.senderName, createdAt = item.createdAt)
             AttachmentKind.PDF, AttachmentKind.DOC, AttachmentKind.FILE -> scope.launch {
                 val local = mediaManager.fileFor(attachment.publicId, MediaKind.DOCUMENT)
                     ?: mediaManager.awaitLocalFile(attachment.publicId, attachment.url, MediaKind.DOCUMENT)
@@ -221,11 +229,12 @@ fun SavedScreen(
     lightboxItems?.let { items ->
         AttachmentLightbox(
             items = items,
-            initialIndex = 0,
+            initialIndex = lightboxIndex,
             mediaManager = mediaManager,
             onClose = { lightboxItems = null }
         )
     }
+    videoItem?.let { ChatVideoDialog(it, mediaManager, onClose = { videoItem = null }) }
 
     if (selectedItem != null) {
         ModalBottomSheet(

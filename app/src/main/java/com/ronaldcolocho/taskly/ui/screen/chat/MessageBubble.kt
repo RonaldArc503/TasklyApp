@@ -1,5 +1,6 @@
 package com.ronaldcolocho.taskly.ui.screen.chat
 
+import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -17,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -31,8 +34,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import coil.compose.AsyncImage
@@ -59,7 +66,9 @@ import com.ronaldcolocho.taskly.domain.model.MediaKind
 import com.ronaldcolocho.taskly.domain.model.ReplyInfo
 import com.ronaldcolocho.taskly.domain.util.findMentionRanges
 import com.ronaldcolocho.taskly.domain.util.formatBytes
+import com.ronaldcolocho.taskly.domain.util.formatDuration
 import com.ronaldcolocho.taskly.domain.util.formatTime
+import com.ronaldcolocho.taskly.domain.util.videoThumbnailUrl
 import com.ronaldcolocho.taskly.media.MediaDownloadManager
 import com.ronaldcolocho.taskly.ui.theme.ChatAccent
 import com.ronaldcolocho.taskly.ui.theme.ChatAccentContainer
@@ -107,7 +116,7 @@ fun MessageBubble(
     onLongPress: (ChatMessage) -> Unit,
     onRetry: (ChatMessage) -> Unit,
     onReact: (ChatMessage, String) -> Unit,
-    onImageClick: (ChatAttachment) -> Unit,
+    onMediaClick: (ChatAttachment) -> Unit,
     onOpenFile: (ChatAttachment, File) -> Unit,
     onReplyClick: (String) -> Unit,
     onLinkClick: (String) -> Unit,
@@ -153,43 +162,35 @@ fun MessageBubble(
     if (threadMode) {
         ThreadMessageBlock(
             message, currentUserId, members, isPinned, audioController, mediaManager,
-            onLongPress, onRetry, onReact, onImageClick, onOpenFile, onLinkClick,
+            onLongPress, onRetry, onReact, onMediaClick, onOpenFile, onLinkClick,
             replyCount, lastReplySenderId, onOpenThread,
             modifier = blockModifier
         )
         return
     }
-    val hasAudioOnly = message.attachments.isNotEmpty() &&
-            message.attachments.all { it.kind == AttachmentKind.AUDIO } &&
-            message.text.isBlank() &&
-            message.replyTo == null &&
-            message.forwardedFrom == null
-    val hasImagesOnly = message.attachments.isNotEmpty() &&
-            message.attachments.all { it.kind == AttachmentKind.IMAGE } &&
-            message.text.isBlank()
     val hasMedia = message.attachments.any { it.kind == AttachmentKind.IMAGE || it.kind == AttachmentKind.VIDEO }
 
     val bubbleShape = if (isMe) {
-        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
+        RoundedCornerShape(topStart = 20.dp, topEnd = 6.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
     } else {
-        RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp)
+        RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
     }
 
     Column(
         modifier = blockModifier,
         horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
     ) {
-        if (showAuthor && !isMe) {
-            val mentionedMe = message.mentions.contains(currentUserId)
+        val mentionedMe = !isMe && message.mentions.contains(currentUserId)
+        if ((showAuthor && !isMe) || mentionedMe) {
             Row(
                 modifier = Modifier.padding(start = 14.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
+                if (showAuthor && !isMe) Text(
                     text = authorName ?: "Usuario",
-                    fontSize = 12.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = authorTextColor(message.senderId)
+                    color = authorTextColor(message.senderId, members.map.keys)
                 )
                 if (mentionedMe) {
                     Text(
@@ -203,16 +204,8 @@ fun MessageBubble(
             }
         }
 
-        val bubbleBg = when {
-            isMe -> ChatOutgoing
-            hasAudioOnly -> ChatSurfaceRaised
-            else -> MaterialTheme.colorScheme.surface
-        }
-        val bubbleBorder = when {
-            isMe -> ChatOutgoingBorder
-            hasAudioOnly -> ChatDivider
-            else -> Slate200
-        }
+        val bubbleBg = if (isMe) ChatOutgoing else ChatSurfaceRaised
+        val bubbleBorder = if (isMe) ChatOutgoingBorder else ChatDivider
 
         Box(
             modifier = Modifier
@@ -230,10 +223,7 @@ fun MessageBubble(
                         color = bubbleBg,
                         shape = bubbleShape
                     )
-                    .then(
-                        if (bubbleBorder != null) Modifier.border(1.dp, bubbleBorder, bubbleShape)
-                        else Modifier
-                    )
+                    .border(1.dp, bubbleBorder, bubbleShape)
                     .then(
                         when {
                             savedFocused -> Modifier.border(2.dp, Color.White.copy(alpha = 0.92f), bubbleShape)
@@ -243,24 +233,20 @@ fun MessageBubble(
                         }
                     )
             ) {
-                if (hasImagesOnly) {
-                    ImageOnlyBubble(message, bubbleShape, isPinned, onImageClick, { onLongPress(message) }, mediaManager)
-                } else {
-                    ContentBubble(
-                        message = message,
-                        isMe = isMe,
-                        currentUserId = currentUserId,
-                        members = members,
-                        isPinned = isPinned,
-                        audioController = audioController,
-                        mediaManager = mediaManager,
-                        onImageClick = onImageClick,
-                        onOpenFile = onOpenFile,
-                        onLongPress = { onLongPress(message) },
-                        onReplyClick = onReplyClick,
-                        onLinkClick = onLinkClick
-                    )
-                }
+                ContentBubble(
+                    message = message,
+                    isMe = isMe,
+                    currentUserId = currentUserId,
+                    members = members,
+                    isPinned = isPinned,
+                    audioController = audioController,
+                    mediaManager = mediaManager,
+                    onMediaClick = onMediaClick,
+                    onOpenFile = onOpenFile,
+                    onLongPress = { onLongPress(message) },
+                    onReplyClick = onReplyClick,
+                    onLinkClick = onLinkClick
+                )
             }
         }
 
@@ -281,7 +267,7 @@ fun MessageBubble(
                     .clickable { onRetry(message) }
             )
         }
-        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -296,7 +282,7 @@ private fun ThreadMessageBlock(
     onLongPress: (ChatMessage) -> Unit,
     onRetry: (ChatMessage) -> Unit,
     onReact: (ChatMessage, String) -> Unit,
-    onImageClick: (ChatAttachment) -> Unit,
+    onMediaClick: (ChatAttachment) -> Unit,
     onOpenFile: (ChatAttachment, File) -> Unit,
     onLinkClick: (String) -> Unit,
     replyCount: Int,
@@ -331,34 +317,27 @@ private fun ThreadMessageBlock(
         }
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(name, color = authorTextColor(message.senderId, members.map.keys), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 Spacer(Modifier.width(8.dp))
                 Text(formatTime(message.createdAt), color = Slate500, fontSize = 12.sp)
             }
             Spacer(Modifier.height(4.dp))
-            if (message.attachments.isNotEmpty() && message.text.isBlank() &&
-                message.attachments.all { it.kind == AttachmentKind.IMAGE }
-            ) {
-                ImageOnlyBubble(message, RoundedCornerShape(12.dp), isPinned, onImageClick,
-                    { onLongPress(message) }, mediaManager)
-            } else {
-                ContentBubble(
-                    message = message,
-                    isMe = false,
-                    currentUserId = currentUserId,
-                    members = members,
-                    isPinned = isPinned,
-                    audioController = audioController,
-                    mediaManager = mediaManager,
-                    onImageClick = onImageClick,
-                    onOpenFile = onOpenFile,
-                    onLongPress = { onLongPress(message) },
-                    onReplyClick = {},
-                    onLinkClick = onLinkClick,
-                    showReplyQuote = false,
-                    showTime = false
-                )
-            }
+            ContentBubble(
+                message = message,
+                isMe = false,
+                currentUserId = currentUserId,
+                members = members,
+                isPinned = isPinned,
+                audioController = audioController,
+                mediaManager = mediaManager,
+                onMediaClick = onMediaClick,
+                onOpenFile = onOpenFile,
+                onLongPress = { onLongPress(message) },
+                onReplyClick = {},
+                onLinkClick = onLinkClick,
+                showReplyQuote = false,
+                showTime = false
+            )
             ReactionsRow(message, false, currentUserId, { emoji -> onReact(message, emoji) })
             if (replyCount > 0) {
                 Row(
@@ -409,7 +388,7 @@ private fun ContentBubble(
     isPinned: Boolean,
     audioController: AudioPlayerController,
     mediaManager: MediaDownloadManager,
-    onImageClick: (ChatAttachment) -> Unit,
+    onMediaClick: (ChatAttachment) -> Unit,
     onOpenFile: (ChatAttachment, File) -> Unit,
     onLongPress: () -> Unit,
     onReplyClick: (String) -> Unit,
@@ -418,17 +397,23 @@ private fun ContentBubble(
     showTime: Boolean = true
 ) {
     val textColor = if (isMe) Color.White else ChatText
-    val subColor = if (isMe) Indigo200 else ChatMuted
+    val subColor = ChatMuted
     val isAudioOnly = message.attachments.isNotEmpty() &&
             message.attachments.all { it.kind == AttachmentKind.AUDIO } &&
             message.text.isBlank() &&
             message.replyTo == null &&
             message.forwardedFrom == null
+    val images = message.attachments.takeIf { it.isNotEmpty() && it.all { item -> item.kind == AttachmentKind.IMAGE } }
+    val singleVideo = message.attachments.singleOrNull()?.takeIf { it.kind == AttachmentKind.VIDEO }
+    val isVisual = images != null || singleVideo != null
+    val timeOverMedia = showTime && isVisual && message.text.isBlank()
 
     val containerPadding = if (!showTime) {
         PaddingValues(0.dp)
+    } else if (isVisual) {
+        PaddingValues(4.dp)
     } else if (isAudioOnly) {
-        PaddingValues(start = 4.dp, top = 8.dp, end = 4.dp, bottom = 4.dp)
+        PaddingValues(horizontal = 12.dp, vertical = 8.dp)
     } else {
         PaddingValues(horizontal = 14.dp, vertical = 8.dp)
     }
@@ -458,40 +443,52 @@ private fun ContentBubble(
             Spacer(modifier = Modifier.height(4.dp))
         }
 
-        message.attachments.forEachIndexed { index, att ->
-            AttachmentItem(
-                att = att,
-                isMe = isMe,
-                audioController = audioController,
-                mediaManager = mediaManager,
-                onImageClick = { onImageClick(att) },
-                onLongPress = onLongPress,
-                onOpenFile = onOpenFile
-            )
-            if (!isAudioOnly && (index < message.attachments.lastIndex || message.text.isNotBlank())) {
-                Spacer(modifier = Modifier.height(4.dp))
+        val timeInAudioCard = showTime && isAudioOnly && message.attachments.size == 1
+        val audioTime: (@Composable () -> Unit)? = if (timeInAudioCard) {
+            {
+                MessageTimeRow(message, isMe, isPinned, subColor)
+            }
+        } else null
+        val mediaTime: (@Composable () -> Unit)? = if (timeOverMedia) {
+            {
+                MediaPill {
+                    MessageTimeRow(message, isMe, isPinned, Color.White)
+                }
+            }
+        } else null
+        when {
+            images != null -> ImageAlbum(images, mediaManager, onMediaClick, onLongPress, mediaTime)
+            singleVideo != null -> ChatVideoThumbnail(singleVideo, { onMediaClick(singleVideo) }, onLongPress, mediaTime)
+            else -> message.attachments.forEachIndexed { index, att ->
+                AttachmentItem(
+                    att = att,
+                    isMe = isMe,
+                    audioController = audioController,
+                    mediaManager = mediaManager,
+                    onMediaClick = { onMediaClick(att) },
+                    onLongPress = onLongPress,
+                    onOpenFile = onOpenFile,
+                    audioTime = audioTime
+                )
+                if (!isAudioOnly && (index < message.attachments.lastIndex || message.text.isNotBlank())) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
             }
         }
 
         if (message.text.isNotBlank()) {
-            val annotated = remember(message.id, message.text, isMe, members) {
-                buildMessageText(message.text, isMe, members, onLinkClick)
+            Box(if (isVisual) Modifier.width(248.dp).padding(horizontal = 10.dp).padding(top = 8.dp) else Modifier) {
+                MessageText(message.text, isMe, members, textColor, onLinkClick, onLongPress)
             }
-            Text(
-                text = annotated,
-                fontSize = 15.sp,
-                lineHeight = 20.sp,
-                color = textColor
-            )
         }
 
-        if (showTime) MessageTimeRow(
+        if (showTime && !timeInAudioCard && !timeOverMedia) MessageTimeRow(
             message = message,
             isMe = isMe,
             isPinned = isPinned,
             subColor = subColor,
-            isAudioOnly = isAudioOnly,
             modifier = Modifier.align(Alignment.End)
+                .padding(top = 2.dp, end = if (isVisual) 10.dp else 0.dp, bottom = if (isVisual) 4.dp else 0.dp)
         )
     }
 }
@@ -570,16 +567,10 @@ private fun MessageTimeRow(
     isMe: Boolean,
     isPinned: Boolean,
     subColor: Color,
-    isAudioOnly: Boolean,
     modifier: Modifier = Modifier
 ) {
     Row(
-        modifier = modifier
-            .padding(
-                top = if (isAudioOnly) 0.dp else 2.dp,
-                end = if (isAudioOnly) 4.dp else 0.dp,
-                bottom = if (isAudioOnly) 1.dp else 0.dp
-            ),
+        modifier = modifier,
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -587,31 +578,31 @@ private fun MessageTimeRow(
             Icon(
                 imageVector = Icons.Default.PushPin,
                 contentDescription = "Fijado",
-                modifier = Modifier.size(if (isAudioOnly) 10.dp else 12.dp),
+                modifier = Modifier.size(12.dp),
                 tint = subColor
             )
-            Spacer(modifier = Modifier.width(if (isAudioOnly) 2.dp else 4.dp))
+            Spacer(modifier = Modifier.width(4.dp))
         }
         if (message.edited) {
             Text(
                 text = "editado",
-                fontSize = if (isAudioOnly) 9.5.sp else 11.sp,
+                fontSize = 12.sp,
                 fontStyle = FontStyle.Italic,
-                color = subColor.copy(alpha = 0.8f),
-                modifier = Modifier.padding(end = if (isAudioOnly) 2.dp else 4.dp)
+                color = subColor,
+                modifier = Modifier.padding(end = 4.dp)
             )
         }
         Text(
             text = formatTime(message.createdAt),
-            fontSize = if (isAudioOnly) 9.5.sp else 11.sp,
+            fontSize = 12.sp,
             color = subColor
         )
         if (isMe) {
-            Spacer(modifier = Modifier.width(if (isAudioOnly) 2.dp else 4.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             when (message.status) {
                 MessageStatus.SENDING -> {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(if (isAudioOnly) 8.dp else 10.dp),
+                        modifier = Modifier.size(10.dp),
                         color = subColor,
                         strokeWidth = 1.dp
                     )
@@ -620,7 +611,7 @@ private fun MessageTimeRow(
                     Icon(
                         Icons.Default.Check,
                         contentDescription = null,
-                        modifier = Modifier.size(if (isAudioOnly) 10.dp else 12.dp),
+                        modifier = Modifier.size(12.dp),
                         tint = subColor
                     )
                 }
@@ -628,7 +619,7 @@ private fun MessageTimeRow(
                     Icon(
                         Icons.Default.Check,
                         contentDescription = null,
-                        modifier = Modifier.size(if (isAudioOnly) 10.dp else 12.dp),
+                        modifier = Modifier.size(12.dp),
                         tint = if (message.status == MessageStatus.READ) Emerald500 else subColor
                     )
                 }
@@ -636,7 +627,7 @@ private fun MessageTimeRow(
                     Icon(
                         Icons.Default.Warning,
                         contentDescription = null,
-                        modifier = Modifier.size(if (isAudioOnly) 10.dp else 12.dp),
+                        modifier = Modifier.size(12.dp),
                         tint = Color(0xFFF59E0B)
                     )
                 }
@@ -647,51 +638,68 @@ private fun MessageTimeRow(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ImageOnlyBubble(
-    message: ChatMessage,
-    shape: RoundedCornerShape,
-    isPinned: Boolean,
-    onImageClick: (ChatAttachment) -> Unit,
+private fun ImageAlbum(
+    images: List<ChatAttachment>,
+    mediaManager: MediaDownloadManager,
+    onMediaClick: (ChatAttachment) -> Unit,
     onLongPress: () -> Unit,
-    mediaManager: MediaDownloadManager
+    time: (@Composable () -> Unit)?
 ) {
-    val att = message.attachments.first()
-    Box(modifier = Modifier.clip(shape)) {
-        ChatImage(
-            att = att,
-            mediaManager = mediaManager,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(280.dp)
-                .combinedClickable(
-                    onClick = { onImageClick(att) },
-                    onLongClick = onLongPress
-                ),
-            contentScale = ContentScale.Crop,
-            shape = shape
-        )
-        Surface(
-            shape = CircleShape,
-            color = Color(0xFF0F172A).copy(alpha = 0.6f),
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 8.dp, bottom = 6.dp)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (isPinned) {
-                    Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(11.dp), tint = Color.White)
-                    Spacer(modifier = Modifier.width(4.dp))
+    Box(Modifier.width(248.dp).clip(RoundedCornerShape(16.dp))) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (images.size != 2) {
+                AlbumTile(
+                    images[0], mediaManager, Modifier.fillMaxWidth().aspectRatio(if (images.size == 1) 1.58f else 2f),
+                    0, onMediaClick, onLongPress
+                )
+            }
+            if (images.size > 1) {
+                val start = if (images.size == 2) 0 else 1
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    AlbumTile(images[start], mediaManager, Modifier.weight(1f).aspectRatio(1.14f), 0, onMediaClick, onLongPress)
+                    AlbumTile(
+                        images[start + 1], mediaManager, Modifier.weight(1f).aspectRatio(1.14f),
+                        (images.size - 3).coerceAtLeast(0), onMediaClick, onLongPress
+                    )
                 }
-                if (message.edited) {
-                    Text("editado", color = Color.White, fontSize = 11.sp, fontStyle = FontStyle.Italic)
-                    Spacer(modifier = Modifier.width(4.dp))
-                }
-                Text(formatTime(message.createdAt), color = Color.White, fontSize = 11.sp)
             }
         }
+        time?.let {
+            Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)) { it() }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AlbumTile(
+    image: ChatAttachment,
+    mediaManager: MediaDownloadManager,
+    modifier: Modifier,
+    hiddenCount: Int,
+    onMediaClick: (ChatAttachment) -> Unit,
+    onLongPress: () -> Unit
+) {
+    val label = if (hiddenCount > 0) "Ver álbum, $hiddenCount fotos más" else "Abrir foto"
+    Box(
+        modifier.background(Color(0xFF263448))
+            .combinedClickable(role = Role.Button, onClickLabel = label, onClick = { onMediaClick(image) }, onLongClick = onLongPress)
+            .semantics { contentDescription = image.name },
+        contentAlignment = Alignment.Center
+    ) {
+        ChatImage(image, mediaManager, Modifier.matchParentSize(), shape = RoundedCornerShape(0.dp))
+        if (hiddenCount > 0) {
+            Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.55f)), contentAlignment = Alignment.Center) {
+                Text("+$hiddenCount", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MediaPill(content: @Composable () -> Unit) {
+    Box(Modifier.background(Color(0xD910141D), CircleShape).padding(horizontal = 8.dp, vertical = 3.dp)) {
+        content()
     }
 }
 
@@ -702,9 +710,10 @@ private fun AttachmentItem(
     isMe: Boolean,
     audioController: AudioPlayerController,
     mediaManager: MediaDownloadManager,
-    onImageClick: () -> Unit,
+    onMediaClick: () -> Unit,
     onLongPress: () -> Unit,
-    onOpenFile: (ChatAttachment, File) -> Unit
+    onOpenFile: (ChatAttachment, File) -> Unit,
+    audioTime: (@Composable () -> Unit)?
 ) {
     when (att.kind) {
         AttachmentKind.IMAGE -> {
@@ -715,7 +724,7 @@ private fun AttachmentItem(
                     .fillMaxWidth()
                     .height(200.dp)
                     .combinedClickable(
-                        onClick = onImageClick,
+                        onClick = onMediaClick,
                         onLongClick = onLongPress
                     ),
                 contentScale = ContentScale.Crop,
@@ -723,17 +732,13 @@ private fun AttachmentItem(
             )
         }
         AttachmentKind.AUDIO -> {
-            AudioCard(att = att, isMe = isMe, controller = audioController, mediaManager = mediaManager)
+            AudioCard(
+                att = att, isMe = isMe, controller = audioController, mediaManager = mediaManager,
+                onSelectionLongClick = onLongPress, trailingStatus = audioTime
+            )
         }
         AttachmentKind.VIDEO -> {
-            FileCard(
-                att = att,
-                isMe = isMe,
-                mediaManager = mediaManager,
-                onOpenFile = onOpenFile,
-                subtitle = formatBytes(att.size),
-                actionLabel = "Reproducir"
-            )
+            ChatVideoThumbnail(att, onMediaClick, onLongPress)
         }
         else -> {
             FileCard(
@@ -748,14 +753,66 @@ private fun AttachmentItem(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileCard(
+private fun ChatVideoThumbnail(
+    attachment: ChatAttachment,
+    onPlay: () -> Unit,
+    onLongPress: () -> Unit,
+    time: (@Composable () -> Unit)? = null
+) {
+    val thumbnail = remember(attachment.url) { videoThumbnailUrl(attachment.url) }
+    Box(
+        modifier = Modifier
+            .width(248.dp)
+            .aspectRatio(1.58f)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF463B63), Color(0xFF211D33))))
+            .combinedClickable(
+                role = Role.Button,
+                onClickLabel = "Reproducir video",
+                onClick = onPlay,
+                onLongClick = onLongPress
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = thumbnail,
+            contentDescription = attachment.name,
+            modifier = Modifier.matchParentSize(),
+            contentScale = ContentScale.Crop
+        )
+        Box(
+            modifier = Modifier.size(56.dp).background(Color(0xD910141D), CircleShape)
+                .border(1.dp, Color.White.copy(alpha = 0.68f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.PlayArrow, null, Modifier.size(24.dp), tint = Color.White)
+        }
+        val duration = attachment.duration?.takeIf { it > 0 }?.let { formatDuration(it * 1000L) }
+        val info = listOfNotNull(attachment.size.takeIf { it > 0 }?.let(::formatBytes), duration)
+        Box(Modifier.align(Alignment.TopStart).padding(8.dp)) {
+            MediaPill {
+                Text(info.joinToString(" · ").ifEmpty { "Video" }, color = Color.White, fontSize = 12.sp)
+            }
+        }
+        time?.let {
+            Box(Modifier.align(Alignment.BottomStart).padding(8.dp)) { it() }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun FileCard(
     att: ChatAttachment,
     isMe: Boolean,
     mediaManager: MediaDownloadManager,
     onOpenFile: (ChatAttachment, File) -> Unit,
     subtitle: String,
-    actionLabel: String
+    actionLabel: String,
+    onSelectionClick: (() -> Unit)? = null,
+    onSelectionLongClick: (() -> Unit)? = null
 ) {
     val mediaId = att.publicId
     val kind = when (att.kind) {
@@ -856,7 +913,7 @@ private fun FileCard(
             color = actionColor,
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
-                .clickable { onAction() }
+                .combinedClickable(onClick = onSelectionClick ?: ::onAction, onLongClick = onSelectionLongClick)
                 .padding(horizontal = 8.dp, vertical = 6.dp)
         )
     }
@@ -896,25 +953,78 @@ private fun ReactionsRow(
     }
 }
 
-private fun buildMessageText(
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageText(
     text: String,
     isMe: Boolean,
     members: MemberDirectory,
-    onLinkClick: (String) -> Unit
+    color: Color,
+    onLinkClick: (String) -> Unit,
+    onLongPress: () -> Unit
+) {
+    val links = remember(text) {
+        linkRegex.findAll(text).mapNotNull { match ->
+            val url = match.value.replace(trailingPunctRegex, "")
+            val uri = Uri.parse(url)
+            if (uri.host.isNullOrBlank()) null else Triple(match.range.first, url, uri)
+        }.toList()
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        var position = 0
+        for ((start, url, uri) in links) {
+            val before = text.substring(position, start).trim()
+            if (before.isNotEmpty()) MessageParagraph(before, isMe, members, color)
+            val path = buildString {
+                append(uri.encodedPath.orEmpty().ifEmpty { "/" })
+                uri.encodedQuery?.let { append('?').append(it) }
+                uri.encodedFragment?.let { append('#').append(it) }
+            }
+            val shape = RoundedCornerShape(12.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(shape)
+                    .background(Color(0xFF121820))
+                    .drawBehind {
+                        val width = 3.dp.toPx()
+                        drawRect(ChatAccent, size = Size(width, size.height))
+                    }
+                    .combinedClickable(
+                        role = Role.Button,
+                        onClickLabel = "Abrir enlace",
+                        onClick = { onLinkClick(url) },
+                        onLongClick = onLongPress
+                    )
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(Icons.Default.Link, contentDescription = null, tint = ChatAccent, modifier = Modifier.size(18.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(uri.host.orEmpty(), color = ChatMuted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(path, color = ChatAccent, fontSize = 14.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            position = start + url.length
+        }
+        val after = if (links.isEmpty()) text else text.substring(position).trim()
+        if (after.isNotEmpty()) MessageParagraph(after, isMe, members, color)
+    }
+}
+
+@Composable
+private fun MessageParagraph(text: String, isMe: Boolean, members: MemberDirectory, color: Color) {
+    val annotated = remember(text, isMe, members) { buildMessageText(text, isMe, members) }
+    Text(annotated, color = color, fontSize = 15.sp, lineHeight = 20.sp)
+}
+
+private fun buildMessageText(
+    text: String,
+    isMe: Boolean,
+    members: MemberDirectory
 ): AnnotatedString {
     val mentionRanges = findMentionRanges(text, members.map)
-    val linkColor = if (isMe) Indigo200 else Indigo600
     return buildAnnotatedString {
         append(text)
-        for (match in linkRegex.findAll(text)) {
-            val raw = match.value
-            val url = raw.replace(trailingPunctRegex, "")
-            if (url.isEmpty()) continue
-            val start = match.range.first
-            val end = start + url.length
-            addLink(androidx.compose.ui.text.LinkAnnotation.Clickable(tag = url, linkInteractionListener = { onLinkClick(url) }), start, end)
-            addStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline), start, end)
-        }
         for (r in mentionRanges) {
             val s = r.start.coerceAtMost(text.length)
             val e = r.end.coerceAtMost(text.length)

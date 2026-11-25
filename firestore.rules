@@ -53,6 +53,17 @@ service cloud.firestore {
           .hasOnly(['text', 'formatting', 'edited', 'editedAt', 'searchTerms', 'contentKinds']);
     }
 
+    function onlyAttachmentRemoval() {
+      let previous = resource.data.get('attachments', []);
+      let next = request.resource.data.get('attachments', []);
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['attachments', 'searchTerms', 'contentKinds']) &&
+        previous is list && next is list &&
+        next.size() < previous.size() &&
+        previous.toSet().hasAll(next.toSet()) &&
+        next.toSet().size() == next.size();
+    }
+
     // El cliente ajusta el contador del mensaje original en la misma
     // transacción que crea una respuesta, o al eliminar una respuesta.
     function onlyReplyCountChanged() {
@@ -77,15 +88,77 @@ service cloud.firestore {
         (group || (next.participantIds == previous.participantIds &&
           next.get('members', {}).diff(previous.get('members', {}))
             .affectedKeys().hasOnly([request.auth.uid]))) &&
+        validSharedHistoryCutoff(previous, next) &&
         next.diff(previous).affectedKeys().hasOnly([
           'unread', 'lastMessage', 'lastMessageAt', 'pinnedMessages',
-          'name', 'members', 'participantIds'
+          'name', 'members', 'participantIds', 'sharedDeletedThrough'
         ]);
     }
 
+    function validSharedHistoryCutoff(previous, next) {
+      let cutoff = next.get('sharedDeletedThrough', -1);
+      let previousCutoff = previous.get('sharedDeletedThrough', -1);
+      return cutoff == previousCutoff ||
+        (cutoff is int && cutoff > previousCutoff &&
+          cutoff == previous.get('lastMessageAt', 0) &&
+          next.get('lastMessageAt', 0) == cutoff &&
+          next.participantIds == previous.participantIds);
+    }
+
+    function mediaReferenceWritesOpen() {
+      let lease = get(/databases/$(database)/documents/mediaCleanupControl/lease);
+      return lease == null || lease.data.until <= request.time;
+    }
+
+    function messageHasReference() {
+      let data = request.resource.data;
+      let text = data.get('text', '');
+      let quote = data.get('replyTo', {});
+      let quotedText = quote == null ? '' : quote.get('text', '');
+      return data.get('attachments', []).size() != 0 ||
+        (text is string && text.matches('(?is).*cloudinary\\.com.*')) ||
+        (quotedText is string && quotedText.matches('(?is).*cloudinary\\.com.*'));
+    }
+
+    function editsMediaLink() {
+      let text = request.resource.data.get('text', '');
+      return text != resource.data.get('text', '') &&
+        text is string && text.matches('(?is).*cloudinary\\.com.*');
+    }
+
+    function validMediaRemoval(conversationId, messageId) {
+      let message = /databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId);
+      let before = get(message);
+      let after = getAfter(message);
+      let remaining = after == null ? [] : after.data.get('attachments', []);
+      let removal = request.resource.data;
+      return before != null &&
+        removal.keys().hasOnly(['conversationId', 'messageId', 'senderId', 'attachments', 'createdAt']) &&
+        removal.senderId == before.data.senderId && removal.createdAt == request.time &&
+        removal.attachments is list && removal.attachments.size() > 0 &&
+        removal.attachments.toSet() ==
+          before.data.get('attachments', []).toSet().difference(remaining.toSet());
+    }
+
+    match /tasklyMediaRemovals/{removalId} {
+      allow create: if signedIn() &&
+        request.resource.data.conversationId is string &&
+        request.resource.data.conversationId.matches('[^/]+') &&
+        request.resource.data.messageId is string &&
+        request.resource.data.messageId.matches('[^/]+') &&
+        participant(request.resource.data.conversationId) &&
+        validMediaRemoval(request.resource.data.conversationId, request.resource.data.messageId);
+    }
+
     // Datos privados: tareas, recordatorios, guardados, etc.
-    match /users/{uid}/{document=**} {
+    match /users/{uid} {
       allow read, write: if own(uid);
+    }
+    match /users/{uid}/{collectionId}/{document=**} {
+      allow read, delete: if own(uid);
+      allow create, update: if own(uid) &&
+        (!(collectionId in ['saved', 'playlists', 'musicFavorites', 'reminders']) ||
+          mediaReferenceWritesOpen());
     }
 
     function sharedPlaylist(uid, playlistId) {
@@ -136,7 +209,12 @@ service cloud.firestore {
 
     match /profiles/{uid} {
       allow read: if signedIn();
-      allow create, update, delete: if own(uid);
+      allow create: if own(uid) &&
+        (request.resource.data.get('photoURL', '') == '' || mediaReferenceWritesOpen());
+      allow update: if own(uid) &&
+        (request.resource.data.get('photoURL', '') == resource.data.get('photoURL', '') ||
+          mediaReferenceWritesOpen());
+      allow delete: if own(uid);
     }
 
     // Evita que otro usuario secuestre el número de teléfono de alguien.
@@ -159,10 +237,14 @@ service cloud.firestore {
       allow list: if signedIn() && request.auth.uid in resource.data.participantIds;
 
       allow create: if signedIn() &&
-        request.auth.uid in request.resource.data.participantIds;
+        request.auth.uid in request.resource.data.participantIds &&
+        !('sharedDeletedThrough' in request.resource.data) &&
+        (request.resource.data.get('members', {}).size() == 0 || mediaReferenceWritesOpen());
 
       allow update: if participant(conversationId) &&
-        validConversationUpdate();
+        validConversationUpdate() &&
+        (request.resource.data.get('members', {}) == resource.data.get('members', {}) ||
+          mediaReferenceWritesOpen());
 
       allow delete: if false;
 
@@ -172,6 +254,7 @@ service cloud.firestore {
         allow create: if participant(conversationId) &&
           request.resource.data.senderId == request.auth.uid &&
           request.resource.data.get('conversationId', conversationId) == conversationId &&
+          (!messageHasReference() || mediaReferenceWritesOpen()) &&
           (!('attachments' in request.resource.data) ||
             (request.resource.data.attachments is list &&
               request.resource.data.attachments.size() <= 30));
@@ -180,7 +263,8 @@ service cloud.firestore {
         allow update: if participant(conversationId) && (
           onlyReactionChanged() ||
           onlyMessageSearchIndexChanged() ||
-          authorEditsOwnMessage() ||
+          (authorEditsOwnMessage() && (!editsMediaLink() || mediaReferenceWritesOpen())) ||
+          onlyAttachmentRemoval() ||
           onlyReplyCountChanged()
         );
 

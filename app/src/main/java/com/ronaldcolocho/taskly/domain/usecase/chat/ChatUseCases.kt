@@ -2,12 +2,16 @@ package com.ronaldcolocho.taskly.domain.usecase.chat
 
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
+import com.ronaldcolocho.taskly.domain.model.ChatSearchHit
 import com.ronaldcolocho.taskly.domain.model.ConversationUserState
 import com.ronaldcolocho.taskly.domain.model.ConversationReceipt
 import com.ronaldcolocho.taskly.domain.model.PinnedMessage
 import com.ronaldcolocho.taskly.domain.model.UserProfile
 import com.ronaldcolocho.taskly.domain.repository.IChatRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 
 class GetConversationsUseCase @Inject constructor(
@@ -18,11 +22,19 @@ class GetConversationsUseCase @Inject constructor(
     }
 }
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class GetRecentConversationsUseCase @Inject constructor(
     private val repository: IChatRepository
 ) {
-    operator fun invoke(userId: String, limit: Long): Flow<List<ChatConversation>> =
-        repository.getRecentConversations(userId, limit)
+    operator fun invoke(userId: String, limit: Long, includeDeleted: Boolean = false): Flow<List<ChatConversation>> {
+        val recent = repository.getRecentConversations(userId, limit)
+        if (includeDeleted) return recent
+        return recent.flatMapLatest { chats ->
+            if (chats.isEmpty()) flowOf(emptyList())
+            else repository.subscribeConversationStates(userId, chats.map(ChatConversation::id).toSet())
+                .map { states -> chats.filterNot { it.copy(deletedThrough = states[it.id]?.deletedThrough).isDeletedForMe } }
+        }
+    }
 }
 
 class GetOlderConversationsUseCase @Inject constructor(
@@ -166,8 +178,8 @@ class UpdateReadCursorUseCase @Inject constructor(private val repository: IChatR
 }
 
 class SearchGlobalMessagesUseCase @Inject constructor(private val repository: IChatRepository) {
-    suspend operator fun invoke(userId: String, query: String, limit: Long): List<ChatMessage> =
-        repository.searchGlobalMessages(userId, query, limit)
+    suspend operator fun invoke(userId: String, query: String, limit: Long): List<ChatSearchHit> =
+        repository.searchGlobalMessageHits(userId, query, limit)
 }
 
 class SendMessageUseCase @Inject constructor(

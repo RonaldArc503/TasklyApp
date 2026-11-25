@@ -19,6 +19,32 @@ val BricolageGrotesque = FontFamily(
     Font(R.font.bricolage_grotesque, FontWeight.ExtraBold)
 )
 
+internal val ChatFont = FontFamily(
+    Font(R.font.inter_regular, FontWeight.Normal),
+    Font(R.font.inter_semibold, FontWeight.SemiBold),
+    Font(R.font.inter_bold, FontWeight.Bold)
+)
+
+internal val ChatTypography = Typography().let { defaults ->
+    defaults.copy(
+        displayLarge = defaults.displayLarge.copy(fontFamily = ChatFont),
+        displayMedium = defaults.displayMedium.copy(fontFamily = ChatFont),
+        displaySmall = defaults.displaySmall.copy(fontFamily = ChatFont),
+        headlineLarge = defaults.headlineLarge.copy(fontFamily = ChatFont),
+        headlineMedium = defaults.headlineMedium.copy(fontFamily = ChatFont),
+        headlineSmall = defaults.headlineSmall.copy(fontFamily = ChatFont),
+        titleLarge = defaults.titleLarge.copy(fontFamily = ChatFont),
+        titleMedium = defaults.titleMedium.copy(fontFamily = ChatFont),
+        titleSmall = defaults.titleSmall.copy(fontFamily = ChatFont),
+        bodyLarge = defaults.bodyLarge.copy(fontFamily = ChatFont, letterSpacing = 0.sp),
+        bodyMedium = defaults.bodyMedium.copy(fontFamily = ChatFont, letterSpacing = 0.sp),
+        bodySmall = defaults.bodySmall.copy(fontFamily = ChatFont, letterSpacing = 0.sp),
+        labelLarge = defaults.labelLarge.copy(fontFamily = ChatFont),
+        labelMedium = defaults.labelMedium.copy(fontFamily = ChatFont),
+        labelSmall = defaults.labelSmall.copy(fontFamily = ChatFont)
+    )
+}
+
 // ── App-wide typography ────────────────────────────────────────
 val Typography = Typography(
     bodyLarge = TextStyle(

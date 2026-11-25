@@ -1,7 +1,9 @@
 package com.ronaldcolocho.taskly.domain.repository
 
 import com.ronaldcolocho.taskly.domain.model.ChatConversation
+import com.ronaldcolocho.taskly.domain.model.ChatAttachmentRef
 import com.ronaldcolocho.taskly.domain.model.ChatMessage
+import com.ronaldcolocho.taskly.domain.model.ChatSearchHit
 import com.ronaldcolocho.taskly.domain.model.ConversationUserState
 import com.ronaldcolocho.taskly.domain.model.ConversationReceipt
 import com.ronaldcolocho.taskly.domain.model.PinnedMessage
@@ -54,7 +56,11 @@ interface IChatRepository {
     suspend fun searchConversations(userId: String, normalizedPrefix: String, limit: Long): List<ChatConversation>
     suspend fun ensureConversationSearchIndexes(userId: String, conversations: List<ChatConversation>): Result<Unit>
     suspend fun setConversationPinned(userId: String, conversationId: String, pinned: Boolean): Result<Unit>
+    suspend fun setConversationMuted(userId: String, conversationId: String, muted: Boolean): Result<Unit>
+    suspend fun leaveGroup(userId: String, conversationId: String): Result<Unit>
     suspend fun setConversationArchived(userId: String, conversationId: String, archived: Boolean): Result<Unit>
+    suspend fun deleteConversationForMe(userId: String, conversationId: String): Result<Unit>
+    suspend fun deleteConversationForEveryone(userId: String, conversationId: String): Result<Unit>
     suspend fun searchMessages(convId: String, currentUserId: String, normalizedPrefix: String, limit: Long): List<ChatMessage>
     suspend fun ensureMessageSearchIndexes(convId: String, messages: List<ChatMessage>): Result<Unit>
     fun subscribeConversationReceipts(convId: String): Flow<Map<String, ConversationReceipt>>
@@ -71,7 +77,9 @@ interface IChatRepository {
         readAt: Long,
         clearUnread: Boolean
     ): Result<Unit>
-    suspend fun searchGlobalMessages(userId: String, normalizedPrefix: String, limit: Long): List<ChatMessage>
+    suspend fun searchGlobalMessages(userId: String, normalizedPrefix: String, limit: Long): List<ChatMessage> =
+        searchGlobalMessageHits(userId, normalizedPrefix, limit).map(ChatSearchHit::message)
+    suspend fun searchGlobalMessageHits(userId: String, normalizedPrefix: String, limit: Long): List<ChatSearchHit>
 
     suspend fun sendMessage(convId: String, currentUserId: String, message: ChatMessage): Result<Unit>
     suspend fun markAsRead(convId: String, currentUserId: String): Result<Unit>
@@ -79,6 +87,7 @@ interface IChatRepository {
     suspend fun toggleReaction(convId: String, msgId: String, uid: String, emoji: String): Result<Unit>
     suspend fun editMessage(convId: String, msgId: String, text: String): Result<Unit>
     suspend fun deleteMessage(convId: String, msgId: String): Result<Unit>
+    suspend fun deleteAttachments(convId: String, userId: String, attachments: Set<ChatAttachmentRef>, forEveryone: Boolean): Result<Unit>
     suspend fun pinMessage(convId: String, pinned: PinnedMessage): Result<Unit>
     suspend fun unpinMessage(convId: String, msgId: String): Result<Unit>
 

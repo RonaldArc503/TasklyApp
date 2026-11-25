@@ -23,7 +23,15 @@ private fun hashOf(value: String): Int {
 
 fun avatarColor(uid: String): Color = AvatarPalette[hashOf(uid) % AvatarPalette.size]
 
-fun authorTextColor(uid: String): Color = AvatarPalette[hashOf(uid) % AvatarPalette.size]
+private val ChatAuthorColors = listOf(
+    Color(0xFF8B9BFF), Color(0xFF5EEAD4), Color(0xFFF2B6DA),
+    Color(0xFFFFC77D), Color(0xFF9DDBA8), Color(0xFF9AD0F9)
+)
+
+fun authorTextColor(uid: String, memberIds: Set<String>): Color {
+    val position = memberIds.count { it < uid }
+    return ChatAuthorColors[position % ChatAuthorColors.size]
+}
 
 fun initialsOf(name: String): String {
     val words = name.trim().split(Regex("\\s+")).filter { it.isNotBlank() }

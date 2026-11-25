@@ -14,6 +14,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -23,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -33,17 +36,20 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -68,11 +74,15 @@ import com.ronaldcolocho.taskly.domain.util.formatLastSeen
 import com.ronaldcolocho.taskly.domain.util.sameDay
 import com.ronaldcolocho.taskly.domain.util.messagesInChatScope
 import com.ronaldcolocho.taskly.ui.state.ChatUiState
-import com.ronaldcolocho.taskly.ui.util.avatarColor
-import com.ronaldcolocho.taskly.ui.util.chatBackground
+import com.ronaldcolocho.taskly.ui.util.chatConversationBackground
 import com.ronaldcolocho.taskly.ui.util.initialsOf
 import com.ronaldcolocho.taskly.ui.theme.ChatAccent
 import com.ronaldcolocho.taskly.ui.theme.ChatAccentContainer
+import com.ronaldcolocho.taskly.ui.theme.ChatActionGradient
+import com.ronaldcolocho.taskly.ui.theme.ChatAvatarGradient
+import com.ronaldcolocho.taskly.ui.theme.ChatBarBorder
+import com.ronaldcolocho.taskly.ui.theme.ChatBarSurface
+import com.ronaldcolocho.taskly.ui.theme.ChatFont
 import com.ronaldcolocho.taskly.ui.theme.ChatDivider
 import com.ronaldcolocho.taskly.ui.theme.ChatError
 import com.ronaldcolocho.taskly.ui.theme.ChatGreen
@@ -106,6 +116,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
     onNavigateToInfo: (String) -> Unit = {},
+    onNavigateToMedia: (String) -> Unit = onNavigateToInfo,
     onNavigateToThread: (String, String) -> Unit = { _, _ -> },
     threadRootMessageId: String? = null
 ) {
@@ -118,6 +129,10 @@ fun ChatScreen(
     val savedFocusMessageId by viewModel.savedFocusMessageId.collectAsStateWithLifecycle()
     val messageSearch by viewModel.messageSearch.collectAsStateWithLifecycle()
     val voiceSendState by viewModel.voiceNoteSendState.collectAsStateWithLifecycle()
+    val profileAction by viewModel.profileAction.collectAsStateWithLifecycle()
+    val deletingChat by viewModel.deletingChat.collectAsStateWithLifecycle()
+    val deleteChatError by viewModel.deleteChatError.collectAsStateWithLifecycle()
+    val chatDeleted by viewModel.chatDeleted.collectAsStateWithLifecycle()
     val audioController = rememberAudioPlayerController()
     val mediaManager = rememberMediaDownloadManager()
 
@@ -128,29 +143,64 @@ fun ChatScreen(
     var messageToDeleteForMe by remember { mutableStateOf<ChatMessage?>(null) }
     var lightboxItems by remember { mutableStateOf<List<LightboxItem>?>(null) }
     var lightboxIndex by remember { mutableStateOf(0) }
+    var playingVideo by remember { mutableStateOf<LightboxItem?>(null) }
+    var mediaToDelete by remember { mutableStateOf<LightboxItem?>(null) }
     var pinnedIndex by remember { mutableStateOf(0) }
     var highlightedId by remember { mutableStateOf<String?>(null) }
     var showMessageSearch by rememberSaveable { mutableStateOf(false) }
+    var deleteConversationForEveryone by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var confirmLeaveGroup by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(profileAction) {
+        when (profileAction) {
+            "search" -> showMessageSearch = true
+            "deleteForMe" -> deleteConversationForEveryone = false
+            "deleteForEveryone" -> deleteConversationForEveryone = true
+            else -> return@LaunchedEffect
+        }
+        viewModel.consumeProfileAction()
+    }
+    LaunchedEffect(chatDeleted) { if (chatDeleted) onNavigateBack() }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val voiceRecorder = remember(context) { VoiceNoteRecorder(context) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableIntStateOf(0) }
     var showAttachmentSheet by rememberSaveable { mutableStateOf(false) }
+    var shareChoices by remember { mutableStateOf<List<AttachmentDraft>>(emptyList()) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
-    fun startVoiceRecording() {
-        voiceRecorder.start().onSuccess {
+    fun startVoiceRecording(): Boolean {
+        return voiceRecorder.start().onSuccess {
             recordingSeconds = 0
             isRecordingVoice = true
-        }.onFailure { viewModel.reportVoiceError(it.message ?: "No se pudo iniciar la grabacion.") }
+        }.onFailure { viewModel.reportVoiceError(it.message ?: "No se pudo iniciar la grabación.") }.isSuccess
+    }
+
+    fun stopVoiceRecording() {
+        if (!isRecordingVoice) return
+        voiceRecorder.stop()
+            .onSuccess { viewModel.sendVoiceNote(it.file, it.durationSeconds) }
+            .onFailure { viewModel.reportVoiceError("La nota de voz fue demasiado corta o no pudo guardarse.") }
+        isRecordingVoice = false
+        recordingSeconds = 0
+    }
+
+    fun cancelVoiceRecording() {
+        voiceRecorder.cancel()
+        isRecordingVoice = false
+        recordingSeconds = 0
     }
 
     val microphonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) startVoiceRecording()
-        else viewModel.reportVoiceError("Se necesita permiso de microfono para grabar notas de voz.")
+        else viewModel.reportVoiceError("Se necesita permiso de micrófono para grabar notas de voz.")
+    }
+    val shareMicrophonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) viewModel.reportVoiceError("Se necesita permiso de micrófono para grabar notas de voz.")
     }
 
     DisposableEffect(voiceRecorder) {
@@ -167,16 +217,21 @@ fun ChatScreen(
             kotlinx.coroutines.delay(1000)
             recordingSeconds++
             if (recordingSeconds >= 600) {
-                voiceRecorder.stop()
-                    .onSuccess { viewModel.sendVoiceNote(it.file, it.durationSeconds) }
-                    .onFailure { viewModel.reportVoiceError("No se pudo guardar la nota de voz.") }
-                isRecordingVoice = false
+                stopVoiceRecording()
             }
         }
+    }
+    LaunchedEffect(showAttachmentSheet, drafts) {
+        shareChoices = if (showAttachmentSheet) (drafts + shareChoices).distinctBy { it.uri } else emptyList()
     }
 
     val mediaPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(30)
+    ) { uris ->
+        if (uris.isNotEmpty()) viewModel.addDrafts(uris)
+    }
+    val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) viewModel.addDrafts(uris)
     }
@@ -377,25 +432,108 @@ fun ChatScreen(
             } else emptyList()
             val mentionOpen = mentionCandidates.isNotEmpty()
 
+            fun closeViewer() {
+                lightboxItems = null
+                playingVideo = null
+            }
+            val viewerActions = MediaViewerActions(
+                reply = if (threadRootMessageId == null) { item ->
+                    item.message?.let {
+                        closeViewer()
+                        onNavigateToThread(state.conversation.id, it.id)
+                    }
+                } else null,
+                forward = { item ->
+                    item.message?.let {
+                        closeViewer()
+                        forwardMessage = it.copy(attachments = listOf(item.attachment))
+                    }
+                },
+                saveMessage = { item ->
+                    item.message?.let {
+                        viewModel.saveMessage(it) {
+                            android.widget.Toast.makeText(context, "Mensaje guardado", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                delete = { item ->
+                    closeViewer()
+                    mediaToDelete = item
+                },
+                jumpToMessage = { item ->
+                    closeViewer()
+                    item.message?.let { jumpToMessage(it.id) }
+                }
+            )
             lightboxItems?.let { items ->
-                AttachmentLightbox(items = items, initialIndex = lightboxIndex, mediaManager = mediaManager, onClose = { lightboxItems = null })
+                AttachmentLightbox(items, lightboxIndex, mediaManager, viewerActions, ::closeViewer)
+            }
+            playingVideo?.let { item ->
+                ChatVideoDialog(item, mediaManager, viewerActions, ::closeViewer)
+            }
+            mediaToDelete?.let { item ->
+                val message = item.message
+                if (message != null) AlertDialog(
+                    onDismissRequest = { mediaToDelete = null },
+                    title = { Text("¿Eliminar este archivo?") },
+                    text = { Text(item.attachment.name) },
+                    confirmButton = {
+                        Column(horizontalAlignment = Alignment.End) {
+                            TextButton(onClick = {
+                                viewModel.deleteMedia(message, item.attachment, false)
+                                mediaToDelete = null
+                            }) { Text("Eliminar para mí", color = MaterialTheme.colorScheme.error) }
+                            TextButton(onClick = {
+                                viewModel.deleteMedia(message, item.attachment, true)
+                                mediaToDelete = null
+                            }) { Text("Eliminar para todos", color = MaterialTheme.colorScheme.error) }
+                        }
+                    },
+                    dismissButton = { TextButton(onClick = { mediaToDelete = null }) { Text("Cancelar") } }
+                )
             }
 
             if (showAttachmentSheet) {
                 ChatAttachmentSheet(
-                    onDismiss = { showAttachmentSheet = false },
-                    onCamera = {
+                    choices = shareChoices,
+                    drafts = drafts,
+                    onDismiss = {
+                        if (isRecordingVoice) cancelVoiceRecording()
                         showAttachmentSheet = false
-                        openCamera()
                     },
+                    onCamera = ::openCamera,
                     onGallery = {
-                        showAttachmentSheet = false
                         mediaPickerLauncher.launch(
                             androidx.activity.result.PickVisualMediaRequest(
                                 androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo
                             )
                         )
-                    }
+                    },
+                    onFiles = { filePickerLauncher.launch(arrayOf("application/*", "text/*")) },
+                    onAudio = { filePickerLauncher.launch(arrayOf("audio/*")) },
+                    onToggle = { draft ->
+                        val selected = drafts.firstOrNull { it.uri == draft.uri }
+                        if (selected != null) viewModel.removeDraft(selected.id)
+                        else viewModel.addDrafts(listOf(draft.uri))
+                    },
+                    onSend = {
+                        viewModel.sendWithDrafts(inputValue.text)
+                        inputValue = androidx.compose.ui.text.input.TextFieldValue("")
+                        showAttachmentSheet = false
+                    },
+                    recording = isRecordingVoice,
+                    recordingSeconds = recordingSeconds,
+                    voiceEnabled = !voiceSendState.isUploading,
+                    onVoiceStart = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            startVoiceRecording()
+                        } else {
+                            shareMicrophonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            false
+                        }
+                    },
+                    onVoiceFinish = ::stopVoiceRecording,
+                    onVoiceCancel = ::cancelVoiceRecording
                 )
             }
 
@@ -481,6 +619,58 @@ fun ChatScreen(
                 )
             }
 
+            deleteConversationForEveryone?.let { forEveryone ->
+                fun dismiss() {
+                    deleteConversationForEveryone = null
+                    viewModel.clearDeleteChatError()
+                }
+                AlertDialog(
+                    onDismissRequest = { if (!deletingChat) dismiss() },
+                    title = { Text(if (forEveryone) "¿Vaciar para todos?" else "¿Vaciar para mí?") },
+                    text = {
+                        if (deletingChat) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Text("Vaciando chat…")
+                            }
+                        } else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                if (forEveryone) "Se borrará todo el historial del chat para todos sus participantes."
+                                else "Se borrará todo el historial de tu vista. Los demás participantes conservarán sus mensajes."
+                            )
+                            deleteChatError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(enabled = !deletingChat, onClick = { viewModel.deleteConversation(forEveryone) }) {
+                            Text(if (forEveryone) "Vaciar para todos" else "Vaciar para mí", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(enabled = !deletingChat, onClick = ::dismiss) { Text("Cancelar") }
+                    }
+                )
+            }
+
+            if (confirmLeaveGroup) {
+                fun dismiss() {
+                    confirmLeaveGroup = false
+                    viewModel.clearDeleteChatError()
+                }
+                AlertDialog(
+                    onDismissRequest = { if (!deletingChat) dismiss() },
+                    title = { Text("¿Salir del grupo?") },
+                    text = { Text(deleteChatError ?: if (deletingChat) "Saliendo del grupo…" else
+                        "Dejarás de recibir mensajes de este grupo. Los demás miembros conservarán su historial.") },
+                    confirmButton = {
+                        TextButton(enabled = !deletingChat, onClick = viewModel::leaveGroup) {
+                            Text("Salir del grupo", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    dismissButton = { TextButton(enabled = !deletingChat, onClick = ::dismiss) { Text("Cancelar") } }
+                )
+            }
+
             forwardMessage?.let { msg ->
                 ForwardSheet(
                     conversations = conversations,
@@ -513,10 +703,14 @@ fun ChatScreen(
                     peerId = peerId,
                     peerName = peerName,
                     peerPhoto = peerPhoto,
-                    peerPhone = state.otherParticipant?.phone,
                     onNavigateBack = onNavigateBack,
                     onNavigateToInfo = { onNavigateToInfo(state.conversation.id) },
                     onSearch = { showMessageSearch = true },
+                    onDeleteChat = { deleteConversationForEveryone = it },
+                    onMute = viewModel::toggleConversationMuted,
+                    onPin = viewModel::toggleConversationPinned,
+                    onMedia = { onNavigateToMedia(state.conversation.id) },
+                    onLeave = { confirmLeaveGroup = true },
                     isMessageSearchActive = showMessageSearch,
                     messageSearch = messageSearch,
                     onMessageSearchQueryChange = { viewModel.onMessageSearchQueryChange(it, threadRootMessageId) },
@@ -610,21 +804,29 @@ fun ChatScreen(
                 }
 
                 // MESSAGES
-                BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().chatBackground()) {
-                    val maxBubbleWidth = (maxWidth - 24.dp) * 0.8f
+                BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().chatConversationBackground()) {
+                    val maxBubbleWidth = (maxWidth * 0.85f).coerceAtMost(480.dp)
                     // Pre-computar lista de imágenes para el lightbox una sola vez (no en cada burbuja)
-                    val allLightboxItems = remember(displayedMessages) {
-                        displayedMessages.flatMap { m ->
-                            m.attachments.filter { it.kind == AttachmentKind.IMAGE }
-                                .map { LightboxItem(it, m.text) }
-                        }.reversed()
+                    val allMediaItems = remember(displayedMessages, state.conversation.members, state.currentUserId, peerName) {
+                        displayedMessages.asReversed().flatMap { m ->
+                            val author = if (m.senderId == state.currentUserId) "Tú"
+                                else state.conversation.members[m.senderId]?.displayName?.takeIf(String::isNotBlank)
+                                    ?: if (isGroup) "Miembro del grupo" else peerName
+                            m.attachments.filter { it.kind == AttachmentKind.IMAGE || it.kind == AttachmentKind.VIDEO }
+                                .map { LightboxItem(it, m.text, author, m) }
+                        }
                     }
+                    val allLightboxItems = remember(allMediaItems) { allMediaItems.filter { it.attachment.kind == AttachmentKind.IMAGE } }
                     
-                    val handleImageClick = remember(allLightboxItems) {
+                    val handleMediaClick = remember(allMediaItems, allLightboxItems) {
                         { att: ChatAttachment ->
-                            val idx = allLightboxItems.indexOfFirst { it.attachment.publicId == att.publicId }
-                            lightboxIndex = if (idx >= 0) idx else 0
-                            lightboxItems = allLightboxItems
+                            if (att.kind == AttachmentKind.VIDEO) {
+                                playingVideo = allMediaItems.firstOrNull { it.attachment === att } ?: LightboxItem(att)
+                            } else {
+                                val idx = allLightboxItems.indexOfFirst { it.attachment === att }
+                                lightboxIndex = if (idx >= 0) idx else 0
+                                lightboxItems = allLightboxItems
+                            }
                         }
                     }
                     
@@ -691,7 +893,8 @@ fun ChatScreen(
                                     currentUserId = state.currentUserId,
                                     members = memberDirectory,
                                     maxBubbleWidth = maxBubbleWidth,
-                                    showAuthor = isGroup && message.senderId != state.currentUserId,
+                                    showAuthor = isGroup && message.senderId != state.currentUserId &&
+                                        (showDay || next?.senderId != message.senderId),
                                     authorName = state.conversation.members[message.senderId]?.displayName,
                                     isPinned = message.id in pinnedIds,
                                     highlighted = highlightedId == message.id || (showMessageSearch &&
@@ -704,7 +907,7 @@ fun ChatScreen(
                                     onRetry = handleRetry,
                                     onReact = handleReact,
                                     onOpenFile = handleOpenFile,
-                                    onImageClick = handleImageClick,
+                                    onMediaClick = handleMediaClick,
                                     onReplyClick = handleReplyClick,
                                     onLinkClick = handleLinkClick,
                                     threadMode = threadRootMessageId != null || maxOf(message.replyCount, visibleReplyCounts[message.id] ?: 0) > 0,
@@ -733,7 +936,7 @@ fun ChatScreen(
                                             Text(
                                                 "Mensajes no leidos",
                                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                                                color = Color.White,
+                                                color = MaterialTheme.colorScheme.onPrimary,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
@@ -746,10 +949,10 @@ fun ChatScreen(
                                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), shadowElevation = 1.dp) {
+                                        Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.06f)) {
                                             Text(
                                                 text = formatDayLabel(message.createdAt),
-                                                fontSize = 11.sp,
+                                                fontSize = 12.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = Slate500,
                                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -859,42 +1062,42 @@ fun ChatScreen(
                 val inputTextColor = ChatText
                 val inputPlaceholderColor = ChatMuted
                 val hasComposedContent = inputValue.text.isNotBlank() || drafts.isNotEmpty()
-                val canSend = hasComposedContent || isRecordingVoice
                 val isEditing = state.editing != null
 
                 if (threadRootMessageId == null || threadRoot != null) Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                        .background(ChatBarSurface)
+                        .chatBarDivider(atTop = true)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     IconButton(
                         onClick = {
                             if (isRecordingVoice) {
-                                voiceRecorder.cancel()
-                                isRecordingVoice = false
-                                recordingSeconds = 0
+                                cancelVoiceRecording()
                             } else showAttachmentSheet = true
                         },
                         enabled = state.editing == null,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(44.dp).background(Color(0xFF1F2733), CircleShape)
                     ) {
                         Icon(
                             if (isRecordingVoice) Icons.Filled.Close else Icons.Filled.Add,
-                            contentDescription = if (isRecordingVoice) "Cancelar grabacion" else "Adjuntar",
-                            tint = Slate500
+                            contentDescription = if (isRecordingVoice) "Cancelar grabación" else "Adjuntar",
+                            tint = if (isEditing) Slate500 else Indigo600
                         )
                     }
 
                     Box(
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = 44.dp)
                             .clip(RoundedCornerShape(22.dp))
                             .background(inputBg)
                             .border(1.dp, inputBorder, RoundedCornerShape(22.dp))
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.CenterStart
                     ) {
                         if (isRecordingVoice) {
                             Text(
@@ -911,7 +1114,8 @@ fun ChatScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 20.dp, max = 128.dp),
-                            textStyle = TextStyle(fontSize = 15.sp, color = inputTextColor),
+                            textStyle = TextStyle(fontFamily = ChatFont, fontSize = 15.sp, color = inputTextColor),
+                            cursorBrush = SolidColor(ChatAccent),
                             minLines = 1,
                             maxLines = 6,
                             decorationBox = { innerTextField ->
@@ -931,11 +1135,7 @@ fun ChatScreen(
                     IconButton(
                         onClick = {
                             if (isRecordingVoice) {
-                                voiceRecorder.stop()
-                                    .onSuccess { viewModel.sendVoiceNote(it.file, it.durationSeconds) }
-                                    .onFailure { viewModel.reportVoiceError("La nota de voz fue demasiado corta o no pudo guardarse.") }
-                                isRecordingVoice = false
-                                recordingSeconds = 0
+                                stopVoiceRecording()
                             } else if (hasComposedContent) {
                                 when {
                                     isEditing -> {
@@ -961,21 +1161,19 @@ fun ChatScreen(
                                 microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         },
-                        enabled = (!voiceSendState.isUploading && state.editing == null) || hasComposedContent,
+                        enabled = ((!voiceSendState.isUploading && state.editing == null) || hasComposedContent) &&
+                            drafts.none { it.status == DraftStatus.UPLOADING },
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(44.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (canSend) Indigo600
-                                else ChatSurfaceRaised
-                            )
+                            .background(ChatActionGradient)
                     ) {
                         Icon(
                             imageVector = when {
                                 isRecordingVoice -> Icons.Filled.Stop
                                 isEditing -> Icons.Filled.Check
                                 hasComposedContent -> Icons.AutoMirrored.Filled.Send
-                                else -> Icons.Filled.Mic
+                                else -> Icons.Outlined.Mic
                             },
                             contentDescription = when {
                                 isRecordingVoice -> "Detener y enviar nota de voz"
@@ -983,8 +1181,8 @@ fun ChatScreen(
                                 hasComposedContent -> "Enviar mensaje"
                                 else -> "Grabar nota de voz"
                             },
-                            tint = if (canSend) MaterialTheme.colorScheme.onPrimary else Slate500,
-                            modifier = Modifier.size(18.dp)
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -1046,10 +1244,12 @@ private fun DraftsRow(
     drafts: List<AttachmentDraft>,
     onRemove: (String) -> Unit
 ) {
+    val uploading = drafts.any { it.status == DraftStatus.UPLOADING }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1110,12 +1310,13 @@ private fun DraftsRow(
 
                 IconButton(
                     onClick = { onRemove(draft.id) },
+                    enabled = !uploading,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .size(18.dp)
                         .background(Color.Black.copy(alpha = 0.6f), CircleShape)
                 ) {
-                    Icon(Icons.Filled.Close, contentDescription = "Quitar", tint = Color.White, modifier = Modifier.size(11.dp))
+                    Icon(Icons.Filled.Close, contentDescription = "Quitar ${draft.fileName}", tint = Color.White, modifier = Modifier.size(11.dp))
                 }
             }
         }
@@ -1169,10 +1370,14 @@ private fun ChatHeader(
     peerId: String?,
     peerName: String,
     peerPhoto: String?,
-    peerPhone: String?,
     onNavigateBack: () -> Unit,
     onNavigateToInfo: () -> Unit,
     onSearch: () -> Unit,
+    onDeleteChat: (Boolean) -> Unit,
+    onMute: () -> Unit,
+    onPin: () -> Unit,
+    onMedia: () -> Unit,
+    onLeave: () -> Unit,
     isMessageSearchActive: Boolean,
     messageSearch: MessageSearchUiState,
     onMessageSearchQueryChange: (String) -> Unit,
@@ -1199,7 +1404,7 @@ private fun ChatHeader(
         }
     } else null
 
-    Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
+    Surface(modifier = Modifier.fillMaxWidth().chatBarDivider(), color = ChatBarSurface) {
         if (isMessageSearchActive) {
             MessageSearchHeader(
                 state = messageSearch,
@@ -1216,78 +1421,89 @@ private fun ChatHeader(
                     .padding(horizontal = 8.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp).clip(CircleShape)) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Slate500)
+                IconButton(onClick = onNavigateBack, modifier = Modifier.size(44.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Volver", tint = ChatText)
                 }
 
-            // Header Avatar (+11% more: 46dp)
-            Box(modifier = Modifier.size(46.dp)) {
-                if (!isGroup && peerPhoto != null && peerPhoto.isNotBlank()) {
-                    AsyncImage(
-                        model = peerPhoto,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(46.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                    )
-                } else {
-                    val bg = avatarColor(peerId ?: currentUserId)
-                    Box(
-                        modifier = Modifier.size(46.dp).clip(CircleShape).background(bg),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(initialsOf(if (isGroup) conversation.name ?: "G" else peerName), color = Color.White, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold)
+                Box(modifier = Modifier.size(42.dp)) {
+                    if (!isGroup && peerPhoto != null && peerPhoto.isNotBlank()) {
+                        AsyncImage(
+                            model = peerPhoto,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize().clip(CircleShape)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier.fillMaxSize().background(ChatAvatarGradient, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                if (isGroup) (conversation.name ?: "G").trim().take(1).uppercase() else initialsOf(peerName),
+                                color = Color(0xFF0E1217),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    if (!isSelf && !isGroup && presence?.isOnlineNow() == true) {
+                        Box(
+                            modifier = Modifier
+                                .size(14.dp)
+                                .align(Alignment.BottomEnd)
+                                .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                                .clip(CircleShape)
+                                .background(Emerald500)
+                        )
                     }
                 }
-                if (!isSelf && !isGroup && presence?.isOnlineNow() == true) {
-                    Box(
-                        modifier = Modifier
-                            .size(14.dp)
-                            .align(Alignment.BottomEnd)
-                            .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                            .clip(CircleShape)
-                            .background(Emerald500)
+
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (isSelf) "Mensajes guardados"
+                        else if (isGroup) (conversation.name ?: "Grupo")
+                        else peerName,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Slate800,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = when {
+                            isGroup -> groupTypingText ?: "${conversation.members.size} miembros"
+                            isSelf -> "Escribirte a ti mismo"
+                            peerTyping -> "escribiendo…"
+                            presence?.isOnlineNow() == true -> "En línea"
+                            presence != null -> formatLastSeen(presence.lastSeen)
+                            else -> "Desconectado"
+                        },
+                        fontSize = 12.sp,
+                        color = when {
+                            isGroup -> Slate500
+                            isSelf -> Slate500
+                            peerTyping || presence?.isOnlineNow() == true -> Indigo600
+                            else -> Slate500
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (isSelf) "Mensajes guardados"
-                    else if (isGroup) (conversation.name ?: "Grupo")
-                    else peerName,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Slate800,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = when {
-                        isGroup -> groupTypingText ?: "${conversation.members.size} miembros"
-                        isSelf -> "Escribirte a ti mismo"
-                        peerTyping -> "escribiendo…"
-                        presence?.isOnlineNow() == true -> "En línea"
-                        presence != null -> formatLastSeen(presence.lastSeen)
-                        else -> "Desconectado"
-                    },
-                    fontSize = 12.sp,
-                    color = when {
-                        isGroup -> Slate500
-                        isSelf -> Slate500
-                        peerTyping || presence?.isOnlineNow() == true -> Indigo600
-                        else -> Slate500
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-                IconButton(onClick = onSearch) {
-                    Icon(Icons.Default.Search, contentDescription = "Buscar mensajes", tint = Slate500)
+                IconButton(onClick = onSearch, modifier = Modifier.size(44.dp)) {
+                    Icon(Icons.Default.Search, contentDescription = "Buscar mensajes", tint = ChatText)
                 }
+                ChatOptionsMenu(conversation, onSearch, onMute, onPin, onNavigateToInfo, onMedia, onDeleteChat, onLeave)
             }
         }
     }
+}
+
+private fun Modifier.chatBarDivider(atTop: Boolean = false): Modifier = drawWithContent {
+    drawContent()
+    val stroke = 1.dp.toPx()
+    val y = if (atTop) stroke / 2 else size.height - stroke / 2
+    drawLine(ChatBarBorder, Offset(0f, y), Offset(size.width, y), stroke)
 }
 
 @Composable

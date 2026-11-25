@@ -1,8 +1,11 @@
 package com.ronaldcolocho.taskly.data.repository
 
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.Source
+import com.google.firebase.firestore.Transaction
 import kotlinx.coroutines.tasks.await
 import java.security.MessageDigest
 
@@ -11,7 +14,25 @@ internal fun globalSearchIndexId(uid: String, conversationId: String, messageId:
         .digest("$uid|$conversationId|$messageId".toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
-internal suspend fun deleteChatMessage(db: FirebaseFirestore, conversationId: String, messageId: String) {
+internal fun Transaction.recordRemovedMedia(target: DocumentSnapshot, attachments: List<*>) {
+    if (attachments.isEmpty()) return
+    val senderId = target.getString("senderId") ?: return
+    val conversationId = target.reference.parent.parent?.id ?: return
+    set(target.reference.firestore.collection("tasklyMediaRemovals").document(), mapOf(
+        "conversationId" to conversationId,
+        "messageId" to target.id,
+        "senderId" to senderId,
+        "attachments" to attachments,
+        "createdAt" to FieldValue.serverTimestamp()
+    ))
+}
+
+internal suspend fun deleteChatMessage(
+    db: FirebaseFirestore,
+    conversationId: String,
+    messageId: String,
+    retainMessage: ((Transaction, DocumentSnapshot, DocumentSnapshot) -> Boolean)? = null
+) {
     val conversation = db.collection("conversations").document(conversationId)
     val messages = conversation.collection("messages")
     val reference = messages.document(messageId)
@@ -19,8 +40,10 @@ internal suspend fun deleteChatMessage(db: FirebaseFirestore, conversationId: St
         val target = tx.get(reference)
         if (!target.exists()) return@runTransaction null
         val chat = tx.get(conversation)
+        if (retainMessage?.invoke(tx, target, chat) == true) return@runTransaction null
         val rootRef = (target.getString("threadRootId") ?: target.getString("replyTo.id"))?.takeIf { it.isNotBlank() && it != messageId }?.let(messages::document)
         val root = rootRef?.let(tx::get)
+        tx.recordRemovedMedia(target, (target.get("attachments") as? List<*>).orEmpty())
         tx.delete(reference)
         (chat.get("participantIds") as? List<String>).orEmpty().forEach { uid ->
             tx.delete(db.collection("globalChatSearch").document(globalSearchIndexId(uid, conversationId, messageId)))
@@ -36,13 +59,16 @@ internal suspend fun deleteChatMessage(db: FirebaseFirestore, conversationId: St
     val latest = messages.orderBy("createdAt", Query.Direction.DESCENDING).limit(1).get(Source.SERVER).await().documents.firstOrNull()
     db.runTransaction { tx ->
         val chat = tx.get(conversation)
+        val cutoff = chat.getLong("sharedDeletedThrough")
         val candidate = latest?.let { tx.get(it.reference) }
+            ?.takeUnless { cutoff != null && (it.getLong("createdAt") ?: 0L) <= cutoff }
+        if (cutoff != null && deletedAt <= cutoff) return@runTransaction
         if (chat.getLong("lastMessageAt") != deletedAt || (candidate != null && !candidate.exists())) return@runTransaction
         val text = candidate?.getString("text").orEmpty()
         val files = (candidate?.get("attachments") as? List<Map<String, Any>>).orEmpty()
         val preview = if (text.isBlank() && files.isNotEmpty()) {
             "📎 ${files.first()["name"] ?: "Adjunto"}${if (files.size > 1) " (+${files.size - 1})" else ""}"
         } else text
-        tx.update(conversation, mapOf("lastMessage" to preview, "lastMessageAt" to (candidate?.getLong("createdAt") ?: 0L)))
+        tx.update(conversation, mapOf("lastMessage" to preview, "lastMessageAt" to (candidate?.getLong("createdAt") ?: cutoff ?: 0L)))
     }.await()
 }

@@ -22,3 +22,9 @@ recovered*.kt
 test.kt
 /AUDIT_PERFORMANCE.md
 /PLAN_OPTIMIZACION_PERFORMANCE.md
+/media-cleanup/node_modules/
+/media-cleanup/.env*
+/media-cleanup/.secret.local
+/supabase/.temp/
+/supabase/functions/.env*
+/supabase/functions/taskly-media-cleanup/node_modules/

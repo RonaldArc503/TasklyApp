@@ -54,14 +54,18 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -69,7 +73,9 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconToggleButton
@@ -103,12 +109,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -116,6 +124,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -124,7 +133,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.unit.min
 import androidx.compose.ui.zIndex
 import androidx.core.view.ViewCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -139,7 +147,6 @@ import com.ronaldcolocho.taskly.audio.AudioPlayerState
 import com.ronaldcolocho.taskly.audio.AudioRepeatMode
 import com.ronaldcolocho.taskly.audio.AudioTrack
 import com.ronaldcolocho.taskly.audio.PlayerVisualEffect
-import androidx.compose.material.icons.filled.Tune
 import kotlinx.coroutines.delay
 import com.ronaldcolocho.taskly.ui.theme.MareaAccentMint
 import com.ronaldcolocho.taskly.ui.theme.MareaAccentPurple
@@ -246,6 +253,7 @@ fun MusicPlayerScreen(
     val animTertiary  by animateColorAsState(trackPalette.tertiary, tween(650), label = "tertiary")
     val animGlow      by animateColorAsState(trackPalette.glow, tween(650), label = "glow")
     val lyricsAccent = lyricsTextAccent(animPrimary, background, onSurface)
+    val currentLyricsState = if (lyricsState.trackId == trackId) lyricsState else MusicLyricsState(trackId, loading = true)
 
     // ── Visual effects state ──────────────────────────────────
     val currentEffect by audioController.visualEffect.collectAsStateWithLifecycle()
@@ -270,13 +278,14 @@ fun MusicPlayerScreen(
         }
     }
     var showEffectsSheet by remember { mutableStateOf(false) }
+    var showSleepTimer by remember { mutableStateOf(false) }
 
     // ── Queue bottom sheet ────────────────────────────────────
     var showQueue by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(background)
@@ -295,24 +304,36 @@ fun MusicPlayerScreen(
                 )
             }
     ) {
+        val scrollMusic = !showLyrics && maxHeight < 700.dp
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 22.dp)
-                .padding(top = 18.dp, bottom = 20.dp)
+                .then(if (scrollMusic) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                .padding(horizontal = if (showLyrics) 0.dp else 16.dp)
+                .padding(top = if (showLyrics) 6.dp else 12.dp, bottom = if (showLyrics) 8.dp else 14.dp)
         ) {
             // 1. Top bar
             MareaTopBar(
-                playlistName   = playlistName,
+                modifier       = Modifier.padding(horizontal = if (showLyrics) 10.dp else 0.dp),
                 secondary      = secondary,
+                surface        = surface,
+                accent         = lyricsAccent,
+                showingLyrics  = showLyrics,
+                hasTrack       = playerState.currentTrack != null,
+                translation    = if (showLyrics) currentLyricsState.translation else null,
                 onBack         = onNavigateBack,
-                onEffectsClick = { showEffectsSheet = true },
+                onLyricsChange = lyricsViewModel::setShowing,
+                onTranslate    = lyricsViewModel::toggleTranslation,
                 onQueueClick   = { showQueue = true }
             )
 
-            Spacer(Modifier.height(12.dp))
+            if (showLyrics) Spacer(Modifier.height(4.dp)) else {
+                Text("Sonando de: $playlistName", style = MareaContextStyle, color = secondary,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 3.dp))
+            }
 
             if (playerState.buffering) {
                 androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = animPrimary)
@@ -335,15 +356,15 @@ fun MusicPlayerScreen(
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .then(if (scrollMusic) Modifier.height(220.dp) else Modifier.weight(1f)),
                 contentAlignment = Alignment.Center
             ) {
-                val coverSize = min(maxWidth * 0.72f, 290.dp)
+                val coverSize = minOf(maxWidth * 0.72f, 290.dp, maxHeight)
 
                 if (showLyrics && playerState.currentTrack != null) {
                     androidx.compose.runtime.key(trackId) {
                         MusicLyricsPane(
-                            state = if (lyricsState.trackId == trackId) lyricsState else MusicLyricsState(trackId, loading = true),
+                            state = currentLyricsState,
                             positionMs = playerState.currentTimeMs, isPlaying = playerState.playing, animationMode = lyricsAnimation, onSurface = onSurface, secondary = secondary,
                             accent = lyricsAccent, onRetry = lyricsViewModel::retry
                         )
@@ -366,92 +387,113 @@ fun MusicPlayerScreen(
                     onCyclePalette = changeColor,
                     modifier = Modifier.testTag("music_visual_stage")
                 )
-            }
-
-            // Hint text & Theme / Mode badge
-            val statusText = feedbackMessage
-                ?: "${if (colors.mode == PlayerColorMode.ORIGINAL) "Original" else "Automático"}: ${trackPalette.name} · ${resolvedEffect.title}"
-            val statusColor = animPrimary
-
-            if (!showLyrics || feedbackMessage != null) Text(
-                text       = statusText,
-                style      = MareaContextStyle.copy(fontSize = androidx.compose.ui.unit.TextUnit(12f, androidx.compose.ui.unit.TextUnitType.Sp)),
-                color      = statusColor,
-                modifier   = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp),
-                maxLines   = 1,
-                overflow   = TextOverflow.Ellipsis,
-                textAlign  = androidx.compose.ui.text.style.TextAlign.Center
-            )
-
-            Spacer(Modifier.height(14.dp))
-
-            // 3. Song info
-            MareaSongInfo(
-                track       = playerState.currentTrack,
-                onSurface   = onSurface,
-                secondary   = secondary,
-                accentColor = if (showLyrics) lyricsAccent else animPrimary,
-                showingLyrics = showLyrics,
-                onToggleLyrics = lyricsViewModel::toggle,
-                trackMenu = { MusicPlayerTrackMenu(playerState.currentTrack?.let {
-                    com.ronaldcolocho.taskly.domain.model.MusicTrack(it.id, it.url, it.name, it.msgId,
-                        it.durationSeconds, it.thumbnailUrl, artist = it.artist, sourceChannel = it.sourceChannel)
-                }, actionsViewModel) },
-                favorite = isFavorite,
-                favoriteEnabled = favorites.ready && savingFavorite == null,
-                onToggleFavorite = { favoritesViewModel.toggle(playerState.currentTrack) }
-            )
-
-            Spacer(Modifier.height(22.dp))
-
-            // 4. Waveform seek bar
-            val effectiveDurationMs = if (playerState.durationMs > 0) {
-                playerState.durationMs
-            } else {
-                (playerState.currentTrack?.durationSeconds?.takeIf { it > 0 }?.toLong()?.times(1000L)) ?: 0L
-            }
-
-            MareaWaveformSeekBar(
-                trackId      = trackId,
-                currentMs    = playerState.currentTimeMs,
-                durationMs   = effectiveDurationMs,
-                secondary    = secondary,
-                activeColor  = animPrimary,
-                thumbColor   = animTertiary,
-                onSeek       = { ms -> audioController.seek(ms) }
-            )
-
-            Spacer(Modifier.height(18.dp))
-
-            // 5. Controls
-            MareaControls(
-                isPlaying          = playerState.playing,
-                repeatMode         = playerState.repeatMode,
-                shuffleModeEnabled = playerState.shuffleModeEnabled,
-                surface            = surface,
-                onSurface          = onSurface,
-                accentColor        = animPrimary,
-                onPlayPause        = { audioController.toggleCurrent() },
-                onPrevious         = { audioController.prev() },
-                onNext             = { audioController.next() },
-                onRepeat           = {
-                    val nextMode = playerState.repeatMode.next()
-                    audioController.cycleRepeatMode()
-                    feedbackMessage = when (nextMode) {
-                        AudioRepeatMode.ALL -> "Bucle: toda la lista"
-                        AudioRepeatMode.ONE -> "Bucle: esta canción"
-                        AudioRepeatMode.OFF -> "Bucle: apagado"
-                    }
-                },
-                onShuffle          = {
-                    val willEnable = !playerState.shuffleModeEnabled
-                    audioController.toggleShuffle()
-                    feedbackMessage = if (willEnable) "Modo aleatorio activado" else "Modo aleatorio apagado"
+                if (!showLyrics) feedbackMessage?.let { message ->
+                    MusicPlayerFeedback(message, lyricsAccent, Modifier.align(Alignment.BottomCenter))
                 }
-            )
+            }
+
+            if (showLyrics) {
+                feedbackMessage?.let { MusicPlayerFeedback(it, animPrimary, Modifier.padding(top = 10.dp)) }
+                HorizontalDivider(color = secondary.copy(alpha = 0.2f))
+            } else {
+                MusicLyricsPreview(currentLyricsState, playerState.currentTimeMs, lyricsAccent) {
+                    lyricsViewModel.setShowing(true)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Column(Modifier.fillMaxWidth().then(if (showLyrics) Modifier
+                .background(background.copy(alpha = 0.88f)).padding(horizontal = 14.dp, vertical = 6.dp) else Modifier)) {
+
+                // 3. Song info
+                MareaSongInfo(
+                    track       = playerState.currentTrack,
+                    onSurface   = onSurface,
+                    secondary   = secondary,
+                    accentColor = if (showLyrics) lyricsAccent else animPrimary,
+                    compact = showLyrics,
+                    trackMenu = { MusicPlayerTrackMenu(playerState.currentTrack?.let {
+                        com.ronaldcolocho.taskly.domain.model.MusicTrack(it.id, it.url, it.name, it.msgId,
+                            it.durationSeconds, it.thumbnailUrl, artist = it.artist, sourceChannel = it.sourceChannel)
+                    }, actionsViewModel, onSurface) },
+                    favorite = isFavorite,
+                    favoriteEnabled = favorites.ready && savingFavorite == null,
+                    onToggleFavorite = { favoritesViewModel.toggle(playerState.currentTrack) }
+                )
+
+                if (!showLyrics) Spacer(Modifier.height(6.dp))
+
+                // 4. Waveform seek bar
+                val effectiveDurationMs = if (playerState.durationMs > 0) {
+                    playerState.durationMs
+                } else {
+                    (playerState.currentTrack?.durationSeconds?.takeIf { it > 0 }?.toLong()?.times(1000L)) ?: 0L
+                }
+
+                MareaWaveformSeekBar(
+                    trackId      = trackId,
+                    currentMs    = playerState.currentTimeMs,
+                    durationMs   = effectiveDurationMs,
+                    secondary    = secondary,
+                    activeColor  = if (showLyrics) lyricsAccent else animPrimary,
+                    thumbColor   = if (showLyrics) onSurface else animTertiary,
+                    compact      = showLyrics,
+                    onSeek       = { ms -> audioController.seek(ms) }
+                )
+
+                Spacer(Modifier.height(4.dp))
+
+                // 5. Controls
+                MareaControls(
+                    isPlaying          = playerState.playing,
+                    repeatMode         = playerState.repeatMode,
+                    shuffleModeEnabled = playerState.shuffleModeEnabled,
+                    onSurface          = onSurface,
+                    accentColor        = if (showLyrics) lyricsAccent else animPrimary,
+                    compact            = showLyrics,
+                    onPlayPause        = { audioController.toggleCurrent() },
+                    onPrevious         = { audioController.prev() },
+                    onNext             = { audioController.next() },
+                    onRepeat           = {
+                        val nextMode = playerState.repeatMode.next()
+                        audioController.cycleRepeatMode()
+                        feedbackMessage = when (nextMode) {
+                            AudioRepeatMode.ALL -> "Bucle: toda la lista"
+                            AudioRepeatMode.ONE -> "Bucle: esta canción"
+                            AudioRepeatMode.OFF -> "Bucle: apagado"
+                        }
+                    },
+                    onShuffle          = {
+                        val willEnable = !playerState.shuffleModeEnabled
+                        audioController.toggleShuffle()
+                        feedbackMessage = if (willEnable) "Modo aleatorio activado" else "Modo aleatorio apagado"
+                    }
+                )
+            }
+            if (!showLyrics) {
+                MusicPlayerToolRow(playerState.currentTrack, playerState.sleepTimerEndAt != null, secondary, lyricsAccent,
+                    onEffects = { showEffectsSheet = true }, onSleepTimer = { showSleepTimer = true })
+                playerState.nextTrack?.let { next ->
+                    Spacer(Modifier.height(4.dp))
+                    MusicPlayerUpNext(next, surface, onSurface, secondary, animPrimary, animTertiary) { showQueue = true }
+                }
+            }
         }
+    }
+
+    if (showSleepTimer) {
+        SleepTimerDialog(
+            active = playerState.sleepTimerEndAt != null,
+            onSet = { minutes ->
+                audioController.startSleepTimer(minutes * 60_000L)
+                showSleepTimer = false
+            },
+            onCancel = {
+                audioController.cancelSleepTimer()
+                showSleepTimer = false
+            },
+            onDismiss = { showSleepTimer = false }
+        )
     }
 
     // Queue bottom sheet
@@ -517,69 +559,65 @@ fun MusicPlayerScreen(
 
 @Composable
 private fun MareaTopBar(
-    playlistName   : String,
-    secondary      : Color,
-    onBack         : () -> Unit,
-    onEffectsClick : () -> Unit,
-    onQueueClick   : () -> Unit
+    modifier: Modifier,
+    secondary: Color,
+    surface: Color,
+    accent: Color,
+    showingLyrics: Boolean,
+    hasTrack: Boolean,
+    translation: MusicLyricsTranslation?,
+    onBack: () -> Unit,
+    onLyricsChange: (Boolean) -> Unit,
+    onTranslate: () -> Unit,
+    onQueueClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .clickable(onClick = onBack),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Minimizar",
-                    tint = secondary,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text     = "Sonando de: $playlistName",
-                style    = MareaContextStyle,
-                color    = secondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.Default.KeyboardArrowDown, "Minimizar", tint = secondary, modifier = Modifier.size(28.dp))
         }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            IconButton(
-                onClick = onEffectsClick,
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Tune,
-                    contentDescription = "Efectos visuales del reproductor",
-                    tint = secondary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            TextButton(
-                onClick = onQueueClick,
-                modifier = Modifier.semantics { contentDescription = "Ver cola de reproducción" }
-            ) {
-                Text(
-                    text  = "Ver cola",
-                    style = MareaContextStyle,
-                    color = secondary
-                )
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            Row(Modifier.clip(CircleShape).background(surface).padding(3.dp).selectableGroup()) {
+                MareaModeTab("Música", !showingLyrics, true, accent, secondary, "music_player_music_tab") { onLyricsChange(false) }
+                MareaModeTab("Letra", showingLyrics, hasTrack, accent, secondary, "music_lyrics_toggle") { onLyricsChange(true) }
             }
         }
+        if (translation != null) {
+            val active = translation is MusicLyricsTranslation.Shown || translation == MusicLyricsTranslation.Loading
+            val action = when (translation) {
+                MusicLyricsTranslation.Available -> "Traducir al español con Google"
+                MusicLyricsTranslation.Loading -> "Cancelar traducción"
+                MusicLyricsTranslation.Failed -> "Reintentar traducción con Google"
+                is MusicLyricsTranslation.Shown -> "Ocultar traducción"
+            }
+            IconToggleButton(checked = active, onCheckedChange = { onTranslate() },
+                modifier = Modifier.testTag("music_lyrics_translation_toggle")) {
+                Box(Modifier.size(40.dp).background(accent.copy(alpha = if (active) 0.16f else 0f), CircleShape),
+                    contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Translate, action, tint = if (active) accent else secondary)
+                }
+            }
+        }
+        IconButton(onClick = onQueueClick) {
+            Icon(Icons.AutoMirrored.Filled.PlaylistPlay, "Ver cola de reproducción", tint = secondary, modifier = Modifier.size(26.dp))
+        }
+    }
+}
+
+@Composable
+private fun MareaModeTab(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    accent: Color,
+    secondary: Color,
+    tag: String,
+    onClick: () -> Unit
+) {
+    Box(Modifier.clip(CircleShape).background(if (selected) accent else Color.Transparent)
+        .selectable(selected, enabled = enabled, role = Role.Tab, onClick = onClick)
+        .height(42.dp).padding(horizontal = 14.dp).testTag(tag), contentAlignment = Alignment.Center) {
+        val tint = if (selected) accent.controlContentColor() else secondary
+        Text(label, style = MareaContextStyle.copy(fontSize = 13.sp), color = tint, maxLines = 1)
     }
 }
 
@@ -3098,8 +3136,7 @@ private fun MareaSongInfo(
     onSurface   : Color,
     secondary   : Color,
     accentColor : Color,
-    showingLyrics: Boolean,
-    onToggleLyrics: () -> Unit,
+    compact: Boolean,
     trackMenu: @Composable () -> Unit,
     favorite: Boolean,
     favoriteEnabled: Boolean,
@@ -3110,42 +3147,47 @@ private fun MareaSongInfo(
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = track?.name ?: "—", style = MareaTitleStyle, color = onSurface,
-                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
-            )
+            if (compact) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(
+                    Brush.linearGradient(listOf(accentColor, accentColor.copy(alpha = 0.26f)))
+                )) {
+                    AsyncImage(model = track?.thumbnailUrl, contentDescription = null,
+                        contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                }
+                Spacer(Modifier.width(10.dp))
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = track?.name ?: "—",
+                    style = if (compact) MareaTitleStyle.copy(fontSize = 16.sp, lineHeight = 20.sp)
+                        else MareaTitleStyle.copy(fontSize = 22.sp, lineHeight = 26.sp, letterSpacing = (-0.3).sp),
+                    color = onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                if (compact) MareaSongArtist(track, secondary, accentColor, compact = true)
+            }
             IconToggleButton(checked = favorite, onCheckedChange = { onToggleFavorite() },
                 enabled = track != null && favoriteEnabled, modifier = Modifier.size(48.dp).testTag("music_favorite_toggle")) {
                 Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                     if (favorite) "Quitar de favoritas" else "Guardar en favoritas",
-                    tint = if (favorite) accentColor else secondary)
-            }
-            IconToggleButton(checked = showingLyrics, onCheckedChange = { onToggleLyrics() },
-                enabled = track != null, modifier = Modifier.size(48.dp).testTag("music_lyrics_toggle")) {
-                Icon(Icons.Default.Lyrics, if (showingLyrics) "Mostrar animación" else "Mostrar letra",
-                    tint = if (showingLyrics) accentColor else secondary)
+                    tint = if (favorite || !compact) accentColor else secondary)
             }
             trackMenu()
         }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(accentColor)
-            )
-            Text(
-                text     = track?.artist?.takeIf { it.isNotBlank() }
-                    ?: track?.sourceChannel?.takeIf { it.isNotBlank() }?.let { "Canal: $it" } ?: "Artista no disponible",
-                style    = MareaArtistStyle,
-                color    = secondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+        if (!compact) MareaSongArtist(track, secondary, accentColor, compact = false)
+    }
+}
+
+@Composable
+private fun MareaSongArtist(track: AudioTrack?, secondary: Color, accent: Color, compact: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (!compact) Box(Modifier.size(6.dp).background(accent, CircleShape))
+        Text(
+            text = track?.artist?.takeIf { it.isNotBlank() }
+                ?: track?.sourceChannel?.takeIf { it.isNotBlank() }?.let { "Canal: $it" } ?: "Artista no disponible",
+            style = if (compact) MareaArtistStyle.copy(fontSize = 13.sp, lineHeight = 16.sp)
+                else MareaArtistStyle.copy(fontSize = 15.sp, lineHeight = 19.sp),
+            color = secondary, maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -3164,6 +3206,7 @@ private fun MareaWaveformSeekBar(
     secondary   : Color,
     activeColor : Color,
     thumbColor  : Color,
+    compact     : Boolean,
     onSeek      : (Long) -> Unit
 ) {
     // Drag-seek state strictly keyed to trackId to prevent state leakage from previous songs
@@ -3189,7 +3232,7 @@ private fun MareaWaveformSeekBar(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(if (compact) 32.dp else 52.dp)
                 .semantics {
                     contentDescription = "Posición de la canción"
                     stateDescription   =
@@ -3234,8 +3277,18 @@ private fun MareaWaveformSeekBar(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(uniformBarHeight)
+                    .height(if (compact) 12.dp else uniformBarHeight)
             ) {
+                if (compact) {
+                    val thumbRadius = 5.dp.toPx()
+                    val end = (size.width - thumbRadius).coerceAtLeast(thumbRadius)
+                    val start = Offset(thumbRadius, center.y)
+                    val thumb = Offset(thumbRadius + progress * (end - thumbRadius), center.y)
+                    drawLine(secondary.copy(alpha = 0.25f), start, Offset(end, center.y), 4.dp.toPx(), StrokeCap.Round)
+                    if (progress > 0f) drawLine(activeColor, start, thumb, 4.dp.toPx(), StrokeCap.Round)
+                    drawCircle(thumbColor, radius = thumbRadius, center = thumb)
+                    return@Canvas
+                }
                 val totalWidth = size.width
                 val barGapPx = BAR_GAP_DP.dp.toPx()
                 val totalGapWidth = barGapPx * (BAR_COUNT - 1)
@@ -3263,7 +3316,7 @@ private fun MareaWaveformSeekBar(
             }
         }
 
-        Spacer(Modifier.height(4.dp))
+        if (!compact) Spacer(Modifier.height(4.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3301,33 +3354,26 @@ private fun MareaControls(
     isPlaying          : Boolean,
     repeatMode         : AudioRepeatMode,
     shuffleModeEnabled : Boolean,
-    surface            : Color,
     onSurface          : Color,
     accentColor        : Color,
+    compact            : Boolean,
     onPlayPause        : () -> Unit,
     onPrevious         : () -> Unit,
     onNext             : () -> Unit,
     onRepeat           : () -> Unit,
     onShuffle          : () -> Unit
 ) {
-    Row(
-        modifier            = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment   = Alignment.CenterVertically
-    ) {
-        // 1. Previous
+    val previous: @Composable () -> Unit = {
         MareaSecondaryButton(
             onClick = onPrevious,
-            surface = surface,
-            onSurface = onSurface,
             contentDescription = "Canción anterior"
         ) {
-            Icon(Icons.Default.SkipPrevious, contentDescription = null, modifier = Modifier.size(26.dp))
+            Icon(Icons.Default.SkipPrevious, contentDescription = null, tint = onSurface, modifier = Modifier.size(26.dp))
         }
+    }
 
-        // 2. Loop / Repeat (Replaces heart icon, directly to the left of Play/Pause)
+    val repeat: @Composable () -> Unit = {
         val isRepeatActive = repeatMode != AudioRepeatMode.OFF
-        val repeatBg = if (isRepeatActive) accentColor.copy(alpha = 0.18f) else surface
         val repeatTint = if (isRepeatActive) accentColor else onSurface.copy(alpha = 0.65f)
         val repeatIcon = if (repeatMode == AudioRepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat
         val repeatDesc = when (repeatMode) {
@@ -3338,8 +3384,7 @@ private fun MareaControls(
 
         MareaSecondaryButton(
             onClick = onRepeat,
-            surface = repeatBg,
-            onSurface = repeatTint,
+            indicator = accentColor.takeIf { !compact && isRepeatActive },
             contentDescription = repeatDesc
         ) {
             Icon(
@@ -3349,23 +3394,15 @@ private fun MareaControls(
                 modifier           = Modifier.size(24.dp)
             )
         }
+    }
 
-        // 3. Play / Pause — the prominent centerpiece
-        MareaPlayButton(
-            isPlaying   = isPlaying,
-            accentColor = accentColor,
-            onClick     = onPlayPause
-        )
-
-        // 4. Shuffle (Directly to the right of Play/Pause)
-        val shuffleBg = if (shuffleModeEnabled) accentColor.copy(alpha = 0.18f) else surface
+    val shuffle: @Composable () -> Unit = {
         val shuffleTint = if (shuffleModeEnabled) accentColor else onSurface.copy(alpha = 0.65f)
         val shuffleDesc = if (shuffleModeEnabled) "Orden aleatorio activado" else "Orden aleatorio desactivado"
 
         MareaSecondaryButton(
             onClick = onShuffle,
-            surface = shuffleBg,
-            onSurface = shuffleTint,
+            indicator = accentColor.takeIf { !compact && shuffleModeEnabled },
             contentDescription = shuffleDesc
         ) {
             Icon(
@@ -3375,16 +3412,24 @@ private fun MareaControls(
                 modifier           = Modifier.size(24.dp)
             )
         }
+    }
 
-        // 5. Next
+    val next: @Composable () -> Unit = {
         MareaSecondaryButton(
             onClick = onNext,
-            surface = surface,
-            onSurface = onSurface,
             contentDescription = "Canción siguiente"
         ) {
-            Icon(Icons.Default.SkipNext, contentDescription = null, modifier = Modifier.size(26.dp))
+            Icon(Icons.Default.SkipNext, contentDescription = null, tint = onSurface, modifier = Modifier.size(26.dp))
         }
+    }
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically) {
+        shuffle()
+        previous()
+        MareaPlayButton(isPlaying = isPlaying, accentColor = accentColor, compact = compact, onClick = onPlayPause)
+        next()
+        repeat()
     }
 }
 
@@ -3392,6 +3437,7 @@ private fun MareaControls(
 private fun MareaPlayButton(
     isPlaying   : Boolean,
     accentColor : Color,
+    compact     : Boolean,
     onClick     : () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -3401,19 +3447,19 @@ private fun MareaPlayButton(
         animationSpec  = tween(150),
         label          = "playBtnScale"
     )
-    val iconTint = if (accentColor.isLight()) Color(0xFF111827) else Color.White
+    val iconTint = accentColor.controlContentColor()
 
     Box(
         modifier = Modifier
-            .size(width = 96.dp, height = 72.dp)
+            .size(width = if (compact) 68.dp else 72.dp, height = if (compact) 52.dp else 56.dp)
             .scale(scale)
             .shadow(
-                elevation    = 14.dp,
-                shape        = RoundedCornerShape(30.dp),
+                elevation    = if (compact) 8.dp else 14.dp,
+                shape        = RoundedCornerShape(if (compact) 20.dp else 22.dp),
                 ambientColor = accentColor.copy(alpha = 0.5f),
                 spotColor    = accentColor.copy(alpha = 0.7f)
             )
-            .clip(RoundedCornerShape(30.dp))
+            .clip(RoundedCornerShape(if (compact) 20.dp else 22.dp))
             .background(accentColor)
             .clickable(
                 interactionSource = interactionSource,
@@ -3429,7 +3475,7 @@ private fun MareaPlayButton(
             imageVector        = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
             contentDescription = null,
             tint               = iconTint,
-            modifier           = Modifier.size(34.dp)
+            modifier           = Modifier.size(if (compact) 28.dp else 34.dp)
         )
     }
 }
@@ -3437,9 +3483,8 @@ private fun MareaPlayButton(
 @Composable
 private fun MareaSecondaryButton(
     onClick            : () -> Unit,
-    surface            : Color,
-    onSurface          : Color,
     contentDescription : String,
+    indicator          : Color? = null,
     content            : @Composable () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -3452,10 +3497,9 @@ private fun MareaSecondaryButton(
 
     Box(
         modifier = Modifier
-            .size(56.dp)
+            .size(48.dp)
             .scale(scale)
             .clip(RoundedCornerShape(20.dp))
-            .background(surface)
             .clickable(
                 interactionSource = interactionSource,
                 indication        = null,
@@ -3465,6 +3509,8 @@ private fun MareaSecondaryButton(
         contentAlignment = Alignment.Center
     ) {
         content()
+        if (indicator != null) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
+            .size(4.dp).background(indicator, CircleShape))
     }
 }
 
@@ -3609,10 +3655,10 @@ internal val MAREA_PALETTES = com.ronaldcolocho.taskly.audio.PLAYER_PALETTES.map
     MareaTrackPalette(palette.id, palette.name, color(palette.primary), color(palette.secondary),
         color(palette.tertiary), color(palette.glow))
 }
-/** Returns true if this color is perceptually light (for contrasting dark icons/text). */
-private fun Color.isLight(): Boolean {
-    val luminance = 0.299f * red + 0.587f * green + 0.114f * blue
-    return luminance > 0.60f
+private fun Color.controlContentColor(): Color {
+    val dark = Color(0xFF111827)
+    val tone = luminance() + 0.05f
+    return if (tone / (dark.luminance() + 0.05f) >= 1.05f / tone) dark else Color.White
 }
 
 /** Resolves the playback color, falling back to the song's stable original while state catches up. */

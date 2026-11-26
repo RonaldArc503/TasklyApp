@@ -88,4 +88,22 @@ class SongLyricsTest {
         assertTrue(lyrics.lines.isEmpty())
         assertEquals(text, lyrics.displayText)
     }
+
+    @Test fun translationKeepsThePlaybackRowForRepeatsAndInstrumentalGaps() {
+        val lyrics = SongLyrics(
+            plainText = "Different formatting for the plain lyric",
+            syncedText = "[00:07]Last line\n[00:01][00:05]Repeated line\n[00:03]"
+        )
+
+        val rows = lyrics.translationLines()
+        assertEquals(listOf("Repeated line", "", "Repeated line", "Last line"), rows)
+        assertEquals("Repeated line", rows[activeLyricsLine(lyrics.lines, 5_000)])
+    }
+
+    @Test fun translationKeepsPlainTextLineBreaksWithoutAddingTimestamps() {
+        val lyrics = SongLyrics(plainText = "First line\r\n\r\nSecond line")
+
+        assertEquals(listOf("First line", "", "Second line"), lyrics.translationLines())
+        assertTrue(lyrics.lines.isEmpty())
+    }
 }

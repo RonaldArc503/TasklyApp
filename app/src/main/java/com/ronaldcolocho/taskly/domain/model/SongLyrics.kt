@@ -16,6 +16,9 @@ data class SongLyrics(
     }.orEmpty()
     val displayText: String = plainText.ifBlank { lines.map { it.text }.filter { it.isNotBlank() }.joinToString("\n") }
     val usable: Boolean get() = instrumental || displayText.isNotBlank()
+
+    internal fun translationLines(): List<String> =
+        if (lines.isEmpty()) displayText.lines() else lines.map(LyricsLine::text)
 }
 
 data class LyricsQuery(val title: String, val artist: String, val durationSeconds: Int) {

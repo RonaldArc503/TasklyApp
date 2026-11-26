@@ -12,6 +12,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -33,6 +34,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
@@ -44,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ronaldcolocho.taskly.R
 import com.ronaldcolocho.taskly.audio.LyricsAnimationMode
 import com.ronaldcolocho.taskly.domain.model.LyricsLine
 import com.ronaldcolocho.taskly.domain.model.LyricsLookup
@@ -74,7 +77,7 @@ internal fun MusicLyricsPane(
     animationMode: LyricsAnimationMode = LyricsAnimationMode.STATIC,
     onRetry: () -> Unit
 ) {
-    Box(Modifier.fillMaxSize().testTag("music_lyrics_pane"), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().padding(horizontal = 18.dp).testTag("music_lyrics_pane"), contentAlignment = Alignment.Center) {
         when {
             state.loading || state.result == null -> Column(horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -83,23 +86,32 @@ internal fun MusicLyricsPane(
             }
             state.result is LyricsLookup.Found -> {
                 val lyrics = state.result.lyrics
-                when {
-                    lyrics.instrumental -> LyricsMessage("Canción instrumental", "Esta canción no tiene letra.", secondary, lyrics.provider)
-                    lyrics.lines.isNotEmpty() -> SyncedMusicLyrics(
+                if (lyrics.instrumental) {
+                    LyricsMessage("Canción instrumental", "Esta canción no tiene letra.", secondary, lyrics.provider)
+                } else {
+                    val translation = state.translation
+                    if (lyrics.lines.isNotEmpty()) SyncedMusicLyrics(
                         lyrics = lyrics,
+                        translation = translation,
                         positionMs = positionMs,
                         isPlaying = isPlaying,
                         animationMode = animationMode,
                         onSurface = onSurface,
                         secondary = secondary,
                         accent = accent
-                    )
-                    else -> Column(Modifier.fillMaxSize()) {
-                        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 24.dp)) {
-                            item { Text(lyrics.displayText, color = onSurface, fontFamily = BricolageGrotesque,
-                                fontSize = 22.sp, lineHeight = 34.sp) }
+                    ) else Column(Modifier.fillMaxSize()) {
+                        val original = remember(lyrics) { lyrics.translationLines() }
+                        val translated = (translation as? MusicLyricsTranslation.Shown)?.lines.orEmpty()
+                        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 12.dp)) {
+                            itemsIndexed(original) { index, line ->
+                                Column {
+                                    Text(line, color = onSurface, fontFamily = BricolageGrotesque,
+                                        fontSize = 22.sp, lineHeight = 34.sp)
+                                    LyricsTranslationLine(translated.getOrNull(index), secondary)
+                                }
+                            }
                         }
-                        Text("Letra sin sincronización · ${lyrics.provider}", color = secondary, fontSize = 11.sp)
+                        LyricsFooter(lyrics, translation, onSurface, secondary, accent)
                     }
                 }
             }
@@ -122,6 +134,46 @@ internal fun MusicLyricsPane(
 }
 
 @Composable
+private fun LyricsFooter(
+    lyrics: SongLyrics,
+    translation: MusicLyricsTranslation?,
+    onSurface: Color,
+    secondary: Color,
+    accent: Color,
+    onFollow: (() -> Unit)? = null
+) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        when (translation) {
+            MusicLyricsTranslation.Loading -> Text("Traduciendo… La primera descarga requiere Wi-Fi.", color = secondary, fontSize = 12.sp)
+            MusicLyricsTranslation.Failed -> Text("No se pudo traducir. Comprueba el Wi-Fi y vuelve a intentarlo.", color = secondary, fontSize = 12.sp)
+            else -> Unit
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val timing = if (lyrics.lines.isEmpty()) "Letra sin sincronización" else "Letra sincronizada"
+            val source = if (translation is MusicLyricsTranslation.Shown && onFollow != null) lyrics.provider
+                else "$timing · ${lyrics.provider}"
+            Text(source, color = secondary, fontSize = 11.sp, modifier = Modifier.weight(1f, fill = false),
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (translation is MusicLyricsTranslation.Shown) Image(
+                painter = painterResource(if (onSurface.luminance() > 0.5f) R.drawable.lyrics_google_translate_light else R.drawable.lyrics_google_translate_dark),
+                contentDescription = "Traducción automática de Google Translate",
+                modifier = Modifier.size(width = 122.dp, height = 16.dp)
+            )
+            if (onFollow != null) TextButton(onClick = onFollow) { Text("Seguir canción", color = accent, fontSize = 12.sp) }
+        }
+    }
+}
+
+@Composable
+private fun LyricsTranslationLine(text: String?, color: Color) {
+    if (!text.isNullOrBlank()) {
+        Text(text, color = color, fontFamily = BricolageGrotesque, fontWeight = FontWeight.Medium,
+            fontSize = 15.sp, lineHeight = 21.sp)
+    }
+}
+
+@Composable
 private fun LyricsMessage(title: String, message: String, color: Color, provider: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(title, color = color, fontFamily = BricolageGrotesque, fontSize = 22.sp)
@@ -133,6 +185,7 @@ private fun LyricsMessage(title: String, message: String, color: Color, provider
 @Composable
 private fun SyncedMusicLyrics(
     lyrics: SongLyrics,
+    translation: MusicLyricsTranslation?,
     positionMs: Long,
     isPlaying: Boolean,
     animationMode: LyricsAnimationMode,
@@ -144,13 +197,14 @@ private fun SyncedMusicLyrics(
     var following by remember(lyrics) { mutableStateOf(true) }
     val dragging by listState.interactionSource.collectIsDraggedAsState()
     val active = remember(lyrics, positionMs) { activeLyricsLine(lyrics.lines, positionMs) }
+    val translatedLines = (translation as? MusicLyricsTranslation.Shown)?.lines.orEmpty()
     LaunchedEffect(dragging) { if (dragging) following = false }
-    LaunchedEffect(active, following, lyrics) {
-        if (following && active >= 0) listState.animateScrollToItem(active, -listState.layoutInfo.viewportEndOffset / 3)
+    LaunchedEffect(active, following, lyrics, translatedLines.isNotEmpty()) {
+        if (following && active >= 0) listState.animateScrollToItem(active, -listState.layoutInfo.viewportEndOffset / 2)
     }
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("synced_lyrics_list"), state = listState,
-            contentPadding = PaddingValues(top = 28.dp, bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            contentPadding = PaddingValues(top = 14.dp, bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             itemsIndexed(lyrics.lines, key = { _, line -> line.timeMs }) { index, line ->
                 val nextLine = lyrics.lines.getOrNull(index + 1)
                 val lineDurationMs = if (nextLine != null && nextLine.timeMs > line.timeMs) {
@@ -158,26 +212,24 @@ private fun SyncedMusicLyrics(
                 } else {
                     4000L
                 }
-                AnimatedLyricsLine(
-                    line = line,
-                    lineIndex = index,
-                    activeLineIndex = active,
-                    animationMode = animationMode,
-                    positionMs = positionMs,
-                    lineDurationMs = lineDurationMs,
-                    isPlaying = isPlaying,
-                    accent = accent,
-                    onSurface = onSurface,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AnimatedLyricsLine(
+                        line = line,
+                        lineIndex = index,
+                        activeLineIndex = active,
+                        animationMode = animationMode,
+                        positionMs = positionMs,
+                        lineDurationMs = lineDurationMs,
+                        isPlaying = isPlaying,
+                        accent = accent,
+                        onSurface = onSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    LyricsTranslationLine(translatedLines.getOrNull(index), if (index == active) onSurface else secondary)
+                }
             }
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Letra sincronizada · ${lyrics.provider}", color = secondary, fontSize = 11.sp,
-                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!following) TextButton(onClick = { following = true }) { Text("Seguir canción", color = accent, fontSize = 12.sp) }
-        }
+        LyricsFooter(lyrics, translation, onSurface, secondary, accent, onFollow = if (following) null else ({ following = true }))
     }
 }
 

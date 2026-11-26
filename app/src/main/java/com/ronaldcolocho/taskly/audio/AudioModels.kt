@@ -51,5 +51,6 @@ data class AudioPlayerState(
     val error: String? = null,
     val buffering: Boolean = false,
     val radioLoading: Boolean = false,
-    val radioError: String? = null
+    val radioError: String? = null,
+    val nextTrack: AudioTrack? = null
 )

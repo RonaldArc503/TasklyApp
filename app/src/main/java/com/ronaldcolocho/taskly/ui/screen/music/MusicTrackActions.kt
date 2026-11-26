@@ -91,14 +91,16 @@ internal fun MusicTrackActionItems(offline: Boolean, download: MediaDownloadStat
 }
 
 @Composable
-internal fun MusicPlayerTrackMenu(track: MusicTrack?, actions: MusicTrackActionsViewModel) {
+internal fun MusicPlayerTrackMenu(track: MusicTrack?, actions: MusicTrackActionsViewModel, iconTint: Color) {
     var expanded by remember(track?.id) { mutableStateOf(false) }
     var adding by remember { mutableStateOf<MusicTrack?>(null) }
     val states by actions.downloadStates.collectAsStateWithLifecycle()
     val notice by actions.notice.collectAsStateWithLifecycle()
     LaunchedEffect(track?.id) { track?.let(actions::inspect) }
     Box {
-        IconButton(enabled = track != null, onClick = { expanded = true }) { Icon(Icons.Default.MoreVert, "Opciones de canción") }
+        IconButton(enabled = track != null, onClick = { expanded = true }) {
+            Icon(Icons.Default.MoreVert, "Opciones de canción", tint = iconTint)
+        }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             MusicTrackActionItems(false, states[track?.id] ?: track?.let { actions.downloadState(it.id) },
                 onAdd = { adding = track; expanded = false },

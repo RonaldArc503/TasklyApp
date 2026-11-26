@@ -3,6 +3,8 @@ package com.ronaldcolocho.taskly.ui.screen.music
 import android.content.Context
 import android.os.ParcelFileDescriptor
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -19,14 +21,20 @@ import com.ronaldcolocho.taskly.data.music.*
 import com.ronaldcolocho.taskly.data.repository.*
 import com.ronaldcolocho.taskly.domain.model.LyricsLookup
 import com.ronaldcolocho.taskly.domain.model.MediaKind
+import com.ronaldcolocho.taskly.domain.model.SongLyrics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import com.ronaldcolocho.taskly.ui.theme.TasklyTheme
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Rule
 import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.runner.RunWith
 import java.io.File
 import java.nio.ByteBuffer
@@ -40,6 +48,64 @@ class MusicLyricsDeviceTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command).use {
         ParcelFileDescriptor.AutoCloseInputStream(it).use { input -> input.readBytes().toString(Charsets.UTF_8).trim() }
+    }
+
+    @Test fun translatedLinesAppearBelowTheOriginalAndFollowPlayback() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        if (android.os.Build.VERSION.SDK_INT >= 33) instrumentation.uiAutomation.grantRuntimePermission(
+            context.packageName, android.Manifest.permission.POST_NOTIFICATIONS)
+        for (op in listOf("SCHEDULE_EXACT_ALARM", "USE_FULL_SCREEN_INTENT", "SYSTEM_ALERT_WINDOW"))
+            shell("appops set ${context.packageName} $op allow")
+        val position = mutableLongStateOf(0L)
+        val english = listOf("Good morning, my friend", "We will meet again tomorrow")
+        val spanish = listOf("Buenos días, amigo", "Nos veremos mañana")
+        val lyrics = SongLyrics(syncedText = "[00:00]${english[0]}\n[00:10]${english[1]}")
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    TasklyTheme {
+                        MusicLyricsPane(
+                            state = MusicLyricsState(result = LyricsLookup.Found(lyrics),
+                                translation = MusicLyricsTranslation.Shown(spanish)),
+                            positionMs = position.longValue,
+                            onSurface = Color.White,
+                            secondary = Color.LightGray,
+                            accent = Color.Cyan,
+                            onRetry = {}
+                        )
+                    }
+                }
+            }
+            compose.onNodeWithText(english[0]).assertIsSelected()
+            val original = compose.onNodeWithText(english[0]).getUnclippedBoundsInRoot()
+            val translated = compose.onNodeWithText(spanish[0]).getUnclippedBoundsInRoot()
+            assertTrue(translated.top >= original.bottom)
+            compose.runOnIdle { position.longValue = 11_000L }
+            compose.onNodeWithText(english[1]).assertIsSelected()
+            compose.onNodeWithText(spanish[1]).assertIsDisplayed()
+        }
+    }
+
+    @Test fun translatesSupportedLanguagesWithTheOnDeviceModel() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("lyricsTranslationLive") == "true")
+        val translator = LyricsTranslator(ApplicationProvider.getApplicationContext())
+        val lines = listOf("Good morning, my friend. How are you today?", "", "We will meet again tomorrow.")
+        runBlocking {
+            withTimeout(120_000) {
+                assertEquals("en", translator.sourceLanguage(lines.joinToString("\n")))
+                assertNull(translator.sourceLanguage("Buenos días, amigo. Espero que estés bien. Nos vemos mañana."))
+                assertNull(translator.sourceLanguage("…"))
+                val translated = translator.translate("en", lines)
+                assertTrue(translated[0].contains("días", ignoreCase = true))
+                assertTrue(translated[1].isEmpty())
+                assertTrue(translated[2].contains("mañana", ignoreCase = true))
+            }
+            withTimeout(120_000) {
+                val french = "Bonjour mon ami. Nous irons à la plage demain matin."
+                assertEquals("fr", translator.sourceLanguage(french))
+                assertTrue(translator.translate("fr", listOf(french)).single().contains("playa", ignoreCase = true))
+            }
+        }
     }
 
     @Test fun switchesBetweenAnimationAndLyricsAndFollowsSeekAndNextTrack() {
@@ -65,6 +131,9 @@ class MusicLyricsDeviceTest {
                 val busyCalls = AtomicInteger()
                 val persistentBusyCalls = AtomicInteger()
                 val rejectedCalls = AtomicInteger()
+                val firstLine = "Nobody told us it would end this way"
+                val secondLine = "Walking home beneath the city lights"
+                val spanishLine = "El viento lleva mi canción"
                 val wav = createSilentWav(context)
                 val cover = File(context.cacheDir, "player-cover-fixture.png")
                 android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888).apply {
@@ -99,15 +168,19 @@ class MusicLyricsDeviceTest {
                                 .code(503).message("Busy fixture").header("Retry-After", "1")
                                 .body("{}".toResponseBody("application/json".toMediaType())).build()
                         }
-                        val lines = if (title == "Test Song") "[00:00]First fixture line\\n[00:10]Second fixture line\\n[00:20]Third fixture line\\n[00:30]Fourth fixture line\\n[00:40]Fifth fixture line\\n[00:50]Sixth fixture line"
-                            else "[00:00]Next song fixture\\n[00:10]Next song continuation"
+                        val lines = when (title) {
+                            "Test Song" -> "[00:00]$firstLine\\n[00:10]$secondLine\\n[00:20]Every street still knows your name\\n[00:30]We kept our promises in the rain\\n[00:40]The morning feels so far away\\n[00:50]I remember where we used to go"
+                            "Second Song" -> "[00:00]$spanishLine\\n[00:10]Mañana volveremos a caminar junto al mar"
+                            "French Song" -> "[00:00]Bonjour mon ami, nous marcherons au bord de la mer\\n[00:10]Je reviendrai demain matin pour te voir"
+                            else -> "[00:00]Next song fixture\\n[00:10]Next song continuation"
+                        }
                         val body = """{"id":${if (title == "Test Song") 1 else 2},"trackName":"$title","artistName":"Test Artist","duration":60,"syncedLyrics":"$lines","instrumental":false}"""
                         Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
                             .body(body.toResponseBody("application/json".toMediaType())).build()
                     }.build()
                     lyrics = MusicLyricsViewModel(SavedStateHandle(), controller!!,
                         LyricsRepository(api, File(context.cacheDir, "lyrics-ui-${System.nanoTime()}"),
-                            sourceOrder = listOf(LyricsSource.LRCLIB)))
+                            sourceOrder = listOf(LyricsSource.LRCLIB)), LyricsTranslator(context))
                     activity.viewModelStore.put("lyrics-ui-test", lyrics)
                     favorites = MusicPlayerFavoritesViewModel(favoriteRepository, favoriteAccount, favoriteAccount.value)
                     activity.viewModelStore.put("favorites-ui-test", favorites)
@@ -117,6 +190,27 @@ class MusicLyricsDeviceTest {
                 }
                 compose.waitUntil(15_000) { controller!!.state.value.currentTrack?.id == first.id }
                 compose.onNodeWithTag("music_visual_stage").assertExists()
+                compose.onNodeWithTag("music_lyrics_translation_toggle").assertDoesNotExist()
+                compose.waitUntil(15_000) { controller!!.state.value.nextTrack?.id == second.id }
+                compose.onNodeWithTag("music_up_next").assertIsDisplayed().performClick()
+                compose.onNodeWithText("Cola de reproducción").assertIsDisplayed()
+                instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+                compose.onNodeWithContentDescription("Temporizador").performClick()
+                compose.onNodeWithText("15 min").performClick()
+                compose.waitUntil(5000) { controller!!.state.value.sleepTimerEndAt != null }
+                compose.onNodeWithContentDescription("Temporizador activo").performClick()
+                compose.onNodeWithText("Cancelar temporizador").performClick()
+                compose.waitUntil(5000) { controller!!.state.value.sleepTimerEndAt == null }
+                compose.waitUntil(15_000) { lyrics.state.value.result is LyricsLookup.Found }
+                compose.runOnIdle { controller!!.seek(11_000) }
+                compose.waitUntil(10_000) { controller!!.state.value.currentTimeMs in 11_000..14_000 }
+                compose.onNodeWithTag("music_lyrics_preview").assert(hasText(secondLine)).assertIsDisplayed()
+                compose.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+                    File(context.getExternalFilesDir(null), "music-listening-layout-test.png").outputStream().use {
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                    }
+                }
+                compose.runOnIdle { controller!!.seek(0) }
                 compose.onNodeWithContentDescription("Opciones de canción").performClick()
                 compose.onNodeWithText("Agregar a lista").assertExists()
                 compose.waitUntil(5000) {
@@ -153,29 +247,45 @@ class MusicLyricsDeviceTest {
                 compose.waitUntil(5000) { favorites.favorites.value.ready && favorites.favorites.value.userId == "test-user" }
                 compose.onNodeWithTag("music_animation_cover").assertExists()
                 compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
-                compose.onNodeWithTag("music_animation_cover_toggle").assertIsOn().performClick().assertIsOff()
+                compose.onNodeWithTag("music_animation_cover_toggle").performScrollTo().assertIsOn().performClick().assertIsOff()
                 org.junit.Assert.assertFalse(prefs.getBoolean("player_show_animation_cover", true))
-                compose.onNodeWithContentDescription("Cerrar").performClick()
+                compose.onNodeWithContentDescription("Cerrar").performScrollTo().performClick()
                 compose.onNodeWithTag("music_animation_cover").assertDoesNotExist()
                 compose.onNodeWithTag("music_visual_stage").assertExists()
                 compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
-                compose.onNodeWithTag("music_animation_cover_toggle").assertIsOff()
-                compose.onNodeWithContentDescription("Cerrar").performClick()
-                compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                compose.onNodeWithTag("music_animation_cover_toggle").performScrollTo().assertIsOff()
+                compose.onNodeWithContentDescription("Cerrar").performScrollTo().performClick()
+                compose.onNodeWithTag("music_lyrics_preview").performClick()
                 compose.waitUntil(15_000) { lyrics.state.value.result is LyricsLookup.Found }
                 compose.onNodeWithTag("music_lyrics_pane").assertExists()
                 compose.onNodeWithTag("music_visual_stage").assertDoesNotExist()
-                compose.onNodeWithText("First fixture line").assertExists()
+                compose.onNodeWithTag("music_lyrics_toggle").assertIsSelected()
+                compose.onNodeWithText(firstLine).assertExists()
+                val translatedFirstTrack = if (InstrumentationRegistry.getArguments().getString("lyricsTranslationLive") == "true") {
+                    compose.waitUntil(10_000) { lyrics.state.value.translation == MusicLyricsTranslation.Available }
+                    val translate = compose.onNodeWithTag("music_lyrics_translation_toggle")
+                    val queue = compose.onNodeWithContentDescription("Ver cola de reproducción")
+                    assertTrue(translate.getUnclippedBoundsInRoot().right <= queue.getUnclippedBoundsInRoot().left)
+                    translate.performClick()
+                    compose.waitUntil(15_000) { lyrics.state.value.translation is MusicLyricsTranslation.Shown }
+                    (lyrics.state.value.translation as MusicLyricsTranslation.Shown).lines.also { lines ->
+                        compose.onNodeWithText(lines.first()).assertExists()
+                    }
+                } else emptyList()
                 compose.onNodeWithTag("synced_lyrics_list").performTouchInput { swipeUp() }
                 compose.onNodeWithText("Seguir canción").assertExists().performClick()
+                compose.runOnIdle { controller!!.seek(31_000) }
+                compose.waitUntil(10_000) { controller!!.state.value.currentTimeMs in 31_000..34_000 }
+                compose.onNodeWithText("We kept our promises in the rain").assertIsSelected()
                 compose.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
                     File(context.getExternalFilesDir(null), "lyrics-ui-test.png").outputStream().use {
                         bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
                     }
                 }
                 compose.runOnIdle { controller!!.seek(11_000) }
-                compose.waitUntil(10_000) { controller!!.state.value.currentTimeMs >= 11_000 }
-                compose.onNodeWithText("Second fixture line").assertIsSelected()
+                compose.waitUntil(10_000) { controller!!.state.value.currentTimeMs in 11_000..14_000 }
+                compose.onNodeWithText(secondLine).assertIsSelected()
+                translatedFirstTrack.getOrNull(1)?.let { compose.onNodeWithText(it).assertIsDisplayed() }
                 compose.runOnIdle {
                     // A catalog refresh must not replace the metadata of the real player queue.
                     controller!!.updatePlaylist(emptyList())
@@ -184,18 +294,20 @@ class MusicLyricsDeviceTest {
                 compose.waitUntil(15_000) {
                     lyrics.state.value.trackId == second.id && lyrics.state.value.result is LyricsLookup.Found
                 }
-                compose.onNodeWithText("Next song fixture").assertExists()
+                compose.onNodeWithText(spanishLine).assertExists()
                 compose.onNodeWithText("Second Song").assertExists()
                 org.junit.Assert.assertEquals(second.thumbnailUrl, controller!!.state.value.currentTrack?.thumbnailUrl)
-                compose.onNodeWithText("First fixture line").assertDoesNotExist()
-                compose.onNodeWithTag("music_lyrics_toggle").assertIsOn().performClick()
+                compose.onNodeWithText(firstLine).assertDoesNotExist()
+                translatedFirstTrack.firstOrNull()?.let { compose.onNodeWithText(it).assertDoesNotExist() }
+                compose.onNodeWithTag("music_lyrics_translation_toggle").assertDoesNotExist()
+                compose.onNodeWithTag("music_player_music_tab").performClick().assertIsSelected()
                 compose.onNodeWithTag("music_visual_stage").assertExists()
                 compose.onNodeWithTag("music_lyrics_pane").assertDoesNotExist()
                 compose.onNodeWithTag("music_animation_cover").assertDoesNotExist()
                 compose.onNodeWithContentDescription("Efectos visuales del reproductor").performClick()
-                compose.onNodeWithTag("music_animation_cover_toggle").performClick().assertIsOn()
+                compose.onNodeWithTag("music_animation_cover_toggle").performScrollTo().performClick().assertIsOn()
                 org.junit.Assert.assertTrue(prefs.getBoolean("player_show_animation_cover", false))
-                compose.onNodeWithContentDescription("Cerrar").performClick()
+                compose.onNodeWithContentDescription("Cerrar").performScrollTo().performClick()
                 compose.onNodeWithTag("music_animation_cover").assertExists()
 
                 val busy = first.copy(id = "lyrics-test-busy", name = "Busy Song")
@@ -235,7 +347,7 @@ class MusicLyricsDeviceTest {
                 compose.waitUntil(10_000) { lyrics.state.value.retrySeconds == 0 }
                 compose.onNodeWithText("Reintentar").assertIsEnabled()
                 org.junit.Assert.assertEquals(1, rejectedCalls.get())
-                compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                compose.onNodeWithTag("music_player_music_tab").performClick()
                 val channelOnly = first.copy(id = "channel-only-fixture", name = "Channel fixture", artist = "", sourceChannel = "LETRAS4K")
                 runBlocking(Dispatchers.IO) { media.cacheLocalFile(channelOnly.id, wav, MediaKind.AUDIO) }
                 compose.runOnIdle { controller!!.updatePlaylist(listOf(channelOnly)); controller!!.playWithQueue(channelOnly) }
@@ -246,8 +358,16 @@ class MusicLyricsDeviceTest {
                 val stored = favoriteRepository.liked.value.single { it.id == channelOnly.id }
                 org.junit.Assert.assertEquals("", stored.artist)
                 org.junit.Assert.assertEquals("LETRAS4K", stored.sourceChannel)
+                if (InstrumentationRegistry.getArguments().getString("lyricsTranslationLive") == "true") {
+                    val french = first.copy(id = "lyrics-test-french", name = "French Song")
+                    runBlocking(Dispatchers.IO) { media.cacheLocalFile(french.id, wav, MediaKind.AUDIO) }
+                    compose.runOnIdle { controller!!.updatePlaylist(listOf(french)); controller!!.playWithQueue(french) }
+                    compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                    compose.waitUntil(15_000) { lyrics.state.value.translationSource == "fr" }
+                    compose.onNodeWithTag("music_lyrics_translation_toggle").assertIsDisplayed()
+                }
                 if (InstrumentationRegistry.getArguments().getString("musicRadioLive") == "1") {
-                    if (lyrics.showing.value) compose.onNodeWithTag("music_lyrics_toggle").performClick()
+                    if (lyrics.showing.value) compose.onNodeWithTag("music_player_music_tab").performClick()
                     val radioSeed = first.copy(id = "youtube:DXiXPhvYuNU", url = "https://www.youtube.com/watch?v=DXiXPhvYuNU",
                         name = "Necio", artist = "Romeo Santos", relatedAutoplay = true)
                     runBlocking(Dispatchers.IO) { media.cacheLocalFile(radioSeed.id, wav, MediaKind.AUDIO) }

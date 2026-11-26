@@ -347,7 +347,7 @@ class AudioPlayerController @Inject constructor(
             }
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-                _state.update { it.copy(shuffleModeEnabled = shuffleModeEnabled) }
+                _state.update { it.copy(shuffleModeEnabled = shuffleModeEnabled, nextTrack = nextPlaybackTrack(p, it.tracks)) }
             }
 
             override fun onRepeatModeChanged(repeatMode: Int) {
@@ -356,7 +356,7 @@ class AudioPlayerController @Inject constructor(
                     Player.REPEAT_MODE_ONE -> AudioRepeatMode.ONE
                     else -> AudioRepeatMode.OFF
                 }
-                _state.update { it.copy(repeatMode = mode) }
+                _state.update { it.copy(repeatMode = mode, nextTrack = nextPlaybackTrack(p, it.tracks)) }
             }
         })
     }
@@ -367,6 +367,7 @@ class AudioPlayerController @Inject constructor(
             p.getMediaItemAt(index).let { it.toAudioTrack(known[it.mediaId]) }
         } else _state.value.tracks
         val track = p.currentMediaItem?.let { it.toAudioTrack(known[it.mediaId]) }
+        val nextTrack = if (syncQueue) nextPlaybackTrack(p, tracks) else _state.value.nextTrack
         val isPlaying = p.isPlaying
         val dur = p.duration.takeIf { it > 0 }
             ?: track?.durationSeconds?.takeIf { it > 0 }?.let { it * 1000L }
@@ -375,6 +376,7 @@ class AudioPlayerController @Inject constructor(
             it.copy(
                 tracks = tracks,
                 currentTrack = track,
+                nextTrack = nextTrack,
                 playing = isPlaying,
                 buffering = p.playbackState == Player.STATE_BUFFERING,
                 currentTimeMs = p.currentPosition.takeIf { pos -> pos >= 0 } ?: 0L,
@@ -384,6 +386,16 @@ class AudioPlayerController @Inject constructor(
             )
         }
         if (isPlaying && tickerJob?.isActive != true) startTicker()
+    }
+
+    private fun nextPlaybackTrack(p: Player, tracks: List<AudioTrack>): AudioTrack? {
+        val currentId = p.currentMediaItem?.mediaId ?: return null
+        val timeline = p.currentTimeline
+        if (timeline.isEmpty) return null
+        val next = timeline.getNextWindowIndex(p.currentMediaItemIndex, p.repeatMode, p.shuffleModeEnabled)
+        if (next !in 0 until p.mediaItemCount) return null
+        val item = p.getMediaItemAt(next).takeUnless { it.mediaId == currentId } ?: return null
+        return item.toAudioTrack(tracks.firstOrNull { it.id == item.mediaId })
     }
 
     private fun AudioRepeatMode.toPlayerRepeatMode(): Int = when (this) {
@@ -440,7 +452,7 @@ class AudioPlayerController @Inject constructor(
             if (edit.tracks.isEmpty()) {
                 p.pause()
                 p.clearMediaItems()
-                _state.update { it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0,
+                _state.update { it.copy(tracks = emptyList(), currentTrack = null, nextTrack = null, currentTimeMs = 0,
                     durationMs = 0, playing = false) }
             } else {
                 _state.update { it.copy(tracks = edit.tracks, currentTrack = edit.tracks[edit.currentIndex],
@@ -827,7 +839,7 @@ class AudioPlayerController @Inject constructor(
             p.clearMediaItems()
         }
         _state.update {
-            it.copy(tracks = emptyList(), currentTrack = null, currentTimeMs = 0, durationMs = 0,
+            it.copy(tracks = emptyList(), currentTrack = null, nextTrack = null, currentTimeMs = 0, durationMs = 0,
                 playing = false, buffering = false, error = null, radioLoading = false, radioError = null)
         }
         stopTicker()
